@@ -9,6 +9,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -56,7 +57,7 @@ func TestDroppedCallRetriesTheSameBody(t *testing.T) {
 	defer srv.Close()
 
 	name := "bob"
-	res, err := Do(context.Background(), srv.Listener.Addr().String(), "wait", WaitRequest{
+	res, err := Do(context.Background(), srv.Listener.Addr().String(), "wait", "", WaitRequest{
 		Conversation: "job",
 		Cursor:       3,
 		Name:         &name,
@@ -91,7 +92,7 @@ func TestDialFailureIsNotRetried(t *testing.T) {
 	})
 	defer restore()
 
-	res, err := Do(context.Background(), "192.0.2.1:9", "list", struct{}{})
+	res, err := Do(context.Background(), "192.0.2.1:9", "list", "", struct{}{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestDialTimeoutIsConnectionFailure(t *testing.T) {
 	})
 	defer restore()
 
-	res, err := Do(context.Background(), "192.0.2.1:9", "list", struct{}{})
+	res, err := Do(context.Background(), "192.0.2.1:9", "list", "", struct{}{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestClosedConnectionIsNotTimeout(t *testing.T) {
 		}
 	}()
 
-	res, err := Do(context.Background(), ln.Addr().String(), "wait", WaitRequest{
+	res, err := Do(context.Background(), ln.Addr().String(), "wait", "", WaitRequest{
 		Conversation: "job",
 		Cursor:       1,
 		Name:         strPtr("bob"),
@@ -170,7 +171,7 @@ func TestNonBusResponseIsNotRetried(t *testing.T) {
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
-	res, err := Do(context.Background(), addr, "list", struct{}{})
+	res, err := Do(context.Background(), addr, "list", "", struct{}{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +191,7 @@ func TestUnexpectedOutcomeIsNotRetried(t *testing.T) {
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
-	res, err := Do(context.Background(), addr, "list", struct{}{})
+	res, err := Do(context.Background(), addr, "list", "", struct{}{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +217,7 @@ func TestCompletedOutcomesAreNotRetried(t *testing.T) {
 				_, _ = io.WriteString(w, body)
 			}))
 			defer srv.Close()
-			res, err := Do(context.Background(), srv.Listener.Addr().String(), "read", ReadRequest{
+			res, err := Do(context.Background(), srv.Listener.Addr().String(), "read", "", ReadRequest{
 				Conversation: "job",
 				Cursor:       0,
 				Limit:        1,
@@ -244,14 +245,14 @@ func TestCompletedOutcomesAreNotRetried(t *testing.T) {
 func TestCanceledCallDoesNotRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := Do(ctx, "127.0.0.1:9", "list", struct{}{})
+	_, err := Do(ctx, "127.0.0.1:9", "list", "", struct{}{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestBadAddressDoesNotDial(t *testing.T) {
-	_, err := Do(context.Background(), "not-an-address", "list", struct{}{})
+	_, err := Do(context.Background(), "not-an-address", "list", "", struct{}{})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -269,7 +270,7 @@ func TestPublishSendsEmptyToAndTheCallerKey(t *testing.T) {
 		_, _ = io.WriteString(w, `{"outcome":"ok","already_stored":false,"message":{"seq":1,"time":"t","from":"alice","to":[],"body":"<b>","idempotency_key":"k"}}`)
 	}))
 	defer srv.Close()
-	res, err := Do(context.Background(), srv.Listener.Addr().String(), "publish", PublishRequest{
+	res, err := Do(context.Background(), srv.Listener.Addr().String(), "publish", "", PublishRequest{
 		Conversation:   "job",
 		From:           "alice",
 		Body:           "<b>",
@@ -294,7 +295,7 @@ func TestInvalidUTF8PublishBodyDoesNotPost(t *testing.T) {
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
-	res, err := Do(context.Background(), addr, "publish", PublishRequest{
+	res, err := Do(context.Background(), addr, "publish", "", PublishRequest{
 		Conversation:   "job",
 		From:           "alice",
 		Body:           string([]byte{0xff}),
@@ -309,7 +310,7 @@ func TestInvalidUTF8PublishBodyDoesNotPost(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("calls = %d", calls)
 	}
-	okRes, err := Do(context.Background(), addr, "publish", PublishRequest{
+	okRes, err := Do(context.Background(), addr, "publish", "", PublishRequest{
 		Conversation:   "job",
 		From:           "alice",
 		Body:           "café",
@@ -338,7 +339,7 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
-	res, err := Do(context.Background(), addr, "publish", PublishRequest{
+	res, err := Do(context.Background(), addr, "publish", "", PublishRequest{
 		Conversation:   "job",
 		From:           "alice",
 		Body:           "hi",
@@ -350,7 +351,7 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonKeyUTF8 {
 		t.Fatalf("result %+v", res)
 	}
-	both, err := Do(context.Background(), addr, "publish", PublishRequest{
+	both, err := Do(context.Background(), addr, "publish", "", PublishRequest{
 		Conversation:   "job",
 		From:           "alice",
 		Body:           string([]byte{0xfe}),
@@ -365,7 +366,7 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("calls = %d", calls)
 	}
-	okRes, err := Do(context.Background(), addr, "publish", PublishRequest{
+	okRes, err := Do(context.Background(), addr, "publish", "", PublishRequest{
 		Conversation:   "job",
 		From:           "alice",
 		Body:           "hi",
@@ -377,7 +378,7 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 	if okRes.Outcome != bus.OutcomeOK || calls != 1 || !bytes.Contains(got, []byte(`"idempotency_key":"`+"\uFFFD"+`"`)) {
 		t.Fatalf("outcome %s calls %d body %s", okRes.Outcome, calls, got)
 	}
-	if _, err := Do(context.Background(), addr, "publish", PublishRequest{
+	if _, err := Do(context.Background(), addr, "publish", "", PublishRequest{
 		Conversation: "job",
 		From:         "alice",
 		Body:         "hi",
@@ -402,18 +403,97 @@ func TestReadOmitsANilName(t *testing.T) {
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
-	if _, err := Do(context.Background(), addr, "read", ReadRequest{Conversation: "job", Cursor: 0, Limit: 2}); err != nil {
+	if _, err := Do(context.Background(), addr, "read", "", ReadRequest{Conversation: "job", Cursor: 0, Limit: 2}); err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(got, []byte(`"name"`)) {
 		t.Fatalf("name was sent: %s", got)
 	}
 	empty := ""
-	if _, err := Do(context.Background(), addr, "read", ReadRequest{Conversation: "job", Cursor: 0, Limit: 2, Name: &empty}); err != nil {
+	if _, err := Do(context.Background(), addr, "read", "", ReadRequest{Conversation: "job", Cursor: 0, Limit: 2, Name: &empty}); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Contains(got, []byte(`"name":""`)) {
 		t.Fatalf("empty name was not sent: %s", got)
+	}
+}
+
+func TestTokenHeaderIsRetriedWithTheSameValue(t *testing.T) {
+	const token = "hstk-7f3c9a1e4b26"
+	var mu sync.Mutex
+	var auths []string
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		n := len(bodies)
+		bodies = append(bodies, append([]byte(nil), body...))
+		auths = append(auths, r.Header.Get("Authorization"))
+		mu.Unlock()
+		if n == 0 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				http.Error(w, "hijack", http.StatusInternalServerError)
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, `{"outcome":"ok","conversations":[]}`)
+	}))
+	defer srv.Close()
+
+	res, err := Do(context.Background(), srv.Listener.Addr().String(), "list", token, struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != bus.OutcomeOK {
+		t.Fatalf("result %+v", res)
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(token)) {
+		t.Fatal("result contains the token")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(auths) != 2 || auths[0] != "Bearer "+token || auths[1] != auths[0] {
+		t.Fatalf("auths %q", auths)
+	}
+	for _, body := range bodies {
+		if bytes.Contains(body, []byte(token)) {
+			t.Fatal("body contains the token")
+		}
+	}
+}
+
+func TestUnusableTokenDoesNotDial(t *testing.T) {
+	const secret = "sekret-zzzz extra"
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = io.WriteString(w, `{"outcome":"ok","conversations":[]}`)
+	}))
+	defer srv.Close()
+	_, err := Do(context.Background(), srv.Listener.Addr().String(), "list", secret, struct{}{})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "sekret-zzzz") || strings.Contains(err.Error(), "extra") {
+		t.Fatal("error contains the token")
+	}
+	if calls != 0 {
+		t.Fatalf("calls = %d", calls)
 	}
 }
 

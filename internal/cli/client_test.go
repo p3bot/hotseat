@@ -784,7 +784,7 @@ func startBusOn(t *testing.T, addr string) func() {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runBus(ctx, t.TempDir(), addr, bus.DefaultMaxBody, slog.New(slog.DiscardHandler))
+		errCh <- runBus(ctx, t.TempDir(), addr, "", bus.DefaultMaxBody, slog.New(slog.DiscardHandler))
 	}()
 	deadline := time.Now().Add(3 * time.Second)
 	for {

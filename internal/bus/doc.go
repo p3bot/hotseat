@@ -8,8 +8,11 @@
 //
 // One process stores named conversations in SQLite and blocks callers until
 // a matching message exists, a deadline passes, or the conversation is closed.
-// It listens on one loopback address until it is signalled. It does not launch
-// agents and it does not open connections to clients.
+// It listens on one address until it is signalled. The default is loopback
+// and requires no token. A hostname is resolved once. The socket is a loopback
+// address only when every answer is loopback; any other socket requires the
+// shared capability token on every request. It does not launch agents and it
+// does not open connections to clients.
 //
 // # Protocol
 //
@@ -17,7 +20,10 @@
 // responds with HTTP 200 and one JSON object. The outcome field is ok,
 // timeout, closed, refused, or unavailable. Read that field. A dropped
 // connection has no body and is not a timeout, a refusal, or unavailable.
-// Unknown JSON fields are ignored. Loopback clients send no token.
+// Unknown JSON fields are ignored. A loopback listener accepts a request
+// with no token. Any other listener requires the token on every request.
+// WriteToken sets that header. A missing or wrong token is refused and
+// writes nothing. The token is not a sender name and is not stored.
 //
 //	POST /v1/create   {"name":"job"}
 //	POST /v1/publish  {"conversation","from","to","body","idempotency_key"}

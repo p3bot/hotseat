@@ -47,7 +47,7 @@ func TestNonLoopbackDoesNotListenOrCreateStore(t *testing.T) {
 	err := ExecuteArgs(context.Background(), []string{
 		"bus", "--store", storeDir, "--listen", "192.0.2.1:9",
 	})
-	if err == nil || !strings.Contains(err.Error(), "not loopback") {
+	if err == nil || !strings.Contains(err.Error(), "requires a token file") {
 		t.Fatalf("err = %v", err)
 	}
 	if _, statErr := os.Stat(storeDir); !os.IsNotExist(statErr) {
@@ -65,7 +65,7 @@ func TestLoopbackBindIsAttempted(t *testing.T) {
 			t.Errorf("close: %v", err)
 		}
 	}()
-	err = runBus(context.Background(), t.TempDir(), ln.Addr().String(), bus.DefaultMaxBody, slog.New(slog.DiscardHandler))
+	err = runBus(context.Background(), t.TempDir(), ln.Addr().String(), "", bus.DefaultMaxBody, slog.New(slog.DiscardHandler))
 	if err == nil || !strings.Contains(err.Error(), "listen on") {
 		t.Fatalf("err = %v", err)
 	}
@@ -91,8 +91,9 @@ func TestFlagDefaults(t *testing.T) {
 	if maxBody != bus.DefaultMaxBody {
 		t.Fatalf("max-body default = %d", maxBody)
 	}
-	if err := bus.ValidateListen(bus.DefaultListen); err != nil {
-		t.Fatal(err)
+	_, class, err := bus.ResolveListen(bus.DefaultListen)
+	if err != nil || class != bus.ListenLoopback {
+		t.Fatalf("default listen %v %v", class, err)
 	}
 }
 
@@ -172,7 +173,7 @@ func TestDefaultListenAcceptsLoopbackWithoutToken(t *testing.T) {
 	dir := t.TempDir()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runBus(ctx, dir, bus.DefaultListen, bus.DefaultMaxBody, slog.New(slog.DiscardHandler))
+		errCh <- runBus(ctx, dir, bus.DefaultListen, "", bus.DefaultMaxBody, slog.New(slog.DiscardHandler))
 	}()
 	deadline := time.Now().Add(3 * time.Second)
 	var last error

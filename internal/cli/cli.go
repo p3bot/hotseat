@@ -117,28 +117,34 @@ func newRoot() *cobra.Command {
 func newBusCmd() *cobra.Command {
 	var storeDir string
 	var listenAddr string
+	var tokenFile string
 	var maxBody int
 	var debug bool
 
 	cmd := &cobra.Command{
 		Use:           "bus",
-		Short:         "Host conversations on a loopback address",
+		Short:         "Host conversations on one address",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		Example: `  hotseat bus --store /var/lib/hotseat
-  hotseat bus --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288`,
+  hotseat bus --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
+  hotseat bus --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token`,
 		Long: `Listen for create, publish, read, wait, close, and list.
 
 The store directory is required. The database is ` + store.FileName + ` inside that
-directory. A non-loopback address is refused and nothing is opened.
+directory. The default address is loopback and requires no token. Any other
+address requires --token-file. A hostname is resolved once, and the process
+listens on one address from that lookup. A missing or empty token file does
+not listen and nothing is opened. The token is not logged.
 Clients send JSON to POST /v1/<operation>. The process runs until it is signalled.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runBus(cmd.Context(), storeDir, listenAddr, maxBody, newLogger(debug))
+			return runBus(cmd.Context(), storeDir, listenAddr, tokenFile, maxBody, newLogger(debug))
 		},
 	}
 	cmd.Flags().StringVar(&storeDir, "store", "", "directory for the SQLite database (required)")
-	cmd.Flags().StringVar(&listenAddr, "listen", bus.DefaultListen, "loopback listen address")
+	cmd.Flags().StringVar(&listenAddr, "listen", bus.DefaultListen, "listen address")
+	cmd.Flags().StringVar(&tokenFile, "token-file", "", "file holding the capability token; the token is not a flag")
 	cmd.Flags().IntVar(&maxBody, "max-body", bus.DefaultMaxBody, "maximum message body size in bytes")
 	cmd.Flags().BoolVar(&debug, "debug", false, "log wait and store detail to stderr")
 	if err := cmd.MarkFlagRequired("store"); err != nil {
@@ -156,9 +162,9 @@ func newLogger(debug bool) *slog.Logger {
 }
 
 // runBus validates configuration, opens the store, and serves until ctx is cancelled.
-// The listen address is checked before the store exists, so a refused address
-// does not create a database.
-func runBus(ctx context.Context, storeDir, addr string, maxBody int, log *slog.Logger) (err error) {
+// The listen address and the token file are checked before the store exists,
+// so a refused configuration does not create a database.
+func runBus(ctx context.Context, storeDir, addr, tokenFile string, maxBody int, log *slog.Logger) (err error) {
 	if storeDir == "" {
 		return errors.New("store directory is required")
 	}
@@ -166,7 +172,12 @@ func runBus(ctx context.Context, storeDir, addr string, maxBody int, log *slog.L
 	if maxBody < 1 {
 		return errors.New("max body must be a positive number of bytes")
 	}
-	if err := bus.ValidateListen(addr); err != nil {
+	bind, class, err := bus.ResolveListen(addr)
+	if err != nil {
+		return err
+	}
+	token, err := loadToken(class, tokenFile)
+	if err != nil {
 		return err
 	}
 	if log == nil {
@@ -184,18 +195,51 @@ func runBus(ctx context.Context, storeDir, addr string, maxBody int, log *slog.L
 		}
 	}()
 
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen(bus.ListenNetwork(bind), bind)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", addr, err)
+		return fmt.Errorf("listen on %s: %w", bind, err)
 	}
-	log.Info("listening", "addr", ln.Addr().String(), "store", st.Path())
+	if token == "" && !bus.AddrLoopback(ln.Addr()) {
+		err = errors.New("non-loopback listen address requires a token file")
+		if cerr := ln.Close(); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
+		return err
+	}
+	log.Info("listening", "addr", ln.Addr().String(), "store", st.Path(), "token_required", token != "")
 	err = bus.Serve(ctx, ln, st, bus.Options{
 		MaxBody: maxBody,
 		Logger:  log,
+		Token:   token,
 	})
 	if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, context.Canceled) {
 		log.Info("stopped", "addr", ln.Addr().String())
 		return nil
 	}
 	return err
+}
+
+// loadToken reads the capability file when a path is set.
+// Only a non-loopback address keeps the secret. Loopback stays open with no token.
+// Any other class fails closed. The bound socket is checked again before serving.
+func loadToken(class bus.ListenClass, path string) (string, error) {
+	switch class {
+	case bus.ListenLoopback, bus.ListenRemote:
+	default:
+		return "", errors.New("listen address is not classified")
+	}
+	if path != "" {
+		token, err := bus.ReadTokenFile(path)
+		if err != nil {
+			return "", err
+		}
+		if class == bus.ListenRemote {
+			return token, nil
+		}
+		return "", nil
+	}
+	if class == bus.ListenRemote {
+		return "", errors.New("non-loopback listen address requires a token file")
+	}
+	return "", nil
 }

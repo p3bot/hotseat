@@ -18,7 +18,9 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
-const clientResultText = `Print one JSON object and exit. outcome is ok, timeout, closed, refused, unavailable, or connection_failure.`
+const clientResultText = `Print one JSON object and exit. outcome is ok, timeout, closed, refused, unavailable, or connection_failure.
+
+--token-file reads the shared capability token for a bus that is not on loopback. The token is not a flag. Omit the flag for a loopback bus.`
 
 func addClientCommands(root *cobra.Command) {
 	root.AddCommand(
@@ -134,7 +136,7 @@ func newListCmd() *cobra.Command {
 }
 
 func newClientCmd(use, short, example string, run func(cmd *cobra.Command) error) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:           use,
 		Short:         short,
 		Long:          clientResultText,
@@ -146,6 +148,12 @@ func newClientCmd(use, short, example string, run func(cmd *cobra.Command) error
 			return run(cmd)
 		},
 	}
+	addTokenFile(cmd)
+	return cmd
+}
+
+func addTokenFile(cmd *cobra.Command) {
+	cmd.Flags().String("token-file", "", "file holding the capability token; the token is not a flag")
 }
 
 func addAddress(cmd *cobra.Command, address *string) {
@@ -196,11 +204,27 @@ func publishBody(cmd *cobra.Command, inline, path string) (string, error) {
 }
 
 func call(cmd *cobra.Command, address, op string, body any) error {
-	res, err := client.Do(cmd.Context(), address, op, body)
+	token, err := tokenFromFlag(cmd)
+	if err != nil {
+		return err
+	}
+	res, err := client.Do(cmd.Context(), address, op, token, body)
 	if err != nil {
 		return err
 	}
 	return writeResult(cmd.OutOrStdout(), res)
+}
+
+func tokenFromFlag(cmd *cobra.Command) (string, error) {
+	flag := cmd.Flags().Lookup("token-file")
+	if flag == nil || !cmd.Flags().Changed("token-file") {
+		return "", nil
+	}
+	path, err := cmd.Flags().GetString("token-file")
+	if err != nil {
+		return "", err
+	}
+	return bus.ReadTokenFile(path)
 }
 
 func writeResult(w io.Writer, res client.Result) error {

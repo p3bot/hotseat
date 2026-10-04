@@ -5,8 +5,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Package client performs one call against a running hotseat bus.
-// It does not open the store. It does not keep the cursor or the idempotency
-// key after the call returns.
+// It does not open the store. It does not keep the cursor, the idempotency
+// key, or the capability token after the call returns.
 package client
 
 import (
@@ -153,10 +153,17 @@ var httpClient = &http.Client{
 }
 
 // Do posts one operation and returns the bus result.
-// A dropped call is retried once with the same body. A failure to connect
-// is not retried. Neither result is a timeout.
+// token is the capability secret. Empty omits the header. A token that
+// cannot be a header is an error and is not posted.
+// A dropped call is retried once with the same body and the same token.
+// A failure to connect is not retried. Neither result is a timeout.
 // A publish body or idempotency key that is not valid UTF-8 is refused and not posted.
-func Do(ctx context.Context, address, op string, body any) (Result, error) {
+func Do(ctx context.Context, address, op, token string, body any) (Result, error) {
+	if token != "" {
+		if err := bus.WriteToken(make(http.Header), token); err != nil {
+			return Result{}, err
+		}
+	}
 	if op == "publish" {
 		// JSON replaces invalid UTF-8, so the bus would store a different message or a different key.
 		if req, ok := body.(PublishRequest); ok {
@@ -176,7 +183,7 @@ func Do(ctx context.Context, address, op string, body any) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	res, err := post(ctx, url, raw)
+	res, err := post(ctx, url, token, raw)
 	if err == nil {
 		return res, nil
 	}
@@ -186,7 +193,7 @@ func Do(ctx context.Context, address, op string, body any) (Result, error) {
 	if !isDrop(err) {
 		return failureFrom(address, err), nil
 	}
-	res, err = post(ctx, url, raw)
+	res, err = post(ctx, url, token, raw)
 	if err == nil {
 		return res, nil
 	}
@@ -287,7 +294,7 @@ func operationPath(op string) (string, error) {
 	}
 }
 
-func post(ctx context.Context, url string, body []byte) (Result, error) {
+func post(ctx context.Context, url, token string, body []byte) (Result, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return Result{}, err
@@ -295,6 +302,9 @@ func post(ctx context.Context, url string, body []byte) (Result, error) {
 	// The transport replays a request that sets GetBody. This client owns
 	// the single retry, so the transport must not send the body again.
 	req.GetBody = nil
+	if err := bus.WriteToken(req.Header, token); err != nil {
+		return Result{}, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = int64(len(body))
 	resp, err := httpClient.Do(req)

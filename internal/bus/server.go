@@ -35,6 +35,10 @@ type Options struct {
 	// OnBlock is called, without the service lock, when a wait starts blocking.
 	// Tests use it to publish only after the waiter is parked.
 	OnBlock func(conversation, name string)
+	// Token is the shared capability secret for this listener.
+	// Empty means the listener does not require one. A non-empty token is
+	// required on every request and is not logged or stored.
+	Token string
 }
 
 // Serve accepts connections on ln until ctx is cancelled.
@@ -47,7 +51,7 @@ func Serve(ctx context.Context, ln net.Listener, st *store.Store, opt Options) e
 	svc := newService(st, opt)
 	defer svc.stop()
 	httpSrv := &http.Server{
-		Handler:           (&server{svc: svc}).routes(),
+		Handler:           (&server{svc: svc, token: opt.Token}).routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ErrorLog:          slog.NewLogLogger(svc.log.Handler(), slog.LevelError),
 	}
@@ -82,7 +86,8 @@ func Serve(ctx context.Context, ln net.Listener, st *store.Store, opt Options) e
 }
 
 type server struct {
-	svc *Service
+	svc   *Service
+	token string
 }
 
 func (s *server) routes() http.Handler {
@@ -94,7 +99,39 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST "+PathClose, s.handleClose)
 	mux.HandleFunc("POST "+PathList, s.handleList)
 	mux.HandleFunc("/", s.handleUnknown)
-	return mux
+	if s.token == "" {
+		return mux
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Before the operation, so a refusal cannot block in wait or write.
+		switch checkToken(r.Header, s.token) {
+		case tokenOK:
+			mux.ServeHTTP(w, r)
+		case tokenMissing:
+			s.finish(w, opName(r.URL.Path), "", time.Now(), refused(ReasonTokenRequired), nil)
+		default:
+			s.finish(w, opName(r.URL.Path), "", time.Now(), refused(ReasonTokenRejected), nil)
+		}
+	})
+}
+
+func opName(path string) string {
+	switch path {
+	case PathCreate:
+		return "create"
+	case PathPublish:
+		return "publish"
+	case PathRead:
+		return "read"
+	case PathWait:
+		return "wait"
+	case PathClose:
+		return "close"
+	case PathList:
+		return "list"
+	default:
+		return path
+	}
 }
 
 func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {

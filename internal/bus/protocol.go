@@ -52,6 +52,8 @@ const (
 	ReasonDeadline             = "deadline must be a non-negative duration such as 30s or 500ms"
 	ReasonBadJSON              = "request is not valid JSON"
 	ReasonUnknownOp            = "unknown operation"
+	ReasonTokenRequired        = "token is required"
+	ReasonTokenRejected        = "token does not match"
 	ReasonUnavailable          = "could not make the change durable"
 )
 

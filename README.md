@@ -5,13 +5,16 @@ One process hosts named conversations. Callers publish into a transcript and blo
 ```bash
 hotseat bus --store /var/lib/hotseat
 hotseat bus --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
+hotseat bus --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token
 ```
 
-`--store` is required. The database is `hotseat.db` in that directory. This process is the only writer. The default listen address is `127.0.0.1:4727`. A non-loopback address is refused and no database is created. The default maximum body is 512 KiB. The process runs until it is signalled.
+`--store` is required. The database is `hotseat.db` in that directory. This process is the only writer. The default listen address is `127.0.0.1:4727`. A loopback address accepts every request with no token. A hostname is resolved once and the process listens on one address from that lookup: a loopback address when every answer is loopback, otherwise a non-loopback address. Any other address requires `--token-file` and does not listen when the file is missing or empty, and no database is created. The file holds one shared token. A trailing newline is ignored. The token is printable ASCII with no spaces. The process does not log it. Passing the file on loopback does not turn the check on. The default maximum body is 512 KiB. The process runs until it is signalled.
 
 ## Protocol
 
-Every operation is `POST` of one JSON object to `/v1/<operation>`. A completed call responds `200` with one JSON object. Read `outcome`. It is `ok`, `timeout`, `closed`, `refused`, or `unavailable`. A dropped connection has no body and is not a timeout. Loopback clients send no token. Unknown JSON fields are ignored.
+Every operation is `POST` of one JSON object to `/v1/<operation>`. A completed call responds `200` with one JSON object. Read `outcome`. It is `ok`, `timeout`, `closed`, `refused`, or `unavailable`. A dropped connection has no body and is not a timeout. Unknown JSON fields are ignored.
+
+A loopback listener ignores credentials. Any other listener requires the token on every request, including from a peer on the same machine. The header is `Authorization: Bearer` and the token. `WriteToken` in package bus is that header. A missing token is refused with `token is required`. A wrong token is refused with `token does not match`. Nothing is written. The token does not select `from` and is not stored.
 
 | Call | Body |
 | --- | --- |
@@ -38,11 +41,12 @@ curl -s localhost:4727/v1/wait -d '{"conversation":"job","cursor":0,"name":"bob"
 
 ## Client
 
-The same binary calls a bus that is already running, then exits. The default address is `127.0.0.1:4727`. `--address` aims one invocation at another bus. The caller passes the cursor and the idempotency key. The client does not store them and does not mint a key.
+The same binary calls a bus that is already running, then exits. The default address is `127.0.0.1:4727`. `--address` aims one invocation at another bus. `--token-file` reads the token for a non-loopback bus. The token is not a command-line argument. Omit the flag for loopback. The caller passes the cursor and the idempotency key. The client does not store them and does not mint a key.
 
 ```bash
 hotseat create --name job
 hotseat publish --conversation job --from alice --to bob --body hello --idempotency-key 1
+hotseat publish --address 192.0.2.10:4727 --token-file /run/hotseat/token --conversation job --from alice --to bob --body hello --idempotency-key 1
 hotseat publish --conversation job --from alice --to bob --body-file - --idempotency-key 1
 hotseat read --conversation job --cursor 0 --limit 50
 hotseat wait --conversation job --cursor 0 --name bob --deadline 30s
