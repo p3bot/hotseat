@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -59,8 +60,26 @@ func Execute() error {
 
 // ExecuteArgs runs the command tree with args. args does not include the program name.
 func ExecuteArgs(ctx context.Context, args []string) error {
+	return execute(ctx, args, nil, nil)
+}
+
+// execute runs the command tree. Nil writers use the process standard streams.
+func execute(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return executeIO(ctx, args, nil, stdout, stderr)
+}
+
+func executeIO(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	root := newRoot()
 	root.SetArgs(args)
+	if stdout != nil {
+		root.SetOut(stdout)
+	}
+	if stderr != nil {
+		root.SetErr(stderr)
+	}
+	if stdin != nil {
+		root.SetIn(stdin)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -86,11 +105,12 @@ func newRoot() *cobra.Command {
 		Version:       Version,
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return cmd.Help()
+			return errors.New("a command is required")
 		},
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.AddCommand(newBusCmd())
+	addClientCommands(root)
 	return root
 }
 

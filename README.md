@@ -36,4 +36,22 @@ curl -s localhost:4727/v1/publish -d '{"conversation":"job","from":"alice","to":
 curl -s localhost:4727/v1/wait -d '{"conversation":"job","cursor":0,"name":"bob","deadline":"30s"}'
 ```
 
+## Client
+
+The same binary calls a bus that is already running, then exits. The default address is `127.0.0.1:4727`. `--address` aims one invocation at another bus. The caller passes the cursor and the idempotency key. The client does not store them and does not mint a key.
+
+```bash
+hotseat create --name job
+hotseat publish --conversation job --from alice --to bob --body hello --idempotency-key 1
+hotseat publish --conversation job --from alice --to bob --body-file - --idempotency-key 1
+hotseat read --conversation job --cursor 0 --limit 50
+hotseat wait --conversation job --cursor 0 --name bob --deadline 30s
+hotseat close --conversation job
+hotseat list
+```
+
+`--body` is the message. `--body-file` reads it from a file, and `--body-file -` reads stdin, so a body can be larger than one command argument. Pass exactly one of the two. A body or an idempotency key that is not valid UTF-8 is `refused` with that bus rule, and the client does not connect.
+
+Each command prints one JSON object and exits. `outcome` is `ok`, `timeout`, `closed`, `refused`, `unavailable`, or `connection_failure`. A usage error is a message on stderr and no object. A dropped call is retried once with the same arguments. Timeout is only the bus outcome. A full read page carries each message `seq`. The client does not request the next page.
+
 Build with `CGO_ENABLED=0 go build -o hotseat ./cmd/hotseat`.
