@@ -1,0 +1,522 @@
+// Copyright (c) 2026 Grant Carthew
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+)
+
+func TestOpenRelativeDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	st, err := Open("data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	want := filepath.Join(root, "data", FileName)
+	if st.Path() != want {
+		t.Fatalf("path = %s, want %s", st.Path(), want)
+	}
+	ctx := context.Background()
+	if err := st.Create(ctx, "job"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"bob"},
+		Body: "hello", Key: "k", Time: "t",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open("data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	status, msgs, err := reopened.Transcript(ctx, "job", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != StatusOpen || len(msgs) != 1 || msgs[0].Body != "hello" {
+		t.Fatalf("reopen status=%s msgs=%+v", status, msgs)
+	}
+}
+
+func TestOpenPermissionsAndPragmas(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	if st.Path() != filepath.Join(dir, FileName) {
+		t.Fatalf("path = %s", st.Path())
+	}
+	info, err := os.Stat(st.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o", info.Mode().Perm())
+	}
+	var mode string
+	if err := st.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Fatalf("journal_mode = %s", mode)
+	}
+	var syncMode, fk int
+	if err := st.db.QueryRow(`PRAGMA synchronous`).Scan(&syncMode); err != nil {
+		t.Fatal(err)
+	}
+	if syncMode != 2 {
+		t.Fatalf("synchronous = %d, want FULL (2)", syncMode)
+	}
+	if err := st.db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk); err != nil {
+		t.Fatal(err)
+	}
+	if fk != 1 {
+		t.Fatalf("foreign_keys = %d", fk)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, FileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("database appeared in the working directory: %v", err)
+	}
+}
+
+func TestOpenTightensDirectoryAndRefusesSymlinks(t *testing.T) {
+	root := t.TempDir()
+	secret := filepath.Join(root, "secret.txt")
+	if err := os.WriteFile(secret, []byte("KEEP ME"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("existing directory", func(t *testing.T) {
+		dir := filepath.Join(root, "plain")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		st, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := st.Close(); err != nil {
+				t.Errorf("close: %v", err)
+			}
+		})
+		dirInfo, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dirInfo.Mode().Perm() != 0o700 {
+			t.Fatalf("dir mode = %o", dirInfo.Mode().Perm())
+		}
+		for _, suffix := range []string{"", "-wal"} {
+			p := st.Path() + suffix
+			info, err := os.Lstat(p)
+			if err != nil {
+				t.Fatalf("%s: %v", suffix, err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				t.Fatalf("%s is a symlink", p)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Fatalf("%s mode = %o", p, info.Mode().Perm())
+			}
+		}
+		if info, err := os.Lstat(st.Path() + "-shm"); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
+				t.Fatalf("shm mode = %o", info.Mode().Perm())
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	})
+
+	cases := []struct {
+		name     string
+		suffix   string
+		dangling bool
+	}{
+		{name: "database", suffix: ""},
+		{name: "database dangling", suffix: "", dangling: true},
+		{name: "wal", suffix: "-wal"},
+		{name: "shm", suffix: "-shm"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(root, strings.ReplaceAll(tt.name, " ", "-"))
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			target := secret
+			if tt.dangling {
+				target = filepath.Join(root, tt.name+"-missing")
+			}
+			link := filepath.Join(dir, FileName+tt.suffix)
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(dir); err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("open = %v", err)
+			}
+			linkInfo, err := os.Lstat(link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if linkInfo.Mode()&os.ModeSymlink == 0 {
+				t.Fatal("symlink was replaced")
+			}
+			if tt.dangling {
+				if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("dangling target: %v", err)
+				}
+				return
+			}
+			got, err := os.ReadFile(secret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != "KEEP ME" {
+				t.Fatalf("secret = %q", got)
+			}
+			info, err := os.Stat(secret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o644 {
+				t.Fatalf("secret mode = %o", info.Mode().Perm())
+			}
+		})
+	}
+}
+
+func TestPublishRestartAndIdempotency(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Create(ctx, "job"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Create(ctx, "other"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Create(ctx, "job"); !errors.Is(err, ErrExists) {
+		t.Fatalf("duplicate create: %v", err)
+	}
+	first, already, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
+		Body: "one", Key: "k", Time: "2026-10-03T07:00:00Z",
+	})
+	if err != nil || already || first.Seq != 1 {
+		t.Fatalf("first = %+v already=%v err=%v", first, already, err)
+	}
+	other, _, err := st.Publish(ctx, Publish{
+		Conversation: "other", From: "alice", To: []string{"bob"},
+		Body: "o", Key: "k", Time: "2026-10-03T07:00:01Z",
+	})
+	if err != nil || other.Seq != 1 {
+		t.Fatalf("other conversation seq = %+v err=%v", other, err)
+	}
+	again, already, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
+		Body: "one", Key: "k", Time: "later",
+	})
+	if err != nil || !already || again.Seq != 1 || again.Time != first.Time {
+		t.Fatalf("retry = %+v already=%v err=%v", again, already, err)
+	}
+	if _, _, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"carol", "bob"},
+		Body: "one", Key: "k", Time: "later",
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reordered to: %v", err)
+	}
+	if err := st.CloseConversation(ctx, "job"); err != nil {
+		t.Fatal(err)
+	}
+	closedRetry, already, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
+		Body: "one", Key: "k", Time: "later",
+	})
+	if err != nil || !already || closedRetry.Seq != 1 {
+		t.Fatalf("closed retry = %+v already=%v err=%v", closedRetry, already, err)
+	}
+	if _, _, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"bob"},
+		Body: "new", Key: "new", Time: "later",
+	}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("publish after close: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	status, msgs, err := reopened.Transcript(ctx, "job", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != StatusClosed || len(msgs) != 1 || msgs[0].Body != "one" || msgs[0].Time != first.Time {
+		t.Fatalf("restart status=%s msgs=%+v", status, msgs)
+	}
+	if len(msgs[0].To) != 2 || msgs[0].To[0] != "bob" || msgs[0].To[1] != "carol" {
+		t.Fatalf("to order = %v", msgs[0].To)
+	}
+}
+
+func TestScanStopsBeforeLaterMessages(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if err := st.Create(ctx, "job"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if _, _, err := st.Publish(ctx, Publish{
+			Conversation: "job", From: "alice", To: []string{"bob"},
+			Body: fmt.Sprintf("m%d", i), Key: fmt.Sprintf("k%d", i), Time: "t",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []int64
+	status, err := st.Scan(ctx, "job", 0, func(m Message) bool {
+		got = append(got, m.Seq)
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != StatusOpen || len(got) != 1 || got[0] != 1 {
+		t.Fatalf("status=%s seqs=%v", status, got)
+	}
+	var all []int64
+	if _, err := st.Scan(ctx, "job", 1, func(m Message) bool {
+		all = append(all, m.Seq)
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[0] != 2 || all[1] != 3 {
+		t.Fatalf("rest = %v", all)
+	}
+	if _, err := st.Scan(ctx, "missing", 0, func(Message) bool {
+		t.Fatal("scanned a missing conversation")
+		return false
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing = %v", err)
+	}
+}
+
+func TestConcurrentPublish(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if err := st.Create(ctx, "job"); err != nil {
+		t.Fatal(err)
+	}
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _, err := st.Publish(ctx, Publish{
+				Conversation: "job", From: "alice", To: []string{"bob"},
+				Body: fmt.Sprintf("m%d", i), Key: fmt.Sprintf("k%d", i), Time: "t",
+			})
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, msgs, err := st.Transcript(ctx, "job", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != n {
+		t.Fatalf("len = %d", len(msgs))
+	}
+	seen := map[int64]bool{}
+	for _, m := range msgs {
+		if seen[m.Seq] {
+			t.Fatalf("duplicate seq %d", m.Seq)
+		}
+		seen[m.Seq] = true
+	}
+	for seq := int64(1); seq <= n; seq++ {
+		if !seen[seq] {
+			t.Fatalf("missing seq %d", seq)
+		}
+	}
+}
+
+func TestSchemaMismatchKeepsMessages(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Create(ctx, "job"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{}, Body: "keep", Key: "k", Time: "t",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := st.Path()
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value = '99' WHERE key = 'schema'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); !errors.Is(err, ErrSchema) {
+		t.Fatalf("reopen = %v", err)
+	}
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("messages = %d", n)
+	}
+}
+
+func TestSecondProcessRefused(t *testing.T) {
+	if os.Getenv("HOTSEAT_STORE_CHILD") == "1" {
+		_, err := Open(os.Getenv("HOTSEAT_STORE_DIR"))
+		if errors.Is(err, ErrHeld) {
+			os.Exit(2)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+		os.Exit(0)
+	}
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSecondProcessRefused$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "HOTSEAT_STORE_CHILD=1", "HOTSEAT_STORE_DIR="+dir)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+		return
+	}
+	t.Fatalf("child err=%v output=%s", err, out)
+}
+
+func TestOtherSQLiteClientCannotWriteWhileOpen(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Fatal(err)
+	}
+	st := openStore(t)
+	cmd := exec.Command("sqlite3", st.Path(), `CREATE TABLE hack(x INTEGER); INSERT INTO hack VALUES (1);`)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("sqlite3 wrote the open database: %s", out)
+	}
+	var n int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'hack'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("hack table exists, sqlite3 said: %s", out)
+	}
+}
+
+func openStore(t *testing.T) *Store {
+	t.Helper()
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	return st
+}
