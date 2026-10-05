@@ -74,6 +74,7 @@ func TestClientCommandsExit(t *testing.T) {
 		cmd.Env = append(os.Environ(),
 			"CGO_ENABLED=0",
 			"HOME="+home,
+			"XDG_DATA_HOME="+filepath.Join(home, "data"),
 			"XDG_CONFIG_HOME="+filepath.Join(home, "config"),
 			"XDG_STATE_HOME="+filepath.Join(home, "state"),
 			"XDG_CACHE_HOME="+filepath.Join(home, "cache"),
@@ -840,6 +841,7 @@ func isolateHome(t *testing.T) (string, string) {
 	home := t.TempDir()
 	t.Chdir(wd)
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))

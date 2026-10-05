@@ -3,12 +3,13 @@
 One process hosts named conversations. Callers publish into a transcript and block until a matching message exists, a deadline passes, or the conversation is closed.
 
 ```bash
+hotseat bus
 hotseat bus --store /var/lib/hotseat
 hotseat bus --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
 hotseat bus --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token
 ```
 
-`--store` is required. The database is `hotseat.db` in that directory. This process is the only writer. The default listen address is `127.0.0.1:4727`. A loopback address accepts every request with no token. A hostname is resolved once and the process listens on one address from that lookup: a loopback address when every answer is loopback, otherwise a non-loopback address. Any other address requires `--token-file` and does not listen when the file is missing or empty, and no database is created. The file holds one shared token. A trailing newline is ignored. The token is printable ASCII with no spaces. The process does not log it. Passing the file on loopback does not turn the check on. The default maximum body is 512 KiB. The process runs until it is signalled.
+`--store` selects the directory. When it is omitted the directory is `$XDG_DATA_HOME/hotseat`. An unset, empty, or relative `$XDG_DATA_HOME` uses `$HOME/.local/share/hotseat`. A relative home directory is refused and nothing is created. The database is `hotseat.db` in that directory. This process is the only writer. The default listen address is `127.0.0.1:4727`. A loopback address accepts every request with no token. A hostname is resolved once and the process listens on one address from that lookup: a loopback address when every answer is loopback, otherwise a non-loopback address. Any other address requires `--token-file` and does not listen when the file is missing or empty, and no database is created. A failed bind creates no database. The file holds one shared token. A trailing newline is ignored. The token is printable ASCII with no spaces. The process does not log it. Passing the file on loopback does not turn the check on. The default maximum body is 512 KiB. The process runs until it is signalled.
 
 ## Protocol
 
@@ -57,5 +58,15 @@ hotseat list
 `--body` is the message. `--body-file` reads it from a file, and `--body-file -` reads stdin, so a body can be larger than one command argument. Pass exactly one of the two. A body or an idempotency key that is not valid UTF-8 is `refused` with that bus rule, and the client does not connect.
 
 Each command prints one JSON object and exits. `outcome` is `ok`, `timeout`, `closed`, `refused`, `unavailable`, or `connection_failure`. A usage error is a message on stderr and no object. A dropped call is retried once with the same arguments. Timeout is only the bus outcome. A full read page carries each message `seq`. The client does not request the next page.
+
+## Web
+
+`hotseat web` serves a page that lists conversations, reads one transcript, and publishes. It calls a bus that is already running. It does not open the database. The default bus address is `127.0.0.1:4727`. The default page address is `127.0.0.1:4728`. The page listens on loopback. Any other listen address is refused. The page answers for the address it listens on. On loopback, localhost with that port is the same address. `--token-file` reads the token for a non-loopback bus. The page does not receive the token. Omit the flag for loopback. The person at the page supplies `from`, `to`, the body, the cursor, and the idempotency key. The server does not store the cursor or the key and does not invent a key. The page does not create, wait, or close.
+
+```bash
+hotseat web
+hotseat web --address 127.0.0.1:4727 --listen 127.0.0.1:4728
+hotseat web --address 192.0.2.10:4727 --token-file /run/hotseat/token
+```
 
 Build with `CGO_ENABLED=0 go build -o hotseat ./cmd/hotseat`.

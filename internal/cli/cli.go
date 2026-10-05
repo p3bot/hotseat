@@ -110,6 +110,7 @@ func newRoot() *cobra.Command {
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.AddCommand(newBusCmd())
+	root.AddCommand(newWebCmd())
 	addClientCommands(root)
 	return root
 }
@@ -127,30 +128,48 @@ func newBusCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
-		Example: `  hotseat bus --store /var/lib/hotseat
+		Example: `  hotseat bus
+  hotseat bus --store /var/lib/hotseat
   hotseat bus --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
   hotseat bus --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token`,
 		Long: `Listen for create, publish, read, wait, close, and list.
 
-The store directory is required. The database is ` + store.FileName + ` inside that
-directory. The default address is loopback and requires no token. Any other
-address requires --token-file. A hostname is resolved once, and the process
-listens on one address from that lookup. A missing or empty token file does
-not listen and nothing is opened. The token is not logged.
-Clients send JSON to POST /v1/<operation>. The process runs until it is signalled.`,
+The database is ` + store.FileName + ` inside the store directory. When --store
+is omitted the directory is $XDG_DATA_HOME/hotseat. An unset, empty, or relative
+$XDG_DATA_HOME uses $HOME/.local/share/hotseat. A relative home directory is
+refused and nothing is created. The default address is loopback
+and requires no token. Any other address requires --token-file. A hostname is
+resolved once, and the process listens on one address from that lookup. A
+missing or empty token file does not listen and nothing is opened. A failed
+bind opens nothing. The token is not logged. Clients send JSON to POST
+/v1/<operation>. The process runs until it is signalled.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runBus(cmd.Context(), storeDir, listenAddr, tokenFile, maxBody, newLogger(debug))
 		},
 	}
-	cmd.Flags().StringVar(&storeDir, "store", "", "directory for the SQLite database (required)")
+	cmd.Flags().StringVar(&storeDir, "store", "", "directory for the SQLite database (default $XDG_DATA_HOME/hotseat)")
 	cmd.Flags().StringVar(&listenAddr, "listen", bus.DefaultListen, "listen address")
 	cmd.Flags().StringVar(&tokenFile, "token-file", "", "file holding the capability token; the token is not a flag")
 	cmd.Flags().IntVar(&maxBody, "max-body", bus.DefaultMaxBody, "maximum message body size in bytes")
 	cmd.Flags().BoolVar(&debug, "debug", false, "log wait and store detail to stderr")
-	if err := cmd.MarkFlagRequired("store"); err != nil {
-		panic(err)
-	}
 	return cmd
+}
+
+// defaultStoreDir is the XDG data directory for this application.
+// An unset, empty, or relative XDG_DATA_HOME is ignored.
+// A relative home directory is refused. The directory is not created here.
+func defaultStoreDir() (string, error) {
+	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" && filepath.IsAbs(dir) {
+		return filepath.Join(dir, "hotseat"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("store directory: %w", err)
+	}
+	if !filepath.IsAbs(home) {
+		return "", errors.New("store directory: home directory is not absolute")
+	}
+	return filepath.Join(home, ".local", "share", "hotseat"), nil
 }
 
 func newLogger(debug bool) *slog.Logger {
@@ -161,14 +180,13 @@ func newLogger(debug bool) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
 
-// runBus validates configuration, opens the store, and serves until ctx is cancelled.
-// The listen address and the token file are checked before the store exists,
-// so a refused configuration does not create a database.
+// runBus binds the listener, opens the store, and serves until ctx is cancelled.
+// The store is created only after the socket is bound and accepted. A refused
+// address, a missing token, or a failed bind leaves no database.
 func runBus(ctx context.Context, storeDir, addr, tokenFile string, maxBody int, log *slog.Logger) (err error) {
-	if storeDir == "" {
-		return errors.New("store directory is required")
+	if storeDir != "" {
+		storeDir = filepath.Clean(storeDir)
 	}
-	storeDir = filepath.Clean(storeDir)
 	if maxBody < 1 {
 		return errors.New("max body must be a positive number of bytes")
 	}
@@ -180,20 +198,15 @@ func runBus(ctx context.Context, storeDir, addr, tokenFile string, maxBody int, 
 	if err != nil {
 		return err
 	}
+	if storeDir == "" {
+		storeDir, err = defaultStoreDir()
+		if err != nil {
+			return err
+		}
+	}
 	if log == nil {
 		log = newLogger(false)
 	}
-
-	st, err := store.Open(storeDir)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		cerr := st.Close()
-		if err == nil && cerr != nil {
-			err = cerr
-		}
-	}()
 
 	ln, err := net.Listen(bus.ListenNetwork(bind), bind)
 	if err != nil {
@@ -206,6 +219,21 @@ func runBus(ctx context.Context, storeDir, addr, tokenFile string, maxBody int, 
 		}
 		return err
 	}
+
+	st, err := store.Open(storeDir)
+	if err != nil {
+		if cerr := ln.Close(); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
+		return err
+	}
+	defer func() {
+		cerr := st.Close()
+		if err == nil && cerr != nil {
+			err = cerr
+		}
+	}()
+
 	log.Info("listening", "addr", ln.Addr().String(), "store", st.Path(), "token_required", token != "")
 	err = bus.Serve(ctx, ln, st, bus.Options{
 		MaxBody: maxBody,
