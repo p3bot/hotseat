@@ -18,7 +18,7 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
-const clientResultText = `Print one JSON object and exit. outcome is ok, timeout, closed, refused, unavailable, or connection_failure.
+const clientResultText = `Print one JSON object and exit. outcome is ok, timeout, refused, unavailable, or connection_failure.
 
 --token-file reads the shared capability token for a bus that is not on loopback. The token is not a flag. Omit the flag for a loopback bus.`
 
@@ -110,7 +110,7 @@ func newWaitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&conv, "conversation", "", "conversation name")
 	cmd.Flags().Int64Var(&cursor, "cursor", 0, "last finished sequence; 0 has seen nothing")
 	cmd.Flags().StringVar(&name, "name", "", "participant name; omit to wait for the next message")
-	cmd.Flags().StringVar(&deadline, "deadline", "", "wait limit, such as 30s or 500ms; omit to wait without one")
+	cmd.Flags().StringVar(&deadline, "deadline", "", "wait limit: a duration such as 30s, or an RFC3339 end time; omit to wait without one")
 	markRequired(cmd, "conversation", "cursor")
 	return cmd
 }

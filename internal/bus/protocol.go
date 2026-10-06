@@ -13,8 +13,6 @@ const (
 	OutcomeOK = "ok"
 	// OutcomeTimeout is a wait whose deadline passed with no match.
 	OutcomeTimeout = "timeout"
-	// OutcomeClosed is a wait whose conversation is closed and has no match after the cursor.
-	OutcomeClosed = "closed"
 	// OutcomeRefused means the call broke a rule and wrote nothing.
 	OutcomeRefused = "refused"
 	// OutcomeUnavailable means a change could not be made durable and wrote nothing.
@@ -25,11 +23,9 @@ const (
 const (
 	ReasonBadName              = "name must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
 	ReasonNameRequired         = "name is required"
-	ReasonNameInUse            = "name already in use"
 	ReasonConversationRequired = "conversation is required"
 	ReasonBadConversation      = "conversation must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
 	ReasonNotFound             = "conversation not found"
-	ReasonClosed               = "conversation is closed"
 	ReasonFromRequired         = "from is required"
 	ReasonFromAll              = "from must not be all"
 	ReasonFromBad              = "from must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
@@ -49,7 +45,7 @@ const (
 	ReasonCursorRange          = "cursor must be an integer greater than or equal to zero"
 	ReasonLimitRequired        = "limit is required"
 	ReasonLimitRange           = "limit must be a positive integer"
-	ReasonDeadline             = "deadline must be a non-negative duration such as 30s or 500ms"
+	ReasonDeadline             = "deadline must be a non-negative duration such as 30s or 500ms, or an RFC3339 time"
 	ReasonBadJSON              = "request is not valid JSON"
 	ReasonUnknownOp            = "unknown operation"
 	ReasonTokenRequired        = "token is required"

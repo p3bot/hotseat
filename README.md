@@ -1,6 +1,6 @@
 # hotseat
 
-One process hosts named conversations. Callers publish into a transcript and block until a matching message exists, a deadline passes, or the conversation is closed.
+One process hosts named conversations. Callers publish into a transcript and block until a matching message exists or a deadline passes.
 
 ```bash
 hotseat bus
@@ -9,11 +9,11 @@ hotseat bus --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
 hotseat bus --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token
 ```
 
-`--store` selects the directory. When it is omitted the directory is `$XDG_DATA_HOME/hotseat`. An unset, empty, or relative `$XDG_DATA_HOME` uses `$HOME/.local/share/hotseat`. A relative home directory is refused and nothing is created. The database is `hotseat.db` in that directory. This process is the only writer. The default listen address is `127.0.0.1:4727`. A loopback address accepts every request with no token. A hostname is resolved once and the process listens on one address from that lookup: a loopback address when every answer is loopback, otherwise a non-loopback address. Any other address requires `--token-file` and does not listen when the file is missing or empty, and no database is created. A failed bind creates no database. The file holds one shared token. A trailing newline is ignored. The token is printable ASCII with no spaces. The process does not log it. Passing the file on loopback does not turn the check on. The default maximum body is 512 KiB. The process runs until it is signalled.
+`--store` selects the directory. When it is omitted the directory is `$XDG_DATA_HOME/hotseat`. An unset, empty, or relative `$XDG_DATA_HOME` uses `$HOME/.local/share/hotseat`. A relative home directory is refused and nothing is created. The database is `hotseat.db` in that directory. This process is the only writer, and it holds `hotseat.db.lock` beside the database until it exits. The default listen address is `127.0.0.1:4727`. A loopback address accepts every request with no token. A hostname is resolved once and the process listens on one address from that lookup: a loopback address when every answer is loopback, otherwise a non-loopback address. Any other address requires `--token-file` and does not listen when the file is missing or empty, and no database is created. A failed bind creates no database. The file holds one shared token. A trailing newline is ignored. The token is printable ASCII with no spaces. The process does not log it. Passing the file on loopback does not turn the check on. The default maximum body is 512 KiB. The process runs until it is signalled.
 
 ## Protocol
 
-Every operation is `POST` of one JSON object to `/v1/<operation>`. A completed call responds `200` with one JSON object. Read `outcome`. It is `ok`, `timeout`, `closed`, `refused`, or `unavailable`. A dropped connection has no body and is not a timeout. Unknown JSON fields are ignored.
+Every operation is `POST` of one JSON object to `/v1/<operation>`. A completed call responds `200` with one JSON object. Read `outcome`. It is `ok`, `timeout`, `refused`, or `unavailable`. A dropped connection has no body and is not a timeout. Unknown JSON fields are ignored.
 
 A loopback listener ignores credentials. Any other listener requires the token on every request, including from a peer on the same machine. The header is `Authorization: Bearer` and the token. `WriteToken` in package bus is that header. A missing token is refused with `token is required`. A wrong token is refused with `token does not match`. Nothing is written. The token does not select `from` and is not stored.
 
@@ -26,11 +26,11 @@ A loopback listener ignores credentials. Any other listener requires the token o
 | `/v1/close` | `{"conversation"}` |
 | `/v1/list` | `{}` |
 
-`to` is an array. `[]` is empty. `["all"]` is the single value all. Any other array is an ordered name list and is not sorted or deduplicated. A different order is different content. `deadline` is a Go duration such as `30s` or `500ms`. Omit it to wait until a match, a close, or a dropped connection.
+`to` is an array. `[]` is empty. `["all"]` is the single value all. Any other array is an ordered name list and is not sorted or deduplicated. A different order is different content. `deadline` is a Go duration such as `30s` or `500ms`, or an RFC3339 end time. Omit it to wait until a match or a dropped connection. A duration is measured from arrival. An end time is absolute on the bus clock. A time already past times out at once when nothing matches, and a retry sends that same time.
 
 `cursor` `0` means the caller has seen no message. The bus does not store cursors or idempotency keys except the key recorded on an accepted message. The caller passes both on each call.
 
-An ok publish returns the message, including `seq`, only after it is durable. The same key with the same `from`, `to`, and body returns that message and `"already_stored": true`, including after close, and writes nothing. An ok named wait returns every message after the cursor through the match and `match_seq`. An ok unnamed wait returns only the next message. Timeout returns no messages. A closed named wait with no match returns the tail and no `match_seq`. A closed unnamed wait returns no messages.
+An ok create returns the conversation. A name that already exists returns that conversation, its status, and `"already_existed": true`, and writes nothing. An ok publish returns the message, including `seq`, and `conversation` with `name` and `status`, only after it is durable. The same key with the same `from`, `to`, and body returns that message and `"already_stored": true`, including after close, and writes nothing. Close sets `status` to `closed` and still accepts a new message. That publish returns `status` `closed`. An ok named wait returns every message after the cursor through the match and `match_seq`. An ok unnamed wait returns only the next message. Timeout returns no messages. Close does not end a wait.
 
 `refused` names the broken rule in `reason` and writes nothing. `unavailable` means the change could not be made durable and writes nothing.
 
@@ -57,7 +57,7 @@ hotseat list
 
 `--body` is the message. `--body-file` reads it from a file, and `--body-file -` reads stdin, so a body can be larger than one command argument. Pass exactly one of the two. A body or an idempotency key that is not valid UTF-8 is `refused` with that bus rule, and the client does not connect.
 
-Each command prints one JSON object and exits. `outcome` is `ok`, `timeout`, `closed`, `refused`, `unavailable`, or `connection_failure`. A usage error is a message on stderr and no object. A dropped call is retried once with the same arguments. Timeout is only the bus outcome. A full read page carries each message `seq`. The client does not request the next page.
+Each command prints one JSON object and exits. `outcome` is `ok`, `timeout`, `refused`, `unavailable`, or `connection_failure`. A usage error is a message on stderr and no object. A dropped call is retried once with the same arguments. Timeout is only the bus outcome. A full read page carries each message `seq`. The client does not request the next page.
 
 ## Web
 

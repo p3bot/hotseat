@@ -71,16 +71,17 @@ func (e *notBus) Error() string {
 }
 
 // Result is the JSON object every client command prints.
-// Outcome is ok, timeout, closed, refused, unavailable, or connection_failure.
+// Outcome is ok, timeout, refused, unavailable, or connection_failure.
 type Result struct {
-	Outcome       string          `json:"outcome"`
-	Reason        string          `json:"reason,omitempty"`
-	AlreadyStored *bool           `json:"already_stored,omitempty"`
-	MatchSeq      *int64          `json:"match_seq,omitempty"`
-	Message       *Message        `json:"message,omitempty"`
-	Messages      *[]Message      `json:"messages,omitempty"`
-	Conversation  *Conversation   `json:"conversation,omitempty"`
-	Conversations *[]Conversation `json:"conversations,omitempty"`
+	Outcome        string          `json:"outcome"`
+	Reason         string          `json:"reason,omitempty"`
+	AlreadyStored  *bool           `json:"already_stored,omitempty"`
+	AlreadyExisted *bool           `json:"already_existed,omitempty"`
+	MatchSeq       *int64          `json:"match_seq,omitempty"`
+	Message        *Message        `json:"message,omitempty"`
+	Messages       *[]Message      `json:"messages,omitempty"`
+	Conversation   *Conversation   `json:"conversation,omitempty"`
+	Conversations  *[]Conversation `json:"conversations,omitempty"`
 }
 
 // Message is one transcript entry as the bus returned it.
@@ -327,7 +328,7 @@ func post(ctx context.Context, url, token string, body []byte) (Result, error) {
 		return Result{}, &notBus{}
 	}
 	switch res.Outcome {
-	case bus.OutcomeOK, bus.OutcomeTimeout, bus.OutcomeClosed, bus.OutcomeRefused, bus.OutcomeUnavailable:
+	case bus.OutcomeOK, bus.OutcomeTimeout, bus.OutcomeRefused, bus.OutcomeUnavailable:
 		return res, nil
 	default:
 		return Result{}, &notBus{outcome: res.Outcome}

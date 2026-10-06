@@ -231,14 +231,14 @@ func (s *server) handleWait(w http.ResponseWriter, r *http.Request) {
 		s.finish(w, "wait", conv, start, refused(ReasonCursorRequired), nil)
 		return
 	}
-	deadline, hasDeadline, err := parseDeadline(req.Deadline)
+	limit, err := parseDeadline(req.Deadline)
 	if err != nil {
 		res, rerr := asRefused(err)
 		s.finish(w, "wait", conv, start, res, rerr)
 		return
 	}
 	name, hasName := optionalName(req.Name)
-	res, err := s.svc.Wait(r.Context(), conv, *req.Cursor, name, hasName, deadline, hasDeadline)
+	res, err := s.svc.Wait(r.Context(), conv, *req.Cursor, name, hasName, limit)
 	s.finish(w, "wait", conv, start, res, err)
 }
 
@@ -363,6 +363,9 @@ func (s *server) finish(w http.ResponseWriter, op, conv string, start time.Time,
 	if res.Message != nil {
 		attrs = append(attrs, "seq", res.Message.Seq, "already_stored", res.AlreadyStored)
 	}
+	if op == "create" {
+		attrs = append(attrs, "already_existed", res.AlreadyExisted)
+	}
 	if res.MatchSeq != 0 {
 		attrs = append(attrs, "match_seq", res.MatchSeq)
 	}
@@ -391,14 +394,15 @@ func abort(w http.ResponseWriter) {
 }
 
 type wire struct {
-	Outcome       string              `json:"outcome"`
-	Reason        string              `json:"reason,omitempty"`
-	AlreadyStored *bool               `json:"already_stored,omitempty"`
-	MatchSeq      *int64              `json:"match_seq,omitempty"`
-	Message       *wireMessage        `json:"message,omitempty"`
-	Messages      *[]wireMessage      `json:"messages,omitempty"`
-	Conversation  *wireConversation   `json:"conversation,omitempty"`
-	Conversations *[]wireConversation `json:"conversations,omitempty"`
+	Outcome        string              `json:"outcome"`
+	Reason         string              `json:"reason,omitempty"`
+	AlreadyStored  *bool               `json:"already_stored,omitempty"`
+	AlreadyExisted *bool               `json:"already_existed,omitempty"`
+	MatchSeq       *int64              `json:"match_seq,omitempty"`
+	Message        *wireMessage        `json:"message,omitempty"`
+	Messages       *[]wireMessage      `json:"messages,omitempty"`
+	Conversation   *wireConversation   `json:"conversation,omitempty"`
+	Conversations  *[]wireConversation `json:"conversations,omitempty"`
 }
 
 type wireMessage struct {
@@ -424,7 +428,12 @@ func toWire(op string, res Result) wire {
 			out.Message = wireMsg(res.Message)
 			already := res.AlreadyStored
 			out.AlreadyStored = &already
-		case "create", "close":
+			out.Conversation = wireConv(res.Conversation)
+		case "create":
+			out.Conversation = wireConv(res.Conversation)
+			existed := res.AlreadyExisted
+			out.AlreadyExisted = &existed
+		case "close":
 			out.Conversation = wireConv(res.Conversation)
 		case "list":
 			cs := wireConvs(res.Conversations)
@@ -437,9 +446,6 @@ func toWire(op string, res Result) wire {
 				out.MatchSeq = &seq
 			}
 		}
-	case OutcomeClosed:
-		ms := wireMsgs(res.Messages)
-		out.Messages = &ms
 	}
 	return out
 }

@@ -52,7 +52,7 @@ func TestDroppedCallRetriesTheSameBody(t *testing.T) {
 			_ = conn.Close()
 			return
 		}
-		_, _ = io.WriteString(w, `{"outcome":"refused","reason":"conversation is closed"}`)
+		_, _ = io.WriteString(w, `{"outcome":"refused","reason":"conversation not found"}`)
 	}))
 	defer srv.Close()
 
@@ -65,7 +65,7 @@ func TestDroppedCallRetriesTheSameBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonClosed {
+	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonNotFound {
 		t.Fatalf("result %+v", res)
 	}
 	mu.Lock()
@@ -207,7 +207,7 @@ func TestCompletedOutcomesAreNotRetried(t *testing.T) {
 	for _, body := range []string{
 		`{"outcome":"timeout"}`,
 		`{"outcome":"unavailable","reason":"could not make the change durable"}`,
-		`{"outcome":"closed","messages":[]}`,
+		`{"outcome":"refused","reason":"conversation not found"}`,
 		`{"outcome":"ok","messages":[]}`,
 	} {
 		t.Run(body, func(t *testing.T) {
@@ -233,8 +233,8 @@ func TestCompletedOutcomesAreNotRetried(t *testing.T) {
 					t.Fatalf("result %+v", res)
 				}
 			}
-			if body == `{"outcome":"closed","messages":[]}` {
-				if res.Outcome != bus.OutcomeClosed || res.Messages == nil || len(*res.Messages) != 0 {
+			if body == `{"outcome":"refused","reason":"conversation not found"}` {
+				if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonNotFound {
 					t.Fatalf("result %+v", res)
 				}
 			}

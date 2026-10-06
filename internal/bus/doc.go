@@ -7,7 +7,7 @@
 // Package bus is the hotseat listener.
 //
 // One process stores named conversations in SQLite and blocks callers until
-// a matching message exists, a deadline passes, or the conversation is closed.
+// a matching message exists or a deadline passes.
 // It listens on one address until it is signalled. The default is loopback
 // and requires no token. A hostname is resolved once. The socket is a loopback
 // address only when every answer is loopback; any other socket requires the
@@ -18,7 +18,7 @@
 //
 // Every operation is an HTTP POST of one JSON object. A completed call
 // responds with HTTP 200 and one JSON object. The outcome field is ok,
-// timeout, closed, refused, or unavailable. Read that field. A dropped
+// timeout, refused, or unavailable. Read that field. A dropped
 // connection has no body and is not a timeout, a refusal, or unavailable.
 // Unknown JSON fields are ignored. A loopback listener accepts a request
 // with no token. Any other listener requires the token on every request.
@@ -36,18 +36,26 @@
 // array is an ordered list of names. Order is part of the publish identity.
 // The bus does not sort or deduplicate it. A JSON string "all" is refused.
 //
-// deadline is a Go duration such as "30s" or "500ms". Omit it, or send "",
-// to wait until a match, a close, or a dropped connection. "0s" times out
-// at once when nothing already matches. A stored match still returns ok.
+// deadline is a Go duration such as "30s" or "500ms", or an RFC3339 end time.
+// Omit it, or send "", to wait until a match or a dropped connection.
+// A duration is measured from arrival. An end time is absolute on the bus
+// clock, and a time already past times out at once when nothing matches.
+// "0s" does the same. A stored match still returns ok. A retry sends the
+// same end time, so time already spent stays spent.
 //
 // cursor 0 means the caller has seen no message. The bus does not store it.
 // limit is the maximum number of messages read returns. Wait has no limit.
 //
-// A publish response is written only after the message is durable. The same
-// idempotency key with the same from, to, and body returns the original
-// message and already_stored true, including after the conversation is
-// closed, and writes nothing. The same key with any of those three different
-// is refused. A different name order in to is different content.
+// An ok create returns the conversation. A name that already exists returns
+// that conversation, its status, and already_existed true, and writes nothing.
+//
+// A publish response is written only after the message is durable. It carries
+// the message and the conversation name and status. The same idempotency key
+// with the same from, to, and body returns the original message and
+// already_stored true, including after the conversation is closed, and writes
+// nothing. The same key with any of those three different is refused. A
+// different name order in to is different content. Close sets status to closed
+// and still accepts a new message. That publish reports status closed.
 //
 // An ok named wait returns every message after the cursor through the match,
 // oldest first, and match_seq. Messages between the cursor and the match are
@@ -56,10 +64,7 @@
 // A named wait includes it when it sits between the cursor and the match.
 // all wakes every named waiter except the sender.
 //
-// Timeout returns no messages and writes nothing. Closed on a named wait
-// with no match returns every message after the cursor and no match_seq.
-// Closed on an unnamed wait returns no messages. A match accepted before
-// the close is outcome ok, not closed.
+// Timeout returns no messages and writes nothing. Close does not end a wait.
 //
 // refused names the broken rule in reason and writes nothing. unavailable
 // means the change could not be made durable and writes nothing.

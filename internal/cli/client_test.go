@@ -270,13 +270,17 @@ func TestClosedNamedWaitReturnsTail(t *testing.T) {
 	if len(after) != len(before) {
 		t.Fatalf("close changed the transcript %d -> %d", len(before), len(after))
 	}
-	res, raw := runClient(t, ctx, "wait", "--address", addr, "--conversation", "tail", "--cursor", "1", "--name", "bob")
-	if res.Outcome != bus.OutcomeClosed || res.MatchSeq != nil {
+	res, raw := runClient(t, ctx, "wait", "--address", addr, "--conversation", "tail", "--cursor", "1", "--name", "bob", "--deadline", "0s")
+	if res.Outcome != bus.OutcomeTimeout || res.MatchSeq != nil {
 		t.Fatalf("wait %s", raw)
 	}
-	bodies := messageBodies(t, res)
-	if len(bodies) != 1 || bodies[0] != "rest" {
-		t.Fatalf("tail %v", bodies)
+	pub, raw := runClient(t, ctx, "publish", "--address", addr, "--conversation", "tail", "--from", "alice", "--to", "bob", "--body", "later", "--idempotency-key", "k3")
+	if pub.Outcome != bus.OutcomeOK || pub.Conversation == nil || pub.Conversation.Status != "closed" || pub.Message == nil || pub.Message.Body != "later" {
+		t.Fatalf("publish %s", raw)
+	}
+	afterPub := readAll(t, ctx, addr, "tail", 0)
+	if len(afterPub) != len(before)+1 || afterPub[len(afterPub)-1].Body != "later" {
+		t.Fatalf("transcript %d", len(afterPub))
 	}
 }
 
@@ -286,13 +290,13 @@ func TestRefusedNamesTheRule(t *testing.T) {
 	ctx := context.Background()
 	create(t, ctx, addr, "once")
 	again, _ := runClient(t, ctx, "create", "--address", addr, "--name", "once")
-	if again.Outcome != bus.OutcomeRefused || again.Reason != bus.ReasonNameInUse {
+	if again.Outcome != bus.OutcomeOK || again.AlreadyExisted == nil || !*again.AlreadyExisted || again.Conversation == nil || again.Conversation.Status != "open" {
 		t.Fatalf("create %+v", again)
 	}
 	create(t, ctx, addr, "shut")
 	runClient(t, ctx, "close", "--address", addr, "--conversation", "shut")
 	pub, _ := runClient(t, ctx, "publish", "--address", addr, "--conversation", "shut", "--from", "alice", "--body", "nope", "--idempotency-key", "k")
-	if pub.Outcome != bus.OutcomeRefused || pub.Reason != bus.ReasonClosed {
+	if pub.Outcome != bus.OutcomeOK || pub.Conversation == nil || pub.Conversation.Status != "closed" || pub.Message == nil || pub.Message.Body != "nope" {
 		t.Fatalf("publish %+v", pub)
 	}
 	empty, _ := runClient(t, ctx, "read", "--address", addr, "--conversation", "shut", "--cursor", "0", "--limit", "5", "--name", "")

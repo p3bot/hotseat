@@ -174,15 +174,15 @@ func publish(t *testing.T, base, conv, from string, to []string, body, key strin
 func TestCreateFreshAndTaken(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	res := create(t, base, "job")
-	if res.Conversation == nil || res.Conversation.Status != "open" || res.Conversation.Name != "job" {
-		t.Fatalf("conversation = %+v", res.Conversation)
+	if res.Outcome != OutcomeOK || res.AlreadyExisted == nil || *res.AlreadyExisted || res.Conversation == nil || res.Conversation.Status != "open" || res.Conversation.Name != "job" {
+		t.Fatalf("conversation = %+v existed %v", res.Conversation, res.AlreadyExisted)
 	}
 	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
 	if read.Outcome != OutcomeOK || read.Messages == nil || len(*read.Messages) != 0 {
 		t.Fatalf("empty transcript = %+v", read)
 	}
 	taken := mustPost(t, base, PathCreate, map[string]any{"name": "job"})
-	if taken.Outcome != OutcomeRefused || taken.Reason != ReasonNameInUse {
+	if taken.Outcome != OutcomeOK || taken.AlreadyExisted == nil || !*taken.AlreadyExisted || taken.Conversation == nil || taken.Conversation.Status != "open" {
 		t.Fatalf("duplicate = %+v", taken)
 	}
 	bad := mustPost(t, base, PathCreate, map[string]any{"name": "has space"})
@@ -212,7 +212,7 @@ func TestPublishDurableIdempotentAndConflict(t *testing.T) {
 	create(t, base, "job")
 	create(t, base, "other")
 	first := publish(t, base, "job", "alice", []string{"bob", "carol"}, "hello", "k")
-	if first.Outcome != OutcomeOK || first.Message == nil || first.Message.Seq != 1 {
+	if first.Outcome != OutcomeOK || first.Message == nil || first.Message.Seq != 1 || first.Conversation == nil || first.Conversation.Status != "open" {
 		t.Fatalf("first = %+v", first)
 	}
 	if first.AlreadyStored == nil || *first.AlreadyStored {
@@ -303,11 +303,11 @@ func TestPublishRejectsBrokenRules(t *testing.T) {
 		t.Fatal(closeRes)
 	}
 	again := mustPost(t, base, PathCreate, map[string]any{"name": "job"})
-	if again.Outcome != OutcomeRefused || again.Reason != ReasonNameInUse {
+	if again.Outcome != OutcomeOK || again.AlreadyExisted == nil || !*again.AlreadyExisted || again.Conversation == nil || again.Conversation.Status != "closed" {
 		t.Fatalf("closed name reused: %+v", again)
 	}
 	fresh := publish(t, base, "job", "alice", []string{"bob"}, "nope", "after")
-	if fresh.Outcome != OutcomeRefused || fresh.Reason != ReasonClosed {
+	if fresh.Outcome != OutcomeOK || fresh.Conversation == nil || fresh.Conversation.Status != "closed" || fresh.Message == nil || fresh.Message.Body != "nope" {
 		t.Fatalf("publish after close = %+v", fresh)
 	}
 }
@@ -423,6 +423,38 @@ func TestWaitStoredSpan(t *testing.T) {
 	}
 }
 
+func TestAbsoluteDeadlineKeepsTimeAlreadySpent(t *testing.T) {
+	now := time.Date(2026, 10, 6, 8, 0, 0, 0, time.UTC)
+	base, _, _, _ := startServer(t, Options{Clock: func() time.Time { return now }})
+	create(t, base, "job")
+	past := "2026-10-06T17:59:00+10:00"
+	missed := mustPost(t, base, PathWait, map[string]any{
+		"conversation": "job", "cursor": 0, "name": "bob", "deadline": past,
+	})
+	if missed.Outcome != OutcomeTimeout || missed.Messages != nil {
+		t.Fatalf("past deadline = %s", missed.Outcome)
+	}
+	publish(t, base, "job", "alice", []string{"bob"}, "ping", "1")
+	stored := mustPost(t, base, PathWait, map[string]any{
+		"conversation": "job", "cursor": 0, "name": "bob", "deadline": past,
+	})
+	if stored.Outcome != OutcomeOK || stored.MatchSeq == nil || *stored.MatchSeq != 1 {
+		t.Fatalf("stored match under a past deadline = %s", stored.Outcome)
+	}
+	end := now.Add(80 * time.Millisecond).Format(time.RFC3339Nano)
+	started := time.Now()
+	retry := mustPost(t, base, PathWait, map[string]any{
+		"conversation": "job", "cursor": 1, "name": "bob", "deadline": end,
+	})
+	elapsed := time.Since(started)
+	if retry.Outcome != OutcomeTimeout {
+		t.Fatalf("same end time = %s", retry.Outcome)
+	}
+	if elapsed < 40*time.Millisecond || elapsed > 500*time.Millisecond {
+		t.Fatalf("same end time waited %s", elapsed)
+	}
+}
+
 func TestWaitSpanContents(t *testing.T) {
 	blocked := make(chan struct{}, 2)
 	base, _, _, _ := startServer(t, Options{OnBlock: func(string, string) { blocked <- struct{}{} }})
@@ -525,7 +557,7 @@ func TestWaitTimeoutAndNoDeadline(t *testing.T) {
 
 func TestCloseRetryAndTails(t *testing.T) {
 	blocked := make(chan struct{}, 1)
-	base, _, _, _ := startServer(t, Options{OnBlock: func(string, string) { blocked <- struct{}{} }})
+	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	first := publish(t, base, "job", "alice", []string{"bob"}, "ping", "k")
 	side := publish(t, base, "job", "alice", []string{"carol"}, "side", "side")
@@ -546,24 +578,24 @@ func TestCloseRetryAndTails(t *testing.T) {
 	if matched.Outcome != OutcomeOK || matched.MatchSeq == nil || *matched.MatchSeq != 1 || messageLen(matched) != 1 {
 		t.Fatalf("match before close = %s len %d", matched.Outcome, messageLen(matched))
 	}
-	tail := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 1, "name": "bob"})
-	if tail.Outcome != OutcomeClosed || messageLen(tail) != 1 || (*tail.Messages)[0].Seq != 2 || tail.MatchSeq != nil {
-		t.Fatalf("named tail = outcome %s len %d match %v", tail.Outcome, messageLen(tail), tail.MatchSeq)
+	tail := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 1, "name": "bob", "deadline": "0s"})
+	if tail.Outcome != OutcomeTimeout || tail.Messages != nil {
+		t.Fatalf("named wait with no match = outcome %s messages nil=%v", tail.Outcome, tail.Messages == nil)
 	}
-	unnamed := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 2})
-	if unnamed.Outcome != OutcomeClosed || unnamed.Messages == nil || len(*unnamed.Messages) != 0 {
-		t.Fatalf("unnamed closed = %s raw messages nil=%v", unnamed.Outcome, unnamed.Messages == nil)
+	unnamed := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 2, "deadline": "0s"})
+	if unnamed.Outcome != OutcomeTimeout || unnamed.Messages != nil {
+		t.Fatalf("unnamed caught up = %s messages nil=%v", unnamed.Outcome, unnamed.Messages == nil)
 	}
 	next := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 1})
 	if next.Outcome != OutcomeOK || messageLen(next) != 1 {
 		t.Fatalf("unnamed with a remaining message = %s", next.Outcome)
 	}
-	refused := publish(t, base, "job", "alice", []string{"bob"}, "more", "new")
-	if refused.Outcome != OutcomeRefused || refused.Reason != ReasonClosed {
-		t.Fatalf("new key = %+v", refused)
+	fresh := publish(t, base, "job", "alice", []string{"bob"}, "more", "new")
+	if fresh.Outcome != OutcomeOK || fresh.Conversation == nil || fresh.Conversation.Status != "closed" || fresh.Message == nil || fresh.Message.Seq != 3 {
+		t.Fatalf("new key = %+v", fresh)
 	}
 	retry := publish(t, base, "job", "alice", []string{"bob"}, "ping", "k")
-	if retry.Outcome != OutcomeOK || retry.AlreadyStored == nil || !*retry.AlreadyStored || retry.Message.Seq != 1 {
+	if retry.Outcome != OutcomeOK || retry.AlreadyStored == nil || !*retry.AlreadyStored || retry.Message.Seq != 1 || retry.Conversation == nil || retry.Conversation.Status != "closed" {
 		t.Fatalf("retry after close = %+v", retry)
 	}
 	different := publish(t, base, "job", "alice", []string{"bob"}, "other", "k")
@@ -571,7 +603,7 @@ func TestCloseRetryAndTails(t *testing.T) {
 		t.Fatalf("conflict after close = %+v", different)
 	}
 	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
-	if messageLen(read) != 2 {
+	if messageLen(read) != 3 || (*read.Messages)[2].Body != "more" {
 		t.Fatalf("transcript len = %d", messageLen(read))
 	}
 	list := mustPost(t, base, PathList, map[string]any{})
@@ -579,7 +611,7 @@ func TestCloseRetryAndTails(t *testing.T) {
 		t.Fatalf("list = %+v", list.Conversations)
 	}
 
-	// A blocked named wait ends closed when the conversation closes, tail included.
+	// Close does not finish a blocked wait. A later matching publish does.
 	base2, _, _, _ := startServer(t, Options{OnBlock: func(string, string) { blocked <- struct{}{} }})
 	create(t, base2, "job")
 	publish(t, base2, "job", "alice", []string{"carol"}, "only", "1")
@@ -605,11 +637,17 @@ func TestCloseRetryAndTails(t *testing.T) {
 	}
 	select {
 	case res := <-got:
-		if res.Outcome != OutcomeClosed || messageLen(res) != 1 {
-			t.Fatalf("close wake = %s len %d", res.Outcome, messageLen(res))
+		t.Fatalf("close woke the waiter: %s", res.Outcome)
+	case <-time.After(150 * time.Millisecond):
+	}
+	publish(t, base2, "job", "alice", []string{"bob"}, "go", "2")
+	select {
+	case res := <-got:
+		if res.Outcome != OutcomeOK || res.MatchSeq == nil || *res.MatchSeq != 2 || messageLen(res) != 2 {
+			t.Fatalf("woke with %s match %v len %d", res.Outcome, res.MatchSeq, messageLen(res))
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("close did not wake the waiter")
+		t.Fatal("stayed blocked after publish")
 	}
 }
 
@@ -660,10 +698,9 @@ func TestRestartPreservesStore(t *testing.T) {
 	if list.Conversations == nil || (*list.Conversations)[0].Status != "closed" {
 		t.Fatalf("restart status = %+v", list.Conversations)
 	}
-	// Nothing is still blocked in the new process: the cursor is caught up, so this times out.
+	// Nothing is still blocked in the new process. The cursor is caught up, so the deadline ends the wait.
 	timed := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 1, "name": "bob", "deadline": "100ms"})
-	if timed.Outcome != OutcomeClosed {
-		// Caught up and closed with no further messages is closed, not a restored block.
+	if timed.Outcome != OutcomeTimeout {
 		t.Fatalf("caught-up wait = %s", timed.Outcome)
 	}
 }

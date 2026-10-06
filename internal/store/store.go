@@ -5,7 +5,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Package store is the bus SQLite database.
-// One process holds the file. Cursors and blocked waits are not stored.
+// One process holds hotseat.db.lock. Cursors and blocked waits are not stored.
 package store
 
 import (
@@ -26,12 +26,16 @@ import (
 // FileName is the database file inside the operator's store directory.
 const FileName = "hotseat.db"
 
+// LockName is the process lock beside the database.
+// It is a different file so the lock does not share an inode with SQLite.
+const LockName = FileName + ".lock"
+
 const schemaVersion = "1"
 
 const (
 	// StatusOpen is a conversation that accepts publishes.
 	StatusOpen = "open"
-	// StatusClosed is terminal. The transcript stays readable.
+	// StatusClosed is a recorded state. Publish still appends. The transcript stays readable.
 	StatusClosed = "closed"
 )
 
@@ -60,10 +64,6 @@ var schemaStmts = []string{
 var (
 	// ErrNotFound means the conversation does not exist.
 	ErrNotFound = errors.New("conversation not found")
-	// ErrExists means the name is already used by an open or closed conversation.
-	ErrExists = errors.New("name already in use")
-	// ErrClosed means a new publish targeted a closed conversation.
-	ErrClosed = errors.New("conversation is closed")
 	// ErrConflict means the idempotency key is already stored with different content.
 	ErrConflict = errors.New("idempotency key reused with different content")
 	// ErrHeld means another process already has the database.
@@ -111,11 +111,11 @@ type Store struct {
 	path string
 }
 
-// Open creates or opens dir/hotseat.db and holds it until Close.
+// Open creates or opens dir/hotseat.db and holds dir/hotseat.db.lock until Close.
 // A relative directory is resolved before any file is created, so the database
 // location does not follow a later change of working directory.
 // The directory is owner-only. A symlink for the database, its write-ahead log,
-// or its shared-memory file is refused and left unchanged.
+// its shared-memory file, or the lock file is refused and left unchanged.
 // A second process gets ErrHeld and does not become a writer.
 func Open(dir string) (*Store, error) {
 	if dir == "" {
@@ -144,38 +144,41 @@ func Open(dir string) (*Store, error) {
 	}
 
 	path := filepath.Join(dir, FileName)
-	for _, p := range storeFiles(path) {
+	lockPath := filepath.Join(dir, LockName)
+	for _, p := range append(storeFiles(path), lockPath) {
 		if err := rejectSymlink(p); err != nil {
 			return nil, err
 		}
 	}
-	// O_NOFOLLOW closes the gap between the check above and this open.
-	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|unix.O_NOFOLLOW, 0o600)
+	// Separate inode from the database. On macOS, flock shares SQLite's lock
+	// table, and closing any descriptor drops every lock on that file.
+	// O_NOFOLLOW closes the gap between the symlink check and this open.
+	lock, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) {
-			return nil, symlinkErr(path)
+			return nil, symlinkErr(lockPath)
 		}
-		return nil, fmt.Errorf("open store file: %w", err)
+		return nil, fmt.Errorf("open lock file: %w", err)
 	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		cerr := lock.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
 			if cerr != nil {
-				return nil, fmt.Errorf("%w: %s; close: %v", ErrHeld, path, cerr)
+				return nil, fmt.Errorf("%w: %s; close: %v", ErrHeld, lockPath, cerr)
 			}
-			return nil, fmt.Errorf("%w: %s", ErrHeld, path)
+			return nil, fmt.Errorf("%w: %s", ErrHeld, lockPath)
 		}
 		if cerr != nil {
-			return nil, fmt.Errorf("lock store file: %w; close: %v", err, cerr)
+			return nil, fmt.Errorf("lock store: %w; close: %v", err, cerr)
 		}
-		return nil, fmt.Errorf("lock store file: %w", err)
+		return nil, fmt.Errorf("lock store: %w", err)
 	}
 	if err := unix.Fchmod(int(lock.Fd()), 0o600); err != nil {
 		rerr := releaseLock(lock)
 		if rerr != nil {
-			return nil, fmt.Errorf("set store file permissions: %w; unlock: %v", err, rerr)
+			return nil, fmt.Errorf("set lock file permissions: %w; unlock: %v", err, rerr)
 		}
-		return nil, fmt.Errorf("set store file permissions: %w", err)
+		return nil, fmt.Errorf("set lock file permissions: %w", err)
 	}
 
 	db, err := sql.Open("sqlite", dsn(path))
@@ -248,17 +251,34 @@ func (s *Store) Close() error {
 	return err
 }
 
-// Create inserts an open conversation. A name already present returns ErrExists.
-func (s *Store) Create(ctx context.Context, name string) error {
-	return s.withTx(ctx, true, func(tx *sql.Tx) error {
+// Create inserts an open conversation.
+// A name already present returns that conversation and already true, and writes nothing.
+func (s *Store) Create(ctx context.Context, name string) (Conversation, bool, error) {
+	var conv Conversation
+	var already bool
+	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO conversations (name, status) VALUES (?, ?)`,
 			name, StatusOpen)
-		if isConstraint(err) {
-			return ErrExists
+		if err == nil {
+			conv = Conversation{Name: name, Status: StatusOpen}
+			return nil
 		}
-		return err
+		if !isConstraint(err) {
+			return err
+		}
+		err = tx.QueryRowContext(ctx,
+			`SELECT name, status FROM conversations WHERE name = ?`, name).Scan(&conv.Name, &conv.Status)
+		if err != nil {
+			return err
+		}
+		already = true
+		return errNoChange
 	})
+	if err != nil {
+		return Conversation{}, false, err
+	}
+	return conv, already, nil
 }
 
 // CloseConversation sets status to closed and appends nothing.
@@ -301,14 +321,14 @@ func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 
 // Publish commits one message, or returns the original when the key matches.
 // The same key with different from, to, or body returns ErrConflict.
-// A matching key on a closed conversation still returns the original message
-// and writes nothing. Any other publish to a missing or closed conversation
-// returns ErrNotFound or ErrClosed and writes nothing.
-func (s *Store) Publish(ctx context.Context, in Publish) (Message, bool, error) {
+// A matching key returns the original message and writes nothing.
+// The status is the conversation state committed with that result.
+// A missing conversation returns ErrNotFound and writes nothing.
+func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool, error) {
 	var msg Message
+	var status string
 	var already bool
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		var status string
 		err := tx.QueryRowContext(ctx,
 			`SELECT status FROM conversations WHERE name = ?`, in.Conversation).Scan(&status)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -329,9 +349,6 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, bool, error) 
 				return errNoChange
 			}
 			return ErrConflict
-		}
-		if status == StatusClosed {
-			return ErrClosed
 		}
 
 		var seq int64
@@ -364,9 +381,9 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, bool, error) 
 		return nil
 	})
 	if err != nil {
-		return Message{}, false, err
+		return Message{}, "", false, err
 	}
-	return msg, already, nil
+	return msg, status, already, nil
 }
 
 // Transcript returns the conversation status and every message with seq greater than after.
@@ -560,7 +577,7 @@ func messageByKey(ctx context.Context, tx *sql.Tx, conversation, key string) (Me
 }
 
 // holdExclusiveLock fails open unless SQLite kept its exclusive lock.
-// The flock in Open is invisible to other SQLite programs.
+// The process flock is hotseat.db.lock, so it does not share the database inode.
 func (s *Store) holdExclusiveLock() error {
 	var mode string
 	if err := s.db.QueryRow(`PRAGMA locking_mode`).Scan(&mode); err != nil {

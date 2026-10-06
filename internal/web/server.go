@@ -284,6 +284,10 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		view.Stored = !view.AlreadyStored
 	}
 	p.Publish = view
+	if res.Conversation != nil {
+		p.Status = res.Conversation.Status
+		p.StatusKnown = true
+	}
 	if err := s.applyCursor(r.Context(), &p, false); err != nil {
 		if r.Context().Err() != nil {
 			return

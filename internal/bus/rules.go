@@ -82,28 +82,59 @@ func validateTo(names []string) error {
 	return nil
 }
 
-func parseDeadline(raw json.RawMessage) (time.Duration, bool, error) {
+// waitLimit is the caller's deadline.
+// set is false when the field was omitted or empty.
+// abs is an RFC3339 end time in at. Otherwise rel is a duration from arrival.
+type waitLimit struct {
+	set bool
+	abs bool
+	at  time.Time
+	rel time.Duration
+}
+
+// remaining is how long this call may still block, measured on the bus clock.
+// An absolute end time already past is zero.
+func (w waitLimit) remaining(now time.Time) time.Duration {
+	if w.abs {
+		d := w.at.Sub(now)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return w.rel
+}
+
+func parseDeadline(raw json.RawMessage) (waitLimit, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return 0, false, nil
+		return waitLimit{}, nil
 	}
 	var text string
 	if err := json.Unmarshal(trimmed, &text); err != nil {
-		return 0, false, rule(ReasonDeadline)
+		return waitLimit{}, rule(ReasonDeadline)
 	}
 	if text == "" {
-		return 0, false, nil
+		return waitLimit{}, nil
 	}
 	d, err := time.ParseDuration(text)
-	if err != nil || d < 0 {
-		return 0, false, rule(ReasonDeadline)
+	if err == nil {
+		if d < 0 {
+			return waitLimit{}, rule(ReasonDeadline)
+		}
+		return waitLimit{set: true, rel: d}, nil
 	}
-	return d, true, nil
+	at, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		return waitLimit{}, rule(ReasonDeadline)
+	}
+	return waitLimit{set: true, abs: true, at: at}, nil
 }
 
 // decideWait reports the wait result. pending is true when the caller must block.
 // msgs are the messages with seq greater than the cursor, oldest first.
-func decideWait(status string, msgs []store.Message, name string, hasName bool) (Result, bool) {
+// Conversation status is not an end. A wait ends on a match.
+func decideWait(msgs []store.Message, name string, hasName bool) (Result, bool) {
 	if !hasName {
 		if len(msgs) > 0 {
 			m := msgs[0]
@@ -113,9 +144,6 @@ func decideWait(status string, msgs []store.Message, name string, hasName bool) 
 				MatchSeq: m.Seq,
 			}, false
 		}
-		if status == store.StatusClosed {
-			return Result{Outcome: OutcomeClosed, Messages: []store.Message{}}, false
-		}
 		return Result{}, true
 	}
 	var span []store.Message
@@ -124,12 +152,6 @@ func decideWait(status string, msgs []store.Message, name string, hasName bool) 
 		if addressed(m, name) {
 			return Result{Outcome: OutcomeOK, Messages: span, MatchSeq: m.Seq}, false
 		}
-	}
-	if status == store.StatusClosed {
-		if span == nil {
-			span = []store.Message{}
-		}
-		return Result{Outcome: OutcomeClosed, Messages: span}, false
 	}
 	return Result{}, true
 }

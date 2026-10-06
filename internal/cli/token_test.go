@@ -213,17 +213,18 @@ func TestLoopbackIgnoresTokenFile(t *testing.T) {
 			t.Fatal("response contains the token")
 		}
 		var out struct {
-			Outcome string `json:"outcome"`
-			Reason  string `json:"reason"`
+			Outcome        string `json:"outcome"`
+			Reason         string `json:"reason"`
+			AlreadyExisted *bool  `json:"already_existed"`
 		}
 		if err := json.Unmarshal(raw, &out); err != nil {
 			t.Fatal(err)
 		}
-		// The second call finds the name taken. Both ran without the token.
-		if auth == "" && out.Outcome != bus.OutcomeOK {
+		// Loopback ignores the token. The second call finds the name already there.
+		if auth == "" && (out.Outcome != bus.OutcomeOK || out.AlreadyExisted == nil || *out.AlreadyExisted) {
 			t.Fatalf("no token: %s", raw)
 		}
-		if auth != "" && (out.Outcome != bus.OutcomeRefused || out.Reason != bus.ReasonNameInUse) {
+		if auth != "" && (out.Outcome != bus.OutcomeOK || out.AlreadyExisted == nil || !*out.AlreadyExisted) {
 			t.Fatalf("wrong token on loopback: %s", raw)
 		}
 	}

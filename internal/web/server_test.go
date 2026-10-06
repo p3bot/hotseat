@@ -223,15 +223,15 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	fresh.Set("to", "bob")
 	fresh.Set("body", "later")
 	fresh.Set("idempotency_key", "idem-new")
-	_, refused, _ := postPage(t, page.URL+"/publish", fresh)
-	if !strings.Contains(refused, `id="publish-outcome">refused<`) || !strings.Contains(refused, bus.ReasonClosed) {
-		t.Fatalf("closed publish\n%s", refused)
+	_, stored, _ = postPage(t, page.URL+"/publish", fresh)
+	if !strings.Contains(stored, `id="publish-outcome">ok<`) || !strings.Contains(stored, `id="stored">Stored.<`) || !strings.Contains(stored, ">later<") {
+		t.Fatalf("closed publish\n%s", stored)
 	}
-	if !strings.Contains(refused, `id="read-form"`) || !strings.Contains(refused, `class="status">closed<`) {
-		t.Fatalf("not readable\n%s", refused)
+	if !strings.Contains(stored, `id="read-form"`) || !strings.Contains(stored, `class="status">closed<`) {
+		t.Fatalf("not readable\n%s", stored)
 	}
 	_, still, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
-	if strings.Count(still, "&lt;b&gt;&amp;") != 1 || strings.Contains(still, ">later<") {
+	if strings.Count(still, "&lt;b&gt;&amp;") != 1 || !strings.Contains(still, ">later<") {
 		t.Fatalf("changed\n%s", still)
 	}
 	if !strings.Contains(still, `id="read-outcome">ok<`) || !strings.Contains(still, `class="status">closed<`) {

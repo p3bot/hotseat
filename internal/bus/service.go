@@ -33,14 +33,15 @@ type PublishInput struct {
 
 // Result is one completed protocol call.
 type Result struct {
-	Outcome       string
-	Reason        string
-	AlreadyStored bool
-	MatchSeq      int64
-	Message       *store.Message
-	Messages      []store.Message
-	Conversation  *store.Conversation
-	Conversations []store.Conversation
+	Outcome        string
+	Reason         string
+	AlreadyStored  bool
+	AlreadyExisted bool
+	MatchSeq       int64
+	Message        *store.Message
+	Messages       []store.Message
+	Conversation   *store.Conversation
+	Conversations  []store.Conversation
 }
 
 type waiter struct {
@@ -92,12 +93,14 @@ func (s *Service) Create(ctx context.Context, name string) (Result, error) {
 	if !validName(name) {
 		return refused(ReasonBadName), nil
 	}
-	if err := s.store.Create(ctx, name); err != nil {
+	conv, already, err := s.store.Create(ctx, name)
+	if err != nil {
 		return s.fail(err, "create")
 	}
 	return Result{
-		Outcome:      OutcomeOK,
-		Conversation: &store.Conversation{Name: name, Status: store.StatusOpen},
+		Outcome:        OutcomeOK,
+		AlreadyExisted: already,
+		Conversation:   &conv,
 	}, nil
 }
 
@@ -110,7 +113,7 @@ func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) 
 	if err := ctx.Err(); err != nil {
 		return Result{}, ErrDropped
 	}
-	msg, already, err := s.store.Publish(ctx, store.Publish{
+	msg, status, already, err := s.store.Publish(ctx, store.Publish{
 		Conversation: in.Conversation,
 		From:         in.From,
 		To:           append([]string{}, in.To...),
@@ -124,7 +127,12 @@ func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) 
 	if !already {
 		s.notify(in.Conversation)
 	}
-	return Result{Outcome: OutcomeOK, AlreadyStored: already, Message: &msg}, nil
+	return Result{
+		Outcome:       OutcomeOK,
+		AlreadyStored: already,
+		Message:       &msg,
+		Conversation:  &store.Conversation{Name: in.Conversation, Status: status},
+	}, nil
 }
 
 func (s *Service) Read(ctx context.Context, conv string, cursor int64, limit int, name string, hasName bool) (Result, error) {
@@ -167,7 +175,7 @@ func (s *Service) CloseConversation(ctx context.Context, name string) (Result, e
 	if err := s.store.CloseConversation(ctx, name); err != nil {
 		return s.fail(err, "close")
 	}
-	s.notify(name)
+	// No message was appended, so a blocked wait has nothing new to match.
 	return Result{
 		Outcome:      OutcomeOK,
 		Conversation: &store.Conversation{Name: name, Status: store.StatusClosed},
@@ -193,11 +201,10 @@ const (
 	actTimer
 )
 
-// Wait blocks until a match is stored, the deadline passes, the conversation
-// is closed without a match, or ctx ends. The waiter is registered before the
-// transcript is read, under the same lock as publish, so a match cannot land
-// unseen between the read and the wait.
-func (s *Service) Wait(ctx context.Context, conv string, cursor int64, name string, hasName bool, deadline time.Duration, hasDeadline bool) (Result, error) {
+// Wait blocks until a match is stored, the deadline passes, or ctx ends.
+// The waiter is registered before the transcript is read, under the same lock
+// as publish, so a match cannot land unseen between the read and the wait.
+func (s *Service) Wait(ctx context.Context, conv string, cursor int64, name string, hasName bool, limit waitLimit) (Result, error) {
 	if err := requireConversation(conv); err != nil {
 		return asRefused(err)
 	}
@@ -209,14 +216,12 @@ func (s *Service) Wait(ctx context.Context, conv string, cursor int64, name stri
 			return asRefused(err)
 		}
 	}
-	if hasDeadline && deadline < 0 {
-		return refused(ReasonDeadline), nil
-	}
-
 	var timer *time.Timer
 	var timerC <-chan time.Time
-	if hasDeadline {
-		timer = time.NewTimer(deadline)
+	if limit.set {
+		// An absolute end is turned into a remainder once, on this clock.
+		// A retry that sends the same end time keeps what is left.
+		timer = time.NewTimer(limit.remaining(s.clock()))
 		timerC = timer.C
 		defer timer.Stop()
 	}
@@ -274,7 +279,7 @@ func (s *Service) Wait(ctx context.Context, conv string, cursor int64, name stri
 
 func (s *Service) eval(ctx context.Context, conv string, cursor int64, name string, hasName bool) (Result, bool, error) {
 	msgs := make([]store.Message, 0)
-	status, err := s.store.Scan(ctx, conv, cursor, func(m store.Message) bool {
+	_, err := s.store.Scan(ctx, conv, cursor, func(m store.Message) bool {
 		msgs = append(msgs, m)
 		if !hasName {
 			return false
@@ -286,7 +291,7 @@ func (s *Service) eval(ctx context.Context, conv string, cursor int64, name stri
 		res, ferr := s.fail(err, "wait")
 		return res, false, ferr
 	}
-	res, pending := decideWait(status, msgs, name, hasName)
+	res, pending := decideWait(msgs, name, hasName)
 	return res, pending, nil
 }
 
@@ -297,10 +302,6 @@ func (s *Service) fail(err error, op string) (Result, error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return refused(ReasonNotFound), nil
-	case errors.Is(err, store.ErrExists):
-		return refused(ReasonNameInUse), nil
-	case errors.Is(err, store.ErrClosed):
-		return refused(ReasonClosed), nil
 	case errors.Is(err, store.ErrConflict):
 		return refused(ReasonKeyConflict), nil
 	default:

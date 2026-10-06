@@ -36,10 +36,10 @@ func TestOpenRelativeDirectory(t *testing.T) {
 		t.Fatalf("path = %s, want %s", st.Path(), want)
 	}
 	ctx := context.Background()
-	if err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.Publish(ctx, Publish{
+	if _, _, _, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob"},
 		Body: "hello", Key: "k", Time: "t",
 	}); err != nil {
@@ -87,6 +87,13 @@ func TestOpenPermissionsAndPragmas(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %o", info.Mode().Perm())
+	}
+	lockInfo, err := os.Lstat(filepath.Join(dir, LockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lockInfo.Mode()&os.ModeSymlink != 0 || !lockInfo.Mode().IsRegular() || lockInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("lock mode = %o", lockInfo.Mode())
 	}
 	var mode string
 	if err := st.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
@@ -179,6 +186,8 @@ func TestOpenTightensDirectoryAndRefusesSymlinks(t *testing.T) {
 		{name: "database dangling", suffix: "", dangling: true},
 		{name: "wal", suffix: "-wal"},
 		{name: "shm", suffix: "-shm"},
+		{name: "lock", suffix: ".lock"},
+		{name: "lock dangling", suffix: ".lock", dangling: true},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -206,6 +215,16 @@ func TestOpenTightensDirectoryAndRefusesSymlinks(t *testing.T) {
 			}
 			if linkInfo.Mode()&os.ModeSymlink == 0 {
 				t.Fatal("symlink was replaced")
+			}
+			if tt.suffix != "" {
+				if _, err := os.Lstat(filepath.Join(dir, FileName)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("database created despite symlink: %v", err)
+				}
+			}
+			if tt.suffix != ".lock" {
+				if _, err := os.Lstat(filepath.Join(dir, LockName)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("lock created despite symlink: %v", err)
+				}
 			}
 			if tt.dangling {
 				if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
@@ -238,37 +257,38 @@ func TestPublishRestartAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Create(ctx, "other"); err != nil {
+	if _, _, err := st.Create(ctx, "other"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Create(ctx, "job"); !errors.Is(err, ErrExists) {
-		t.Fatalf("duplicate create: %v", err)
+	againConv, already, err := st.Create(ctx, "job")
+	if err != nil || !already || againConv.Name != "job" || againConv.Status != StatusOpen {
+		t.Fatalf("duplicate create = %+v already=%v err=%v", againConv, already, err)
 	}
-	first, already, err := st.Publish(ctx, Publish{
+	first, _, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
 		Body: "one", Key: "k", Time: "2026-10-03T07:00:00Z",
 	})
 	if err != nil || already || first.Seq != 1 {
 		t.Fatalf("first = %+v already=%v err=%v", first, already, err)
 	}
-	other, _, err := st.Publish(ctx, Publish{
+	other, _, _, err := st.Publish(ctx, Publish{
 		Conversation: "other", From: "alice", To: []string{"bob"},
 		Body: "o", Key: "k", Time: "2026-10-03T07:00:01Z",
 	})
 	if err != nil || other.Seq != 1 {
 		t.Fatalf("other conversation seq = %+v err=%v", other, err)
 	}
-	again, already, err := st.Publish(ctx, Publish{
+	again, _, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
 		Body: "one", Key: "k", Time: "later",
 	})
 	if err != nil || !already || again.Seq != 1 || again.Time != first.Time {
 		t.Fatalf("retry = %+v already=%v err=%v", again, already, err)
 	}
-	if _, _, err := st.Publish(ctx, Publish{
+	if _, _, _, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"carol", "bob"},
 		Body: "one", Key: "k", Time: "later",
 	}); !errors.Is(err, ErrConflict) {
@@ -277,18 +297,23 @@ func TestPublishRestartAndIdempotency(t *testing.T) {
 	if err := st.CloseConversation(ctx, "job"); err != nil {
 		t.Fatal(err)
 	}
-	closedRetry, already, err := st.Publish(ctx, Publish{
+	closedRetry, closedStatus, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
 		Body: "one", Key: "k", Time: "later",
 	})
-	if err != nil || !already || closedRetry.Seq != 1 {
-		t.Fatalf("closed retry = %+v already=%v err=%v", closedRetry, already, err)
+	if err != nil || !already || closedRetry.Seq != 1 || closedStatus != StatusClosed {
+		t.Fatalf("closed retry = %+v status=%s already=%v err=%v", closedRetry, closedStatus, already, err)
 	}
-	if _, _, err := st.Publish(ctx, Publish{
+	late, lateStatus, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob"},
 		Body: "new", Key: "new", Time: "later",
-	}); !errors.Is(err, ErrClosed) {
-		t.Fatalf("publish after close: %v", err)
+	})
+	if err != nil || already || late.Seq != 2 || lateStatus != StatusClosed || late.Body != "new" {
+		t.Fatalf("publish after close = %+v status=%s already=%v err=%v", late, lateStatus, already, err)
+	}
+	closedConv, already, err := st.Create(ctx, "job")
+	if err != nil || !already || closedConv.Status != StatusClosed {
+		t.Fatalf("create after close = %+v already=%v err=%v", closedConv, already, err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
@@ -307,7 +332,7 @@ func TestPublishRestartAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status != StatusClosed || len(msgs) != 1 || msgs[0].Body != "one" || msgs[0].Time != first.Time {
+	if status != StatusClosed || len(msgs) != 2 || msgs[0].Body != "one" || msgs[0].Time != first.Time || msgs[1].Body != "new" {
 		t.Fatalf("restart status=%s msgs=%+v", status, msgs)
 	}
 	if len(msgs[0].To) != 2 || msgs[0].To[0] != "bob" || msgs[0].To[1] != "carol" {
@@ -318,11 +343,11 @@ func TestPublishRestartAndIdempotency(t *testing.T) {
 func TestScanStopsBeforeLaterMessages(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job"); err != nil {
 		t.Fatal(err)
 	}
 	for i := 1; i <= 3; i++ {
-		if _, _, err := st.Publish(ctx, Publish{
+		if _, _, _, err := st.Publish(ctx, Publish{
 			Conversation: "job", From: "alice", To: []string{"bob"},
 			Body: fmt.Sprintf("m%d", i), Key: fmt.Sprintf("k%d", i), Time: "t",
 		}); err != nil {
@@ -361,7 +386,7 @@ func TestScanStopsBeforeLaterMessages(t *testing.T) {
 func TestConcurrentPublish(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job"); err != nil {
 		t.Fatal(err)
 	}
 	const n = 20
@@ -371,7 +396,7 @@ func TestConcurrentPublish(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _, err := st.Publish(ctx, Publish{
+			_, _, _, err := st.Publish(ctx, Publish{
 				Conversation: "job", From: "alice", To: []string{"bob"},
 				Body: fmt.Sprintf("m%d", i), Key: fmt.Sprintf("k%d", i), Time: "t",
 			})
@@ -413,10 +438,10 @@ func TestSchemaMismatchKeepsMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.Publish(ctx, Publish{
+	if _, _, _, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{}, Body: "keep", Key: "k", Time: "t",
 	}); err != nil {
 		t.Fatal(err)

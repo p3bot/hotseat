@@ -25,7 +25,7 @@ func TestDecideWait(t *testing.T) {
 		msg(5, "alice", []string{"all"}, "broadcast"),
 	}
 
-	ok, pending := decideWait(store.StatusOpen, msgs, "bob", true)
+	ok, pending := decideWait(msgs, "bob", true)
 	if pending || ok.Outcome != OutcomeOK || ok.MatchSeq != 3 || len(ok.Messages) != 3 {
 		t.Fatalf("named span: pending=%v outcome=%s match=%d len=%d", pending, ok.Outcome, ok.MatchSeq, len(ok.Messages))
 	}
@@ -33,36 +33,35 @@ func TestDecideWait(t *testing.T) {
 		t.Fatalf("span = %+v", ok.Messages)
 	}
 
-	rest, pending := decideWait(store.StatusOpen, msgs[3:], "bob", true)
+	rest, pending := decideWait(msgs[3:], "bob", true)
 	if pending || rest.MatchSeq != 5 || len(rest.Messages) != 2 {
 		t.Fatalf("later named: pending=%v match=%d len=%d", pending, rest.MatchSeq, len(rest.Messages))
 	}
 
-	one, pending := decideWait(store.StatusOpen, msgs, "", false)
+	one, pending := decideWait(msgs, "", false)
 	if pending || one.MatchSeq != 1 || len(one.Messages) != 1 {
 		t.Fatalf("unnamed: pending=%v match=%d len=%d", pending, one.MatchSeq, len(one.Messages))
 	}
 
-	none, pending := decideWait(store.StatusOpen, nil, "bob", true)
+	none, pending := decideWait(nil, "bob", true)
 	if !pending {
 		t.Fatal("open named with no match should block")
 	}
 	_ = none
 
-	closedTail, pending := decideWait(store.StatusClosed, msgs[:2], "bob", true)
-	if pending || closedTail.Outcome != OutcomeClosed || len(closedTail.Messages) != 2 || closedTail.MatchSeq != 0 {
-		t.Fatalf("closed named tail: %+v pending=%v", closedTail, pending)
+	staying, pending := decideWait(msgs[:2], "bob", true)
+	if !pending || staying.Outcome != "" {
+		t.Fatalf("no match stays pending: %+v pending=%v", staying, pending)
 	}
 
-	closedEmpty, pending := decideWait(store.StatusClosed, nil, "", false)
-	if pending || closedEmpty.Outcome != OutcomeClosed || len(closedEmpty.Messages) != 0 {
-		t.Fatalf("closed unnamed: %+v", closedEmpty)
+	nothing, pending := decideWait(nil, "", false)
+	if !pending || nothing.Outcome != "" {
+		t.Fatalf("unnamed with nothing stored stays pending: %+v", nothing)
 	}
 
-	// A stored match after close is ok, not closed.
-	matched, pending := decideWait(store.StatusClosed, msgs[:3], "bob", true)
+	matched, pending := decideWait(msgs[:3], "bob", true)
 	if pending || matched.Outcome != OutcomeOK || matched.MatchSeq != 3 {
-		t.Fatalf("match before close: %+v", matched)
+		t.Fatalf("stored match: %+v", matched)
 	}
 }
 
