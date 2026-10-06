@@ -3,13 +3,17 @@
 One process hosts named conversations. Callers publish into a transcript and block until a matching message exists or a deadline passes.
 
 ```bash
-hotseat bus
-hotseat bus --store /var/lib/hotseat
-hotseat bus --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
-hotseat bus --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token
+hotseat bus start
+hotseat bus start --store /var/lib/hotseat
+hotseat bus start --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
+hotseat bus start --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token
+hotseat bus status
+hotseat bus stop
 ```
 
-`--store` selects the directory. When it is omitted the directory is `$XDG_DATA_HOME/hotseat`. An unset, empty, or relative `$XDG_DATA_HOME` uses `$HOME/.local/share/hotseat`. A relative home directory is refused and nothing is created. The database is `hotseat.db` in that directory. This process is the only writer, and it holds `hotseat.db.lock` beside the database until it exits. The default listen address is `127.0.0.1:4727`. A loopback address accepts every request with no token. A hostname is resolved once and the process listens on one address from that lookup: a loopback address when every answer is loopback, otherwise a non-loopback address. Any other address requires `--token-file` and does not listen when the file is missing or empty, and no database is created. A failed bind creates no database. The file holds one shared token. A trailing newline is ignored. The token is printable ASCII with no spaces. The process does not log it. Passing the file on loopback does not turn the check on. The default maximum body is 512 KiB. The process runs until it is signalled.
+`hotseat bus start` runs the bus detached from the terminal and returns after the listener is bound and the database is open. It prints the pid, the listen address, and the store path. Closing the terminal does not stop the bus. The log is `hotseat.log` in the store directory. `hotseat bus status` prints the running pid, listen address, and store path, or reports that the bus is not running. `hotseat bus stop` sends SIGTERM and returns after that process has exited and `hotseat.db.lock` is released. A second stop, when the bus is already stopped, succeeds.
+
+`--store` selects the directory. When it is omitted the directory is `$XDG_DATA_HOME/hotseat`. An unset, empty, or relative `$XDG_DATA_HOME` uses `$HOME/.local/share/hotseat`. A relative home directory is refused and nothing is created. The database is `hotseat.db` in that directory. This process is the only writer, and it holds `hotseat.db.lock` beside the database until it exits. The default listen address is `127.0.0.1:4727`. A loopback address accepts every request with no token. A hostname is resolved once and the process listens on one address from that lookup: a loopback address when every answer is loopback, otherwise a non-loopback address. Any other address requires `--token-file` and does not listen when the file is missing or empty, and no database is created. A failed bind creates no database. The file holds one shared token. A trailing newline is ignored. The token is printable ASCII with no spaces. The process does not log it. Passing the file on loopback does not turn the check on. The default maximum body is 512 KiB. One bus runs for each store directory. A second start prints the running process and does not change it.
 
 ## Protocol
 

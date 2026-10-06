@@ -129,7 +129,7 @@ func TestTokenConfigurationDoesNotListen(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			storeDir := filepath.Join(root, "store")
-			args := []string{"bus", "--store", storeDir, "--listen", tt.listen}
+			args := []string{"bus", "start", "--store", storeDir, "--listen", tt.listen}
 			if tt.file != "" {
 				path := filepath.Join(root, "nope")
 				if tt.file != "missing" {
@@ -284,28 +284,35 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 	dialAddr := net.JoinHostPort("127.0.0.1", port)
 
 	bin := buildBinary(t)
-	busCmd := exec.Command(bin, "bus", "--store", storeDir, "--listen", listenAddr, "--token-file", tokenPath)
-	assertArgsOmit(t, busCmd.Args, secrets)
-	var stderr bytes.Buffer
-	busCmd.Stderr = &stderr
-	if err := busCmd.Start(); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = stopBus(ctx, storeDir)
+	})
+	started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", listenAddr, "--token-file", tokenPath)
+	if started.code != 0 {
+		t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 	}
-	busLine := awaitProc(t, busCmd.Process.Pid, "cmdline", []byte(tokenPath))
-	busEnv := readProc(t, busCmd.Process.Pid, "environ")
+	assertBytesOmit(t, []byte(started.stdout+started.stderr), secrets)
+	pid, bound, gotStore := parseBusReport(t, started.stdout)
+	if bound != listenAddr || gotStore != storeDir {
+		t.Fatalf("bound %s store %s", bound, gotStore)
+	}
+	busLine := awaitProc(t, pid, "cmdline", []byte(tokenPath))
+	busEnv := readProc(t, pid, "environ")
 	assertBytesOmit(t, busLine, secrets)
 	assertBytesOmit(t, busEnv, secrets)
-	var once sync.Once
-	stop := func() {
-		once.Do(func() {
-			if busCmd.Process != nil {
-				_ = busCmd.Process.Signal(os.Interrupt)
-			}
-			_ = busCmd.Wait()
-		})
-	}
-	t.Cleanup(stop)
 	waitDial(t, dialAddr, nil)
+	running := runBinCmd(t, bin, "bus", "status", "--store", storeDir)
+	if running.code != 0 || !strings.Contains(running.stdout, strconv.Itoa(pid)) {
+		t.Fatalf("status %d\n%s%s", running.code, running.stdout, running.stderr)
+	}
+	assertBytesOmit(t, []byte(running.stdout+running.stderr), secrets)
+	record, err := os.ReadFile(filepath.Join(storeDir, recordName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytesOmit(t, record, secrets)
 
 	refused := runBin(t, bin, secrets, "create", "--address", dialAddr, "--name", "job")
 	if refused.Outcome != bus.OutcomeRefused || refused.Reason != bus.ReasonTokenRequired {
@@ -418,10 +425,18 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 		t.Fatalf("final %+v", final.Conversations)
 	}
 
-	stop()
-	assertBytesOmit(t, stderr.Bytes(), secrets)
-	if !bytes.Contains(stderr.Bytes(), []byte("token_required=true")) {
-		t.Fatalf("bus log missing token_required: %s", stderr.String())
+	stopped := runBinCmd(t, bin, "bus", "stop", "--store", storeDir)
+	if stopped.code != 0 {
+		t.Fatalf("stop %d\n%s%s", stopped.code, stopped.stdout, stopped.stderr)
+	}
+	assertBytesOmit(t, []byte(stopped.stdout+stopped.stderr), secrets)
+	logText, err := os.ReadFile(filepath.Join(storeDir, logName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytesOmit(t, logText, secrets)
+	if !bytes.Contains(logText, []byte("token_required=true")) {
+		t.Fatalf("bus log missing token_required: %s", logText)
 	}
 	db := filepath.Join(storeDir, store.FileName)
 	if _, err := os.Stat(db); err != nil {

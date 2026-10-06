@@ -5,8 +5,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Package cli is the hotseat command line.
-// The bus subcommand listens until the process is signalled. It does not
-// launch agents and it does not open connections to clients.
+// The bus runs detached: start, stop, and status manage that process.
+// It does not launch agents and it does not open connections to clients.
 package cli
 
 import (
@@ -15,8 +15,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -116,42 +114,132 @@ func newRoot() *cobra.Command {
 }
 
 func newBusCmd() *cobra.Command {
-	var storeDir string
-	var listenAddr string
-	var tokenFile string
-	var maxBody int
-	var debug bool
-
 	cmd := &cobra.Command{
 		Use:           "bus",
-		Short:         "Host conversations on one address",
+		Short:         "Run the detached conversation bus",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
-		Example: `  hotseat bus
-  hotseat bus --store /var/lib/hotseat
-  hotseat bus --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
-  hotseat bus --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token`,
-		Long: `Listen for create, publish, read, wait, close, and list.
+		Example: `  hotseat bus start
+  hotseat bus stop
+  hotseat bus status`,
+		Long: `Start, stop, and check the conversation bus. The bus process is detached
+from the terminal. Its log is ` + logName + ` in the store directory.
 
 The database is ` + store.FileName + ` inside the store directory. When --store
 is omitted the directory is $XDG_DATA_HOME/hotseat. An unset, empty, or relative
 $XDG_DATA_HOME uses $HOME/.local/share/hotseat. A relative home directory is
-refused and nothing is created. The default address is loopback
-and requires no token. Any other address requires --token-file. A hostname is
-resolved once, and the process listens on one address from that lookup. A
-missing or empty token file does not listen and nothing is opened. A failed
-bind opens nothing. The token is not logged. Clients send JSON to POST
-/v1/<operation>. The process runs until it is signalled.`,
+refused and nothing is created. hotseat bus start leaves the bus running until
+hotseat bus stop.`,
+		RunE: func(*cobra.Command, []string) error {
+			return errors.New("choose start, stop, or status")
+		},
+	}
+	cmd.AddCommand(newBusStartCmd(), newBusStopCmd(), newBusStatusCmd(), newBusServeCmd())
+	return cmd
+}
+
+type busFlags struct {
+	store     string
+	listen    string
+	tokenFile string
+	maxBody   int
+	debug     bool
+}
+
+func addServeFlags(cmd *cobra.Command, f *busFlags) {
+	cmd.Flags().StringVar(&f.store, "store", "", "directory for the SQLite database (default $XDG_DATA_HOME/hotseat)")
+	cmd.Flags().StringVar(&f.listen, "listen", bus.DefaultListen, "listen address")
+	cmd.Flags().StringVar(&f.tokenFile, "token-file", "", "file holding the capability token; the token is not a flag")
+	cmd.Flags().IntVar(&f.maxBody, "max-body", bus.DefaultMaxBody, "maximum message body size in bytes")
+	cmd.Flags().BoolVar(&f.debug, "debug", false, "log at debug level to "+logName)
+}
+
+func newBusStartCmd() *cobra.Command {
+	var f busFlags
+	cmd := &cobra.Command{
+		Use:           "start",
+		Short:         "Start the bus in the background",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		Example: `  hotseat bus start
+  hotseat bus start --store /var/lib/hotseat
+  hotseat bus start --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
+  hotseat bus start --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token`,
+		Long: `Listen for create, publish, read, wait, close, and list. The process runs
+in a new session with no controlling terminal. Stdin is discarded. Stdout and
+stderr append to ` + logName + ` in the store directory. start returns after the
+listener is bound and the database is open, and prints the pid, the listen
+address, and the store path. A second start, while that bus is running, prints
+the running process and does not change it.
+
+The database is ` + store.FileName + ` inside the store directory. When --store
+is omitted the directory is $XDG_DATA_HOME/hotseat. An unset, empty, or relative
+$XDG_DATA_HOME uses $HOME/.local/share/hotseat. A relative home directory is
+refused and nothing is created. The default address is loopback and requires no
+token. Any other address requires --token-file. A hostname is resolved once,
+and the process listens on one address from that lookup. A missing or empty
+token file does not listen and nothing is opened. A failed bind opens nothing.
+The token is not logged. Clients send JSON to POST /v1/<operation>.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runBus(cmd.Context(), storeDir, listenAddr, tokenFile, maxBody, newLogger(debug))
+			return startDaemon(cmd.Context(), cmd.OutOrStdout(), f.store, f.listen, f.tokenFile, f.maxBody, f.debug)
+		},
+	}
+	addServeFlags(cmd, &f)
+	return cmd
+}
+
+func newBusStopCmd() *cobra.Command {
+	var storeDir string
+	cmd := &cobra.Command{
+		Use:           "stop",
+		Short:         "Stop the bus for a store",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		Long: `Send SIGTERM to the bus recorded for this store and return after that
+process has exited and ` + store.LockName + ` is released. Already stopped is
+success. stop does not signal any other process.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return stopBus(cmd.Context(), storeDir)
 		},
 	}
 	cmd.Flags().StringVar(&storeDir, "store", "", "directory for the SQLite database (default $XDG_DATA_HOME/hotseat)")
-	cmd.Flags().StringVar(&listenAddr, "listen", bus.DefaultListen, "listen address")
-	cmd.Flags().StringVar(&tokenFile, "token-file", "", "file holding the capability token; the token is not a flag")
-	cmd.Flags().IntVar(&maxBody, "max-body", bus.DefaultMaxBody, "maximum message body size in bytes")
-	cmd.Flags().BoolVar(&debug, "debug", false, "log wait and store detail to stderr")
+	return cmd
+}
+
+func newBusStatusCmd() *cobra.Command {
+	var storeDir string
+	cmd := &cobra.Command{
+		Use:           "status",
+		Short:         "Report whether the bus is running",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		Long: `Print the pid, the listen address, and the store path when the bus is
+running. When it is not running, exit 1 and report that.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return statusBus(cmd.OutOrStdout(), storeDir)
+		},
+	}
+	cmd.Flags().StringVar(&storeDir, "store", "", "directory for the SQLite database (default $XDG_DATA_HOME/hotseat)")
+	return cmd
+}
+
+func newBusServeCmd() *cobra.Command {
+	var f busFlags
+	cmd := &cobra.Command{
+		Use:           "serve",
+		Hidden:        true,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return serveDetached(cmd.Context(), f.store, f.listen, f.tokenFile, f.maxBody, f.debug)
+		},
+	}
+	addServeFlags(cmd, &f)
 	return cmd
 }
 
@@ -184,47 +272,8 @@ func newLogger(debug bool) *slog.Logger {
 // The store is created only after the socket is bound and accepted. A refused
 // address, a missing token, or a failed bind leaves no database.
 func runBus(ctx context.Context, storeDir, addr, tokenFile string, maxBody int, log *slog.Logger) (err error) {
-	if storeDir != "" {
-		storeDir = filepath.Clean(storeDir)
-	}
-	if maxBody < 1 {
-		return errors.New("max body must be a positive number of bytes")
-	}
-	bind, class, err := bus.ResolveListen(addr)
+	ln, st, token, err := openBus(storeDir, addr, tokenFile, maxBody)
 	if err != nil {
-		return err
-	}
-	token, err := loadToken(class, tokenFile)
-	if err != nil {
-		return err
-	}
-	if storeDir == "" {
-		storeDir, err = defaultStoreDir()
-		if err != nil {
-			return err
-		}
-	}
-	if log == nil {
-		log = newLogger(false)
-	}
-
-	ln, err := net.Listen(bus.ListenNetwork(bind), bind)
-	if err != nil {
-		return fmt.Errorf("listen on %s: %w", bind, err)
-	}
-	if token == "" && !bus.AddrLoopback(ln.Addr()) {
-		err = errors.New("non-loopback listen address requires a token file")
-		if cerr := ln.Close(); cerr != nil {
-			err = errors.Join(err, cerr)
-		}
-		return err
-	}
-
-	st, err := store.Open(storeDir)
-	if err != nil {
-		if cerr := ln.Close(); cerr != nil {
-			err = errors.Join(err, cerr)
-		}
 		return err
 	}
 	defer func() {
@@ -233,18 +282,7 @@ func runBus(ctx context.Context, storeDir, addr, tokenFile string, maxBody int, 
 			err = cerr
 		}
 	}()
-
-	log.Info("listening", "addr", ln.Addr().String(), "store", st.Path(), "token_required", token != "")
-	err = bus.Serve(ctx, ln, st, bus.Options{
-		MaxBody: maxBody,
-		Logger:  log,
-		Token:   token,
-	})
-	if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, context.Canceled) {
-		log.Info("stopped", "addr", ln.Addr().String())
-		return nil
-	}
-	return err
+	return serveListener(ctx, ln, st, token, maxBody, log)
 }
 
 // loadToken reads the capability file when a path is set.
