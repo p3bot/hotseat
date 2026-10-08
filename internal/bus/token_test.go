@@ -132,11 +132,11 @@ func TestTokenGateRefusesBeforeWrite(t *testing.T) {
 	if garbage.Outcome != OutcomeRefused || garbage.Reason != ReasonTokenRejected {
 		t.Fatalf("garbage %+v", garbage)
 	}
-	unknown, _ := authPost(t, base, "/v1/nope", "", []byte(`{}`), secrets)
+	unknown, _ := authPost(t, base, "/nope", "", []byte(`{}`), secrets)
 	if unknown.Outcome != OutcomeRefused || unknown.Reason != ReasonTokenRequired {
 		t.Fatalf("unknown without token %+v", unknown)
 	}
-	named, _ := authPost(t, base, "/v1/nope", "bearer "+token, []byte(`{}`), secrets)
+	named, _ := authPost(t, base, "/nope", "bearer "+token, []byte(`{}`), secrets)
 	if named.Outcome != OutcomeRefused || named.Reason != ReasonUnknownOp {
 		t.Fatalf("unknown with token %+v", named)
 	}
@@ -209,11 +209,11 @@ func TestLoopbackListenerIgnoresPresentedToken(t *testing.T) {
 func publishAuth(t *testing.T, base, token, from, key, body string, secrets []string) wireMessage {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
-		"conversation":    "job",
-		"from":            from,
-		"to":              []string{"bob"},
-		"body":            body,
-		"txid": key,
+		"conversation": "job",
+		"from":         from,
+		"to":           []string{"bob"},
+		"body":         body,
+		"txid":         key,
 	})
 	if err != nil {
 		t.Fatal(err)

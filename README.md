@@ -17,18 +17,18 @@ hotseat bus stop
 
 ## Protocol
 
-Every operation is `POST` of one JSON object to `/v1/<operation>`. A completed call responds `200` with one JSON object. Read `outcome`. It is `ok`, `timeout`, `refused`, or `unavailable`. A dropped connection has no body and is not a timeout. Unknown JSON fields are ignored.
+Every operation is `POST` of one JSON object to `/<operation>`. A completed call responds `200` with one JSON object. Read `outcome`. It is `ok`, `timeout`, `refused`, or `unavailable`. A dropped connection has no body and is not a timeout. Unknown JSON fields are ignored.
 
 A loopback listener ignores credentials. Any other listener requires the token on every request, including from a peer on the same machine. The header is `Authorization: Bearer` and the token. `WriteToken` in package bus is that header. A missing token is refused with `token is required`. A wrong token is refused with `token does not match`. Nothing is written. The token does not select `from` and is not stored.
 
 | Call | Body |
 | --- | --- |
-| `/v1/create` | `{"name"}` |
-| `/v1/publish` | `{"conversation","from","to","body","txid"}` |
-| `/v1/read` | `{"conversation","cursor","limit","name"?}` |
-| `/v1/wait` | `{"conversation","cursor","name"?,"deadline"?}` |
-| `/v1/close` | `{"conversation"}` |
-| `/v1/list` | `{}` |
+| `/create` | `{"name"}` |
+| `/publish` | `{"conversation","from","to","body","txid"}` |
+| `/read` | `{"conversation","cursor","limit","name"?}` |
+| `/wait` | `{"conversation","cursor","name"?,"deadline"?}` |
+| `/close` | `{"conversation"}` |
+| `/list` | `{}` |
 
 `to` is an array. `[]` is empty. `["all"]` is the single value all. Any other array is an ordered name list and is not sorted or deduplicated. A different order is different content. `deadline` is a Go duration such as `30s` or `500ms`, or an RFC3339 end time. Omit it to wait until a match or a dropped connection. A duration is measured from arrival. An end time is absolute on the bus clock. A time already past times out at once when nothing matches, and a retry sends that same time.
 
@@ -39,9 +39,9 @@ An ok create returns the conversation. A name that already exists returns that c
 `refused` names the broken rule in `reason` and writes nothing. `unavailable` means the change could not be made durable and writes nothing.
 
 ```bash
-curl -s localhost:4727/v1/create -d '{"name":"job"}'
-curl -s localhost:4727/v1/publish -d '{"conversation":"job","from":"alice","to":["bob"],"body":"hello","txid":"1"}'
-curl -s localhost:4727/v1/wait -d '{"conversation":"job","cursor":0,"name":"bob","deadline":"30s"}'
+curl -s localhost:4727/create -d '{"name":"job"}'
+curl -s localhost:4727/publish -d '{"conversation":"job","from":"alice","to":["bob"],"body":"hello","txid":"1"}'
+curl -s localhost:4727/wait -d '{"conversation":"job","cursor":0,"name":"bob","deadline":"30s"}'
 ```
 
 ## Client

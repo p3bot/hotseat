@@ -181,7 +181,7 @@ refused and nothing is created. The default address is loopback and requires no
 token. Any other address requires --token-file. A hostname is resolved once,
 and the process listens on one address from that lookup. A missing or empty
 token file does not listen and nothing is opened. A failed bind opens nothing.
-The token is not logged. Clients send JSON to POST /v1/<operation>.`,
+The token is not logged. Clients send JSON to POST /<operation>.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return startDaemon(cmd.Context(), cmd.OutOrStdout(), f.store, f.listen, f.tokenFile, f.maxBody, f.debug)
 		},

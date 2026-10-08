@@ -788,7 +788,7 @@ func TestAllWakesOthersNotSender(t *testing.T) {
 
 func TestUnknownOperation(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
-	res := mustPost(t, base, "/v1/nope", map[string]any{})
+	res := mustPost(t, base, "/nope", map[string]any{})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonUnknownOp {
 		t.Fatalf("unknown = %+v", res)
 	}

@@ -624,12 +624,12 @@ func TestUnfilteredReadHasNoRoster(t *testing.T) {
 		t.Fatal("name filter")
 	}
 	lower := strings.ToLower(body)
-	for _, word := range []string{"member", "presence", "roster", ">create<", ">wait<", ">close<", "/v1/create", "/v1/wait", "/v1/close"} {
+	for _, word := range []string{"member", "presence", "roster", ">create<", ">wait<", ">close<", "/create", "/wait", "/close"} {
 		if strings.Contains(lower, word) {
 			t.Fatalf("found %s\n%s", word, body)
 		}
 	}
-	for _, path := range []string{"/v1/create", "/v1/wait", "/v1/close", "/create", "/wait", "/close"} {
+	for _, path := range []string{"/create", "/wait", "/close"} {
 		status, _, _ := getPage(t, page.URL+path)
 		if status == http.StatusOK {
 			t.Fatalf("%s served", path)

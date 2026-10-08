@@ -60,12 +60,12 @@ const valueAll = "all"
 
 // PathCreate and the routes beside it are the listener operations.
 const (
-	PathCreate  = "/v1/create"
-	PathPublish = "/v1/publish"
-	PathRead    = "/v1/read"
-	PathWait    = "/v1/wait"
-	PathClose   = "/v1/close"
-	PathList    = "/v1/list"
+	PathCreate  = "/create"
+	PathPublish = "/publish"
+	PathRead    = "/read"
+	PathWait    = "/wait"
+	PathClose   = "/close"
+	PathList    = "/list"
 )
 
 type ruleError struct {

@@ -25,12 +25,12 @@
 // WriteToken sets that header. A missing or wrong token is refused and
 // writes nothing. The token is not a sender name and is not stored.
 //
-//	POST /v1/create   {"name":"job"}
-//	POST /v1/publish  {"conversation","from","to","body","txid"}
-//	POST /v1/read     {"conversation","cursor","limit","name"?}
-//	POST /v1/wait     {"conversation","cursor","name"?,"deadline"?}
-//	POST /v1/close    {"conversation"}
-//	POST /v1/list     {}
+//	POST /create   {"name":"job"}
+//	POST /publish  {"conversation","from","to","body","txid"}
+//	POST /read     {"conversation","cursor","limit","name"?}
+//	POST /wait     {"conversation","cursor","name"?,"deadline"?}
+//	POST /close    {"conversation"}
+//	POST /list     {}
 //
 // to is an array. [] is empty. ["all"] is the single value all. Any other
 // array is an ordered list of names. Order is part of the publish identity.
