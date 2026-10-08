@@ -177,7 +177,7 @@ ul { padding-left: 1.2rem; }
     if (event.submitter !== publish) return;
     var field = document.getElementById("txid");
     if (!field || field.value !== "") return;
-    var bytes = new Uint8Array(16);
+    var bytes = new Uint8Array(5);
     crypto.getRandomValues(bytes);
     var hex = "";
     for (var i = 0; i < bytes.length; i++) {

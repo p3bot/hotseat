@@ -734,10 +734,13 @@ func TestReadmeDescribesDetachedBus(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(text)
-	for _, name := range []string{"hotseat bus start", "hotseat bus stop", "hotseat bus status", "hotseat.log", "$XDG_DATA_HOME/hotseat"} {
+	for _, name := range []string{"hotseat bus start", "hotseat bus stop", "hotseat bus status", "hotseat.log", "$XDG_DATA_HOME/hotseat", "text result", "body <<5"} {
 		if !strings.Contains(body, name) {
 			t.Fatalf("readme missing %s", name)
 		}
+	}
+	if strings.Contains(body, "prints one JSON object") {
+		t.Fatal("readme shows a JSON object as command output")
 	}
 	for _, line := range strings.Split(body, "\n") {
 		if strings.TrimSpace(line) == "hotseat bus" {
@@ -1152,11 +1155,7 @@ func callClient(t *testing.T, bin string, args ...string) client.Result {
 	if got.code != 0 {
 		t.Fatalf("%v exit %d\n%s%s", args, got.code, got.stdout, got.stderr)
 	}
-	var res client.Result
-	if err := json.Unmarshal([]byte(got.stdout), &res); err != nil {
-		t.Fatalf("%v stdout %s: %v", args, got.stdout, err)
-	}
-	return res
+	return parseStdout(t, []byte(got.stdout))
 }
 
 func readLog(t *testing.T, storeDir string) []byte {

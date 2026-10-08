@@ -96,7 +96,7 @@ func pageScript(html string) (string, error) {
 
 func scriptFixedHex() string {
 	var b strings.Builder
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 5; i++ {
 		fmt.Fprintf(&b, "%02x", (i*17+3)&255)
 	}
 	return b.String()

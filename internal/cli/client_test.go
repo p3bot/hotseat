@@ -87,10 +87,7 @@ func TestClientCommandsExit(t *testing.T) {
 			t.Fatalf("%v: %v\n%s\n%s", args, err, stderr.String(), stdout.String())
 		}
 		checkCommandStderr(t, args, stderr.String())
-		var res client.Result
-		if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-			t.Fatalf("stdout %s: %v", stdout.Bytes(), err)
-		}
+		res := parseStdout(t, stdout.Bytes())
 		if res.Outcome != bus.OutcomeOK {
 			t.Fatalf("%v outcome %s %s", args, res.Outcome, stdout.String())
 		}
@@ -257,10 +254,7 @@ func TestDroppedPublishRetriesThePrintedID(t *testing.T) {
 		t.Fatalf("%v\n%s", err, stderr.buf.String())
 	}
 	id := checkCommandStderr(t, args, stderr.buf.String())
-	var res client.Result
-	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-		t.Fatalf("stdout %s: %v", stdout.Bytes(), err)
-	}
+	res := parseStdout(t, stdout.Bytes())
 	if res.Outcome != bus.OutcomeOK || res.AlreadyStored == nil || !*res.AlreadyStored || res.Message == nil || res.Message.TxID != id {
 		t.Fatalf("result %+v id %s", res, id)
 	}
@@ -334,11 +328,8 @@ func TestNamedUnnamedWaitAndTimeout(t *testing.T) {
 
 	create(t, ctx, addr, "quiet")
 	timed, raw := runClient(t, ctx, "wait", "--address", addr, "--conversation", "quiet", "--cursor", "0", "--deadline", "0s")
-	if timed.Outcome != bus.OutcomeTimeout || timed.Messages != nil {
+	if timed.Outcome != bus.OutcomeTimeout || timed.Messages != nil || strings.Contains(raw, "message") {
 		t.Fatalf("timeout %+v raw %s", timed, raw)
-	}
-	if bytes.Contains([]byte(raw), []byte(`"messages"`)) {
-		t.Fatalf("timeout included messages: %s", raw)
 	}
 }
 
@@ -484,10 +475,7 @@ func TestStoppingBusDuringWaitIsNotTimeout(t *testing.T) {
 			t.Fatal(err)
 		}
 		raw := <-outCh
-		var res client.Result
-		if err := json.Unmarshal([]byte(raw), &res); err != nil {
-			t.Fatalf("stdout %s: %v", raw, err)
-		}
+		res := parseStdout(t, []byte(raw))
 		if res.Outcome != client.OutcomeConnectionFailure || !strings.HasPrefix(res.Reason, "connection dropped: "+addr+":") {
 			t.Fatalf("outcome %s reason %s", res.Outcome, res.Reason)
 		}
@@ -725,10 +713,7 @@ func TestInvalidUTF8BodyIsRefusedWithoutDialling(t *testing.T) {
 		t.Fatalf("stdin exit %v stderr %q stdout %s", err, stderr.String(), stdout.String())
 	}
 	checkCommandStderr(t, stdinArgs, stderr.String())
-	var fromStdin client.Result
-	if err := json.Unmarshal(stdout.Bytes(), &fromStdin); err != nil {
-		t.Fatal(err)
-	}
+	fromStdin := parseStdout(t, stdout.Bytes())
 	if fromStdin.Outcome != bus.OutcomeRefused || fromStdin.Reason != bus.ReasonBodyUTF8 {
 		t.Fatalf("stdin outcome %s reason %s", fromStdin.Outcome, fromStdin.Reason)
 	}
@@ -799,6 +784,83 @@ func TestValidUTF8BodiesStillPublish(t *testing.T) {
 	}
 }
 
+func TestCommandTextRoundTripsBodies(t *testing.T) {
+	addr, stop := startBus(t)
+	defer stop()
+	ctx := context.Background()
+	create(t, ctx, addr, "frame")
+	cases := []struct {
+		body string
+		txid string
+	}{
+		{body: "hello", txid: "1"},
+		{body: "", txid: "empty"},
+		{body: "<b>", txid: "html"},
+		{body: "outcome: ok", txid: "field"},
+		{body: "one\noutcome: ok\ntwo\n", txid: "lines"},
+	}
+	for _, tc := range cases {
+		res, id, raw := runPublish(t, ctx, "publish", "--address", addr,
+			"--conversation", "frame", "--from", "alice", "--to", "bob", "--to", "carol",
+			"--body", tc.body, "--txid", tc.txid)
+		if id != tc.txid || res.Outcome != bus.OutcomeOK || res.AlreadyStored == nil || *res.AlreadyStored {
+			t.Fatalf("publish %q id %q %+v\n%s", tc.body, id, res, raw)
+		}
+		if res.Conversation == nil || res.Conversation.Name != "frame" || res.Conversation.Status != "open" || res.Message == nil {
+			t.Fatalf("publish shape %+v", res)
+		}
+		msg := res.Message
+		if msg.Body != tc.body || msg.TxID != tc.txid || msg.From != "alice" || len(msg.To) != 2 || msg.To[0] != "bob" || msg.To[1] != "carol" || msg.Seq == 0 || msg.Time == "" {
+			t.Fatalf("message %+v", msg)
+		}
+		if strings.Contains(raw, `\u003c`) || json.Valid([]byte(raw)) {
+			t.Fatalf("stdout %s", raw)
+		}
+		if tc.body == "<b>" && !strings.Contains(raw, "<b>") {
+			t.Fatalf("stdout escaped the body: %s", raw)
+		}
+	}
+	got := readAll(t, ctx, addr, "frame", 0)
+	if len(got) != len(cases) {
+		t.Fatalf("transcript %d", len(got))
+	}
+	for i, tc := range cases {
+		if got[i].Body != tc.body || got[i].TxID != tc.txid {
+			t.Fatalf("stored %d body %q txid %q", i, got[i].Body, got[i].TxID)
+		}
+	}
+	empty, raw := runClient(t, ctx, "read", "--address", addr, "--conversation", "frame", "--cursor", "99", "--limit", "5")
+	if empty.Outcome != bus.OutcomeOK || empty.Messages == nil || len(*empty.Messages) != 0 || strings.Contains(raw, "message:") {
+		t.Fatalf("empty read %s", raw)
+	}
+}
+
+func TestClientHelpShowsText(t *testing.T) {
+	for _, name := range []string{"create", "publish", "read", "wait", "close", "list"} {
+		var stdout, stderr bytes.Buffer
+		err := execute(context.Background(), []string{name, "--help"}, &stdout, &stderr)
+		if err != nil {
+			t.Fatalf("%s help: %v\n%s", name, err, stderr.String())
+		}
+		text := stdout.String()
+		if strings.Contains(text, "JSON") || !strings.Contains(text, "text result") || !strings.Contains(text, "byte count") {
+			t.Fatalf("%s help:\n%s", name, text)
+		}
+	}
+}
+
+func TestUsageErrorPrintsNoStdout(t *testing.T) {
+	bin := buildBinary(t)
+	cmd := exec.Command(bin, "create")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil || stdout.Len() != 0 || !strings.Contains(stderr.String(), "name") {
+		t.Fatalf("exit %v stdout %q stderr %q", err, stdout.String(), stderr.String())
+	}
+}
+
 func TestListShowsStatus(t *testing.T) {
 	addr, stop := startBus(t)
 	defer stop()
@@ -828,10 +890,9 @@ func runBinOK(t *testing.T, bin string, stdin io.Reader, args ...string) client.
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	var res client.Result
-	unmarshalErr := json.Unmarshal(stdout.Bytes(), &res)
-	if err != nil || unmarshalErr != nil || res.Outcome != bus.OutcomeOK {
-		t.Fatalf("%v: exit %v stderr %q outcome %s reason %s decode %v", args, err, stderr.String(), res.Outcome, res.Reason, unmarshalErr)
+	res, parseErr := parseResult(stdout.Bytes())
+	if err != nil || parseErr != nil || json.Valid(stdout.Bytes()) || res.Outcome != bus.OutcomeOK {
+		t.Fatalf("%v: exit %v stderr %q outcome %s reason %s decode %v stdout %s", args, err, stderr.String(), res.Outcome, res.Reason, parseErr, stdout.String())
 	}
 	checkCommandStderr(t, args, stderr.String())
 	return res
@@ -1064,11 +1125,7 @@ func runPublish(t *testing.T, ctx context.Context, args ...string) (client.Resul
 		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), stdout.String())
 	}
 	id := checkCommandStderr(t, args, stderr.String())
-	var res client.Result
-	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-		t.Fatalf("stdout %s: %v", stdout.Bytes(), err)
-	}
-	return res, id, stdout.String()
+	return parseStdout(t, stdout.Bytes()), id, stdout.String()
 }
 
 func checkCommandStderr(t *testing.T, args []string, stderr string) string {
@@ -1104,7 +1161,7 @@ func txidLine(stderr string) (string, bool) {
 }
 
 func mintedTxID(id string) bool {
-	if len(id) != 32 {
+	if len(id) != 10 {
 		return false
 	}
 	for _, c := range id {
@@ -1139,11 +1196,7 @@ func runClient(t *testing.T, ctx context.Context, args ...string) (client.Result
 		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), stdout.String())
 	}
 	checkCommandStderr(t, args, stderr.String())
-	var res client.Result
-	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-		t.Fatalf("stdout %s: %v", stdout.Bytes(), err)
-	}
-	return res, stdout.String()
+	return parseStdout(t, stdout.Bytes()), stdout.String()
 }
 
 func create(t *testing.T, ctx context.Context, addr, name string) {

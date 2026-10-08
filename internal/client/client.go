@@ -70,7 +70,7 @@ func (e *notBus) Error() string {
 	}
 }
 
-// Result is the JSON object every client command prints.
+// Result is one completed call, decoded from the bus JSON.
 // Outcome is ok, timeout, refused, unavailable, or connection_failure.
 type Result struct {
 	Outcome        string          `json:"outcome"`

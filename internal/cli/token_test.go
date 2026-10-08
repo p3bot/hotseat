@@ -363,10 +363,7 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 	if err := bare.Run(); err != nil {
 		t.Fatalf("wait without token: %v", err)
 	}
-	var bareRes client.Result
-	if err := json.Unmarshal(bareOut.Bytes(), &bareRes); err != nil {
-		t.Fatal(err)
-	}
+	bareRes := parseStdout(t, bareOut.Bytes())
 	if bareRes.Outcome != bus.OutcomeRefused || bareRes.Reason != bus.ReasonTokenRequired {
 		t.Fatalf("bare wait %+v", bareRes)
 	}
@@ -480,11 +477,7 @@ func runBin(t *testing.T, bin string, secrets []string, args ...string) client.R
 	if err != nil {
 		t.Fatalf("%v: %v\n%s", args, err, out)
 	}
-	var res client.Result
-	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-		t.Fatalf("%v stdout %s: %v", args[0], stdout.Bytes(), err)
-	}
-	return res
+	return parseStdout(t, stdout.Bytes())
 }
 
 func assertArgsOmit(t *testing.T, args, secrets []string) {

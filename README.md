@@ -46,7 +46,7 @@ curl -s localhost:4727/v1/wait -d '{"conversation":"job","cursor":0,"name":"bob"
 
 ## Client
 
-The same binary calls a bus that is already running, then exits. The default address is `127.0.0.1:4727`. `--address` aims one invocation at another bus. `--token-file` reads the token for a non-loopback bus. The token is not a command-line argument. Omit the flag for loopback. The caller passes the cursor. Omit `--txid` and publish writes `txid: ` and 32 lowercase hex characters to stderr, then sends that id. Pass `--txid` to send that value, including an empty one. The line is written before the call and flushed. A dropped call is retried once with that same id. The client does not store the id.
+The same binary calls a bus that is already running, then exits. The default address is `127.0.0.1:4727`. `--address` aims one invocation at another bus. `--token-file` reads the token for a non-loopback bus. The token is not a command-line argument. Omit the flag for loopback. The caller passes the cursor. Omit `--txid` and publish writes `txid: ` and 10 lowercase hex characters to stderr, then sends that id. Pass `--txid` to send that value, including an empty one. The line is written before the call and flushed. A dropped call is retried once with that same id. The client does not store the id.
 
 ```bash
 hotseat create --name job
@@ -62,7 +62,23 @@ hotseat list
 
 `--body` is the message. `--body-file` reads it from a file, and `--body-file -` reads stdin, so a body can be larger than one command argument. Pass exactly one of the two. A body or a transaction id that is not valid UTF-8 is `refused` with that bus rule, and the client does not connect.
 
-Each command prints one JSON object and exits. `outcome` is `ok`, `timeout`, `refused`, `unavailable`, or `connection_failure`. A usage error is a message on stderr and no object. A dropped call is retried once with the same arguments. Timeout is only the bus outcome. A full read page carries each message `seq`. The client does not request the next page.
+Each command prints one text result and exits. `outcome` is `ok`, `timeout`, `refused`, `unavailable`, or `connection_failure`. A field on one line is `name: value`. A message body is always a byte count and then those bytes, and so is any other value that contains a newline. The count keeps an empty body, more than one line, and a line that looks like a field inside the value. A usage error is a message on stderr and no stdout. A dropped call is retried once with the same arguments. Timeout is only the bus outcome. A full read page carries each message `seq`. The client does not request the next page.
+
+```text
+outcome: ok
+already_stored: false
+conversation:
+name: job
+status: open
+message:
+seq: 1
+time: 2026-10-08T07:00:00Z
+from: alice
+to: bob
+txid: 1
+body <<5
+hello
+```
 
 ## Web
 

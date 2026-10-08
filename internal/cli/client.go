@@ -9,7 +9,6 @@ package cli
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,7 +20,9 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
-const clientResultText = `Print one JSON object and exit. outcome is ok, timeout, refused, unavailable, or connection_failure.
+const clientResultText = `Print one text result and exit. outcome is ok, timeout, refused, unavailable, or connection_failure.
+
+A field on one line is "name: value". A message body is always a byte count and then those bytes, and so is any other value that contains a newline. The count keeps an empty body, more than one line, and a line that looks like a field inside the value.
 
 --token-file reads the shared capability token for a bus that is not on loopback. The token is not a flag. Omit the flag for a loopback bus.`
 
@@ -82,7 +83,7 @@ func newPublishCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&to, "to", nil, "addressee; repeat for more than one; omit for none")
 	cmd.Flags().StringVar(&body, "body", "", "message body")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "file to read the body from; - reads stdin")
-	cmd.Flags().StringVar(&key, "txid", "", "transaction id; 32 hex characters when omitted")
+	cmd.Flags().StringVar(&key, "txid", "", "transaction id; 10 hex characters when omitted")
 	markRequired(cmd, "conversation", "from")
 	return cmd
 }
@@ -216,9 +217,9 @@ func publishBody(cmd *cobra.Command, inline, path string) (string, error) {
 	return string(raw), nil
 }
 
-// mintTxID is one attempt id: 32 lowercase hex characters from 16 random bytes.
+// mintTxID is one attempt id: 10 lowercase hex characters from 5 random bytes.
 func mintTxID() (string, error) {
-	var buf [16]byte
+	var buf [5]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return "", err
 	}
@@ -258,10 +259,4 @@ func tokenFromFlag(cmd *cobra.Command) (string, error) {
 		return "", err
 	}
 	return bus.ReadTokenFile(path)
-}
-
-func writeResult(w io.Writer, res client.Result) error {
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	return enc.Encode(res)
 }
