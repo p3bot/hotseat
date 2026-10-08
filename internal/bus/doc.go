@@ -50,12 +50,15 @@
 // that conversation, its status, and already_existed true, and writes nothing.
 //
 // A publish response is written only after the message is durable. It carries
-// the message and the conversation name and status. The same transaction id
-// with the same from, to, and body returns the original message and
-// already_stored true, including after the conversation is closed, and writes
-// nothing. The same transaction id with any of those three different is refused. A
-// different name order in to is different content. Close sets status to closed
-// and still accepts a new message. That publish reports status closed.
+// the message and the conversation name and status. An attempt is the
+// conversation, the sender, and the transaction id. The bus requires that id
+// and does not generate one. The same attempt with the same to and body
+// returns the original message and already_stored true, including after the
+// conversation is closed, and writes nothing. The same attempt with a
+// different to or body is refused. A different name order in to is different
+// content. Another sender using that transaction id stores a new message.
+// Close sets status to closed and still accepts a new message. That publish
+// reports status closed.
 //
 // An ok named wait returns every message after the cursor through the match,
 // oldest first, and match_seq. Messages between the cursor and the match are

@@ -34,7 +34,7 @@ A loopback listener ignores credentials. Any other listener requires the token o
 
 `cursor` `0` means the caller has seen no message. The bus does not store cursors or transaction ids except the txid recorded on an accepted message. The caller passes both on each call.
 
-An ok create returns the conversation. A name that already exists returns that conversation, its status, and `"already_existed": true`, and writes nothing. An ok publish returns the message, including `seq`, and `conversation` with `name` and `status`, only after it is durable. The same txid with the same `from`, `to`, and body returns that message and `"already_stored": true`, including after close, and writes nothing. Close sets `status` to `closed` and still accepts a new message. That publish returns `status` `closed`. An ok named wait returns every message after the cursor through the match and `match_seq`. An ok unnamed wait returns only the next message. Timeout returns no messages. Close does not end a wait.
+An ok create returns the conversation. A name that already exists returns that conversation, its status, and `"already_existed": true`, and writes nothing. An ok publish returns the message, including `seq`, and `conversation` with `name` and `status`, only after it is durable. An attempt is the conversation, the sender, and `txid`. The bus requires that id and does not generate one. The same attempt with the same `to` and body returns that message and `"already_stored": true`, including after close, and writes nothing. The same attempt with a different `to` or body is refused and writes nothing. Another sender with that `txid` stores a new message. Close sets `status` to `closed` and still accepts a new message. That publish returns `status` `closed`. An ok named wait returns every message after the cursor through the match and `match_seq`. An ok unnamed wait returns only the next message. Timeout returns no messages. Close does not end a wait.
 
 `refused` names the broken rule in `reason` and writes nothing. `unavailable` means the change could not be made durable and writes nothing.
 
@@ -46,10 +46,11 @@ curl -s localhost:4727/v1/wait -d '{"conversation":"job","cursor":0,"name":"bob"
 
 ## Client
 
-The same binary calls a bus that is already running, then exits. The default address is `127.0.0.1:4727`. `--address` aims one invocation at another bus. `--token-file` reads the token for a non-loopback bus. The token is not a command-line argument. Omit the flag for loopback. The caller passes the cursor and the transaction id. The client does not store them and does not mint one.
+The same binary calls a bus that is already running, then exits. The default address is `127.0.0.1:4727`. `--address` aims one invocation at another bus. `--token-file` reads the token for a non-loopback bus. The token is not a command-line argument. Omit the flag for loopback. The caller passes the cursor. Omit `--txid` and publish writes `txid: ` and 32 lowercase hex characters to stderr, then sends that id. Pass `--txid` to send that value, including an empty one. The line is written before the call and flushed. A dropped call is retried once with that same id. The client does not store the id.
 
 ```bash
 hotseat create --name job
+hotseat publish --conversation job --from alice --to bob --body hello
 hotseat publish --conversation job --from alice --to bob --body hello --txid 1
 hotseat publish --address 192.0.2.10:4727 --token-file /run/hotseat/token --conversation job --from alice --to bob --body hello --txid 1
 hotseat publish --conversation job --from alice --to bob --body-file - --txid 1
@@ -65,7 +66,7 @@ Each command prints one JSON object and exits. `outcome` is `ok`, `timeout`, `re
 
 ## Web
 
-`hotseat web` serves a page that lists conversations, reads one transcript, and publishes. It calls a bus that is already running. It does not open the database. The default bus address is `127.0.0.1:4727`. The default page address is `127.0.0.1:4728`. The page listens on loopback. Any other listen address is refused. The page answers for the address it listens on. On loopback, localhost with that port is the same address. `--token-file` reads the token for a non-loopback bus. The page does not receive the token. Omit the flag for loopback. The person at the page supplies `from`, `to`, the body, the cursor, and the transaction id. The server does not store the cursor or the transaction id and does not invent one. The page does not create, wait, or close.
+`hotseat web` serves a page that lists conversations, reads one transcript, and publishes. It calls a bus that is already running. It does not open the database. The default bus address is `127.0.0.1:4727`. The default page address is `127.0.0.1:4728`. The page listens on loopback. Any other listen address is refused. The page answers for the address it listens on. On loopback, localhost with that port is the same address. `--token-file` reads the token for a non-loopback bus. The page does not receive the token. Omit the flag for loopback. The person at the page supplies `from`, `to`, the body, and the cursor. An empty transaction id is filled in the page when Publish is submitted. The server does not invent one and does not store the cursor or the id. An ok publish clears the field. Any other result leaves the posted id in the field. The page does not create, wait, or close.
 
 ```bash
 hotseat web

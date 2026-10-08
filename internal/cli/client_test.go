@@ -86,9 +86,7 @@ func TestClientCommandsExit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: %v\n%s\n%s", args, err, stderr.String(), stdout.String())
 		}
-		if stderr.Len() != 0 {
-			t.Fatalf("stderr: %s", stderr.String())
-		}
+		checkCommandStderr(t, args, stderr.String())
 		var res client.Result
 		if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
 			t.Fatalf("stdout %s: %v", stdout.Bytes(), err)
@@ -149,6 +147,141 @@ func TestPublishRetryAndNoTokenFile(t *testing.T) {
 	}
 	assertEmptyDir(t, wd)
 	assertEmptyDir(t, home)
+}
+
+func TestPublishMintsWhenOmittedAndReusesAPassedID(t *testing.T) {
+	addr, stop := startBus(t)
+	defer stop()
+	ctx := context.Background()
+	create(t, ctx, addr, "mint")
+	base := []string{"publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--to", "bob", "--body", "same"}
+	first, id1, _ := runPublish(t, ctx, base...)
+	second, id2, _ := runPublish(t, ctx, base...)
+	if first.Outcome != bus.OutcomeOK || first.AlreadyStored == nil || *first.AlreadyStored || first.Message == nil || first.Message.TxID != id1 {
+		t.Fatalf("first %+v id %s", first, id1)
+	}
+	if second.Outcome != bus.OutcomeOK || second.AlreadyStored == nil || *second.AlreadyStored || second.Message == nil || second.Message.TxID != id2 || id1 == id2 || second.Message.Seq == first.Message.Seq {
+		t.Fatalf("second %+v ids %s %s", second, id1, id2)
+	}
+	passed, id, _ := runPublish(t, ctx, append(append([]string{}, base...), "--txid", "1")...)
+	if id != "1" || passed.Outcome != bus.OutcomeOK || passed.Message == nil || passed.Message.Seq != 3 || passed.Message.TxID != "1" {
+		t.Fatalf("passed %+v id %q", passed, id)
+	}
+	retry, id, _ := runPublish(t, ctx, append(append([]string{}, base...), "--txid", "1")...)
+	if id != "1" || retry.Outcome != bus.OutcomeOK || retry.AlreadyStored == nil || !*retry.AlreadyStored || retry.Message == nil || retry.Message.Seq != 3 {
+		t.Fatalf("retry %+v id %q", retry, id)
+	}
+	conflict, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--to", "bob", "--body", "other", "--txid", "1")
+	if id != "1" || conflict.Outcome != bus.OutcomeRefused || conflict.Reason != bus.ReasonKeyConflict {
+		t.Fatalf("conflict %+v id %q", conflict, id)
+	}
+	bob, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "bob", "--body", "same", "--txid", "1")
+	if id != "1" || bob.Outcome != bus.OutcomeOK || bob.AlreadyStored == nil || *bob.AlreadyStored || bob.Message == nil || bob.Message.From != "bob" || bob.Message.TxID != "1" {
+		t.Fatalf("bob %+v id %q", bob, id)
+	}
+	empty, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--body", "nope", "--txid", "")
+	if id != "" || empty.Outcome != bus.OutcomeRefused || empty.Reason != bus.ReasonKeyRequired {
+		t.Fatalf("empty id %q %+v", id, empty)
+	}
+	got := readAll(t, ctx, addr, "mint", 0)
+	if len(got) != 4 || got[0].TxID != id1 || got[1].TxID != id2 || got[2].TxID != "1" || got[2].From != "alice" || got[3].From != "bob" {
+		t.Fatalf("transcript %+v", got)
+	}
+}
+
+func TestDroppedPublishRetriesThePrintedID(t *testing.T) {
+	busAddr, stop := startBus(t)
+	defer stop()
+	ctx := context.Background()
+	create(t, ctx, busAddr, "drop")
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	var mu sync.Mutex
+	var order []string
+	drops := 0
+	note := func(ev string) {
+		mu.Lock()
+		order = append(order, ev)
+		mu.Unlock()
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer func() { _ = conn.Close() }()
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				req, err := readHTTPRequest(conn)
+				if err != nil {
+					return
+				}
+				note("request")
+				up, err := net.Dial("tcp", busAddr)
+				if err != nil {
+					return
+				}
+				defer func() { _ = up.Close() }()
+				_ = up.SetDeadline(time.Now().Add(5 * time.Second))
+				if _, err := up.Write(req); err != nil {
+					return
+				}
+				resp, err := io.ReadAll(up)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				drop := drops == 0
+				if drop {
+					drops++
+				}
+				mu.Unlock()
+				if drop {
+					return
+				}
+				_, _ = conn.Write(resp)
+			}(conn)
+		}
+	}()
+
+	stderr := &orderWriter{note: note}
+	var stdout bytes.Buffer
+	args := []string{"publish", "--address", ln.Addr().String(), "--conversation", "drop", "--from", "alice", "--body", "once"}
+	if err := execute(ctx, args, &stdout, stderr); err != nil {
+		t.Fatalf("%v\n%s", err, stderr.buf.String())
+	}
+	id := checkCommandStderr(t, args, stderr.buf.String())
+	var res client.Result
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("stdout %s: %v", stdout.Bytes(), err)
+	}
+	if res.Outcome != bus.OutcomeOK || res.AlreadyStored == nil || !*res.AlreadyStored || res.Message == nil || res.Message.TxID != id {
+		t.Fatalf("result %+v id %s", res, id)
+	}
+	got := readAll(t, ctx, busAddr, "drop", 0)
+	if len(got) != 1 || got[0].TxID != id || got[0].Body != "once" {
+		t.Fatalf("transcript %+v", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if drops != 1 || len(order) < 2 || order[0] != "line" {
+		t.Fatalf("drops %d order %v", drops, order)
+	}
+	requests := 0
+	for _, ev := range order {
+		if ev == "request" {
+			requests++
+		}
+	}
+	if requests != 2 {
+		t.Fatalf("order %v", order)
+	}
 }
 
 func TestWaitCursorIsNotStored(t *testing.T) {
@@ -541,17 +674,21 @@ func TestPublishBodyChoiceDoesNotDial(t *testing.T) {
 	}()
 	addr := ln.Addr().String()
 	base := []string{"publish", "--address", addr, "--conversation", "job", "--from", "alice", "--txid", "k"}
-	if err := execute(context.Background(), base, io.Discard, io.Discard); err == nil {
-		t.Fatal("missing body succeeded")
+	assertNoTxID := func(args []string) {
+		t.Helper()
+		var stderr bytes.Buffer
+		if err := execute(context.Background(), args, io.Discard, &stderr); err == nil {
+			t.Fatalf("%v succeeded", args)
+		}
+		if strings.Contains(stderr.String(), "txid:") {
+			t.Fatalf("%v stderr %s", args, stderr.String())
+		}
 	}
-	both := append(append([]string{}, base...), "--body", "hi", "--body-file", "note.txt")
-	if err := execute(context.Background(), both, io.Discard, io.Discard); err == nil {
-		t.Fatal("both body sources succeeded")
-	}
-	missingFile := append(append([]string{}, base...), "--body-file", filepath.Join(t.TempDir(), "absent"))
-	if err := execute(context.Background(), missingFile, io.Discard, io.Discard); err == nil {
-		t.Fatal("absent file succeeded")
-	}
+	assertNoTxID(base)
+	assertNoTxID(append(append([]string{}, base...), "--body", "hi", "--body-file", "note.txt"))
+	assertNoTxID(append(append([]string{}, base...), "--body-file", filepath.Join(t.TempDir(), "absent")))
+	assertNoTxID([]string{"publish", "--address", addr, "--from", "alice", "--body", "hi"})
+	assertNoTxID([]string{"publish", "--address", addr, "--conversation", "job", "--body", "hi"})
 	select {
 	case <-accepted:
 		t.Fatal("dialled while choosing a body")
@@ -582,10 +719,12 @@ func TestInvalidUTF8BodyIsRefusedWithoutDialling(t *testing.T) {
 		t.Fatalf("inline outcome %s reason %s", fromInline.Outcome, fromInline.Reason)
 	}
 	var stdout, stderr bytes.Buffer
-	err := executeIO(ctx, append(base, "--body-file", "-"), bytes.NewReader([]byte{0xff}), &stdout, &stderr)
-	if err != nil || stderr.Len() != 0 {
+	stdinArgs := append(base, "--body-file", "-")
+	err := executeIO(ctx, stdinArgs, bytes.NewReader([]byte{0xff}), &stdout, &stderr)
+	if err != nil {
 		t.Fatalf("stdin exit %v stderr %q stdout %s", err, stderr.String(), stdout.String())
 	}
+	checkCommandStderr(t, stdinArgs, stderr.String())
 	var fromStdin client.Result
 	if err := json.Unmarshal(stdout.Bytes(), &fromStdin); err != nil {
 		t.Fatal(err)
@@ -691,9 +830,10 @@ func runBinOK(t *testing.T, bin string, stdin io.Reader, args ...string) client.
 	err := cmd.Run()
 	var res client.Result
 	unmarshalErr := json.Unmarshal(stdout.Bytes(), &res)
-	if err != nil || stderr.Len() != 0 || unmarshalErr != nil || res.Outcome != bus.OutcomeOK {
+	if err != nil || unmarshalErr != nil || res.Outcome != bus.OutcomeOK {
 		t.Fatalf("%v: exit %v stderr %q outcome %s reason %s decode %v", args, err, stderr.String(), res.Outcome, res.Reason, unmarshalErr)
 	}
+	checkCommandStderr(t, args, stderr.String())
 	return res
 }
 
@@ -867,6 +1007,130 @@ func assertEmptyDir(t *testing.T, dir string) {
 	}
 }
 
+type orderWriter struct {
+	buf  bytes.Buffer
+	note func(string)
+}
+
+func (w *orderWriter) Write(p []byte) (int, error) {
+	n, err := w.buf.Write(p)
+	if strings.Contains(w.buf.String(), "\n") {
+		w.note("line")
+	}
+	return n, err
+}
+
+func readHTTPRequest(r io.Reader) ([]byte, error) {
+	var buf bytes.Buffer
+	tmp := make([]byte, 1)
+	for {
+		if _, err := io.ReadFull(r, tmp); err != nil {
+			return nil, err
+		}
+		buf.Write(tmp)
+		if bytes.HasSuffix(buf.Bytes(), []byte("\r\n\r\n")) {
+			break
+		}
+		if buf.Len() > 1<<20 {
+			return nil, io.ErrShortBuffer
+		}
+	}
+	n := contentLength(buf.Bytes())
+	if n > 0 {
+		body := make([]byte, n)
+		if _, err := io.ReadFull(r, body); err != nil {
+			return nil, err
+		}
+		buf.Write(body)
+	}
+	return buf.Bytes(), nil
+}
+
+func contentLength(header []byte) int {
+	for _, line := range bytes.Split(header, []byte("\r\n")) {
+		if bytes.HasPrefix(bytes.ToLower(line), []byte("content-length:")) {
+			n, _ := strconv.Atoi(strings.TrimSpace(string(line[len("content-length:"):])))
+			return n
+		}
+	}
+	return 0
+}
+
+func runPublish(t *testing.T, ctx context.Context, args ...string) (client.Result, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	err := execute(ctx, args, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), stdout.String())
+	}
+	id := checkCommandStderr(t, args, stderr.String())
+	var res client.Result
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("stdout %s: %v", stdout.Bytes(), err)
+	}
+	return res, id, stdout.String()
+}
+
+func checkCommandStderr(t *testing.T, args []string, stderr string) string {
+	t.Helper()
+	if len(args) == 0 || args[0] != "publish" {
+		if stderr != "" {
+			t.Fatalf("stderr: %s", stderr)
+		}
+		return ""
+	}
+	id, ok := txidLine(stderr)
+	if !ok {
+		t.Fatalf("stderr %q", stderr)
+	}
+	if passed, set := flagValue(args, "txid"); set {
+		if id != passed {
+			t.Fatalf("stderr id %q flag %q", id, passed)
+		}
+		return id
+	}
+	if !mintedTxID(id) {
+		t.Fatalf("minted id %q", id)
+	}
+	return id
+}
+
+func txidLine(stderr string) (string, bool) {
+	const prefix = "txid: "
+	if !strings.HasPrefix(stderr, prefix) || strings.Count(stderr, "\n") != 1 || !strings.HasSuffix(stderr, "\n") {
+		return "", false
+	}
+	return strings.TrimSuffix(stderr[len(prefix):], "\n"), true
+}
+
+func mintedTxID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	for _, c := range id {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func flagValue(args []string, name string) (string, bool) {
+	dash := "--" + name
+	for i, arg := range args {
+		if arg == dash {
+			if i+1 >= len(args) {
+				return "", true
+			}
+			return args[i+1], true
+		}
+		if strings.HasPrefix(arg, dash+"=") {
+			return strings.TrimPrefix(arg, dash+"="), true
+		}
+	}
+	return "", false
+}
+
 func runClient(t *testing.T, ctx context.Context, args ...string) (client.Result, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
@@ -874,9 +1138,7 @@ func runClient(t *testing.T, ctx context.Context, args ...string) (client.Result
 	if err != nil {
 		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), stdout.String())
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr: %s", stderr.String())
-	}
+	checkCommandStderr(t, args, stderr.String())
 	var res client.Result
 	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
 		t.Fatalf("stdout %s: %v", stdout.Bytes(), err)

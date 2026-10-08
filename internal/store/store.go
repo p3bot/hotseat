@@ -57,7 +57,7 @@ var schemaStmts = []string{
   body TEXT NOT NULL,
   txid TEXT NOT NULL,
   PRIMARY KEY (conversation, seq),
-  UNIQUE (conversation, txid)
+  UNIQUE (conversation, sender, txid)
 ) STRICT`,
 }
 
@@ -319,9 +319,11 @@ func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 	return out, err
 }
 
-// Publish commits one message, or returns the original when the txid matches.
-// The same txid with different from, to, or body returns ErrConflict.
-// A matching txid returns the original message and writes nothing.
+// Publish commits one message, or returns the original when this sender
+// already stored this txid with the same to and body.
+// The same sender and txid with different to or body returns ErrConflict.
+// Another sender using that txid is a different attempt.
+// A matching attempt returns the original message and writes nothing.
 // The status is the conversation state committed with that result.
 // A missing conversation returns ErrNotFound and writes nothing.
 func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool, error) {
@@ -338,7 +340,7 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool,
 			return err
 		}
 
-		stored, found, err := messageByTxID(ctx, tx, in.Conversation, in.TxID)
+		stored, found, err := messageByAttempt(ctx, tx, in.Conversation, in.From, in.TxID)
 		if err != nil {
 			return err
 		}
@@ -554,14 +556,14 @@ func joinClose(err, cerr error) error {
 	return fmt.Errorf("%w; close rows: %v", err, cerr)
 }
 
-func messageByTxID(ctx context.Context, tx *sql.Tx, conversation, txid string) (Message, bool, error) {
+func messageByAttempt(ctx context.Context, tx *sql.Tx, conversation, sender, txid string) (Message, bool, error) {
 	var m Message
 	var rec string
 	err := tx.QueryRowContext(ctx, `
 		SELECT seq, time, sender, recipients, body, txid
 		FROM messages
-		WHERE conversation = ? AND txid = ?`,
-		conversation, txid).Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID)
+		WHERE conversation = ? AND sender = ? AND txid = ?`,
+		conversation, sender, txid).Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, false, nil
 	}

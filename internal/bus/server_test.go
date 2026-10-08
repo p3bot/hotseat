@@ -244,15 +244,15 @@ func TestPublishDurableRetryAndConflict(t *testing.T) {
 		t.Fatalf("different body = %+v", changed)
 	}
 	sender := publish(t, base, "job", "erin", []string{"bob", "carol"}, "hello", "k")
-	if sender.Outcome != OutcomeRefused || sender.Reason != ReasonKeyConflict {
+	if sender.Outcome != OutcomeOK || sender.AlreadyStored == nil || *sender.AlreadyStored || sender.Message == nil || sender.Message.Seq != 2 || sender.Message.From != "erin" || sender.Message.TxID != "k" {
 		t.Fatalf("different from = %+v", sender)
 	}
 	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
-	if read.Messages == nil || len(*read.Messages) != 1 || (*read.Messages)[0].Body != "hello" {
+	if read.Messages == nil || len(*read.Messages) != 2 || (*read.Messages)[0].From != "alice" || (*read.Messages)[1].From != "erin" {
 		t.Fatalf("transcript = %+v", read.Messages)
 	}
 	empty := publish(t, base, "job", "alice", []string{}, "", "empty")
-	if empty.Outcome != OutcomeOK || empty.Message == nil || empty.Message.Body != "" || empty.Message.Seq != 2 {
+	if empty.Outcome != OutcomeOK || empty.Message == nil || empty.Message.Body != "" || empty.Message.Seq != 3 {
 		t.Fatalf("empty body = %+v", empty)
 	}
 	tag := publish(t, base, "job", "alice", []string{"bob"}, "<tag>&", "tag")
@@ -279,6 +279,7 @@ func TestPublishRejectsBrokenRules(t *testing.T) {
 		{"non utf8 outside body", badFrom, ReasonRequestUTF8},
 		{"oversize", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "hello", "txid": "big"}, ReasonBodySize},
 		{"missing key", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x"}, ReasonKeyRequired},
+		{"empty key", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x", "txid": ""}, ReasonKeyRequired},
 		{"from all", map[string]any{"conversation": "job", "from": "all", "to": []string{"bob"}, "body": "x", "txid": "a"}, ReasonFromAll},
 		{"all mixed", map[string]any{"conversation": "job", "from": "alice", "to": []string{"all", "bob"}, "body": "x", "txid": "b"}, ReasonToAllMixed},
 		{"missing to", map[string]any{"conversation": "job", "from": "alice", "body": "x", "txid": "c"}, ReasonToRequired},

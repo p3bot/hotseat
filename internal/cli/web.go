@@ -37,8 +37,10 @@ The default bus address is ` + bus.DefaultListen + `. The default page address i
 The token is not a flag and the page does not receive it. Omit the flag for a loopback bus.
 The page listens on loopback. Any other listen address is refused.
 The page answers for the address it listens on. On loopback, localhost with that port is the same address.
-The person at the page supplies from, to, the body, the cursor, and the transaction id.
+The person at the page supplies from, to, the body, and the cursor.
+An empty transaction id is filled in the page when Publish is submitted.
 The server does not store the cursor or the transaction id and does not invent one.
+An ok publish clears the field. Any other result leaves the posted id there.
 The process runs until it is signalled.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			token, err := tokenFromFlag(cmd)

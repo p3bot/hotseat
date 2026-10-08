@@ -7,8 +7,11 @@
 package cli
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 
@@ -49,10 +52,20 @@ func newPublishCmd() *cobra.Command {
 	var address, conv, from, body, key string
 	var to []string
 	var bodyFile string
-	cmd := newClientCmd("publish", "Publish a message", `  hotseat publish --conversation job --from alice --to bob --body hello --txid 1
-  hotseat publish --conversation job --from alice --to bob --body-file note.txt --txid 1`, func(cmd *cobra.Command) error {
+	cmd := newClientCmd("publish", "Publish a message", `  hotseat publish --conversation job --from alice --to bob --body hello
+  hotseat publish --conversation job --from alice --to bob --body hello --txid 1
+  hotseat publish --conversation job --from alice --to bob --body-file note.txt`, func(cmd *cobra.Command) error {
 		text, err := publishBody(cmd, body, bodyFile)
 		if err != nil {
+			return err
+		}
+		if !cmd.Flags().Changed("txid") {
+			key, err = mintTxID()
+			if err != nil {
+				return err
+			}
+		}
+		if err := writeTxID(cmd.ErrOrStderr(), key); err != nil {
 			return err
 		}
 		return call(cmd, address, "publish", client.PublishRequest{
@@ -69,8 +82,8 @@ func newPublishCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&to, "to", nil, "addressee; repeat for more than one; omit for none")
 	cmd.Flags().StringVar(&body, "body", "", "message body")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "file to read the body from; - reads stdin")
-	cmd.Flags().StringVar(&key, "txid", "", "caller-supplied transaction id")
-	markRequired(cmd, "conversation", "from", "txid")
+	cmd.Flags().StringVar(&key, "txid", "", "transaction id; 32 hex characters when omitted")
+	markRequired(cmd, "conversation", "from")
 	return cmd
 }
 
@@ -201,6 +214,26 @@ func publishBody(cmd *cobra.Command, inline, path string) (string, error) {
 		return "", err
 	}
 	return string(raw), nil
+}
+
+// mintTxID is one attempt id: 32 lowercase hex characters from 16 random bytes.
+func mintTxID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
+// writeTxID prints the attempt id before the call so a retry can reuse it.
+func writeTxID(w io.Writer, id string) error {
+	if _, err := fmt.Fprintf(w, "txid: %s\n", id); err != nil {
+		return err
+	}
+	if f, ok := w.(interface{ Flush() error }); ok {
+		return f.Flush()
+	}
+	return nil
 }
 
 func call(cmd *cobra.Command, address, op string, body any) error {

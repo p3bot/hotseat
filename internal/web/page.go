@@ -76,12 +76,12 @@ func (s Server) render(w http.ResponseWriter, p page) {
 	}
 }
 
-// The page has no scripts. The response is not stored: it holds the
-// transcript and the transaction id the operator just typed.
 func setPageHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// The body holds the transcript and, after a failed publish, the posted id.
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+	// Inline script fills an empty txid on Publish. default-src none would block it.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// same-origin keeps a cross-site request from carrying the cursor in Referer.
 	// no-referrer would send Origin: null for this page's own POST.
@@ -164,10 +164,31 @@ ul { padding-left: 1.2rem; }
 <p class="hint">One name per line. Empty sends no addressee. Order is kept.</p>
 <label for="body">Body <textarea id="body" name="body" rows="6">{{.Body}}</textarea></label>
 <label for="txid">Transaction id <input id="txid" name="txid" value="{{.TxID}}" autocomplete="off"></label>
-<button type="submit" formaction="{{.PublishAction}}">Publish</button>
-<p class="hint">The server forgets this transaction id when the response is sent. It does not invent one.</p>
+<button type="submit" id="publish-button" formaction="{{.PublishAction}}">Publish</button>
+<p class="hint">An empty id is filled here when you publish. The server does not invent one. A stored publish clears this field.</p>
 </section>
 </form>
+<script>
+(function () {
+  var form = document.getElementById("read-form");
+  var publish = document.getElementById("publish-button");
+  if (!form || !publish) return;
+  form.addEventListener("submit", function (event) {
+    if (event.submitter !== publish) return;
+    var field = document.getElementById("txid");
+    if (!field || field.value !== "") return;
+    var bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    var hex = "";
+    for (var i = 0; i < bytes.length; i++) {
+      var h = bytes[i].toString(16);
+      if (h.length < 2) h = "0" + h;
+      hex += h;
+    }
+    field.value = hex;
+  });
+})();
+</script>
 {{end}}
 </body>
 </html>

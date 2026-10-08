@@ -444,8 +444,57 @@ func TestNewDatabaseSchema(t *testing.T) {
 	if version != "1" || !containsCol(cols, "txid") {
 		t.Fatalf("version=%s cols=%v", version, cols)
 	}
-	if !strings.Contains(tableSQL, "UNIQUE (conversation, txid)") {
+	if !strings.Contains(tableSQL, "UNIQUE (conversation, sender, txid)") {
 		t.Fatalf("sql=%s", tableSQL)
+	}
+}
+
+func TestPublishAttemptIsPerSender(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, _, err := st.Create(ctx, "job"); err != nil {
+		t.Fatal(err)
+	}
+	alice, _, already, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"bob"},
+		Body: "one", TxID: "1", Time: "t",
+	})
+	if err != nil || already || alice.Seq != 1 {
+		t.Fatalf("alice = %+v already=%v err=%v", alice, already, err)
+	}
+	bob, _, already, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "bob", To: []string{"bob"},
+		Body: "one", TxID: "1", Time: "t2",
+	})
+	if err != nil || already || bob.Seq != 2 || bob.From != "bob" {
+		t.Fatalf("bob = %+v already=%v err=%v", bob, already, err)
+	}
+	again, _, already, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"bob"},
+		Body: "one", TxID: "1", Time: "later",
+	})
+	if err != nil || !already || again.Seq != 1 || again.Time != alice.Time {
+		t.Fatalf("retry = %+v already=%v err=%v", again, already, err)
+	}
+	if _, _, _, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"carol"},
+		Body: "one", TxID: "1", Time: "later",
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("different to: %v", err)
+	}
+	fresh, _, already, err := st.Publish(ctx, Publish{
+		Conversation: "job", From: "alice", To: []string{"bob"},
+		Body: "one", TxID: "2", Time: "t3",
+	})
+	if err != nil || already || fresh.Seq != 3 {
+		t.Fatalf("new id = %+v already=%v err=%v", fresh, already, err)
+	}
+	_, msgs, err := st.Transcript(ctx, "job", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len = %d", len(msgs))
 	}
 }
 

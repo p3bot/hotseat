@@ -174,8 +174,11 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	if !strings.Contains(stored, `class="from">alice<`) || !strings.Contains(stored, `class="txid">idem-9f3a<`) {
 		t.Fatalf("identity\n%s", stored)
 	}
-	if !strings.Contains(stored, `value="idem-9f3a"`) {
-		t.Fatalf("key not held on the page\n%s", stored)
+	if strings.Contains(stored, `value="idem-9f3a"`) || !strings.Contains(stored, `id="txid" name="txid" value=""`) {
+		t.Fatalf("ok publish kept the field\n%s", stored)
+	}
+	if !strings.Contains(stored, "crypto.getRandomValues") || !strings.Contains(hdr.Get("Content-Security-Policy"), "script-src 'unsafe-inline'") {
+		t.Fatalf("script or policy\n%s\n%s", hdr.Get("Content-Security-Policy"), stored)
 	}
 
 	_, again, _ := postPage(t, page.URL+"/publish", form)
@@ -195,6 +198,9 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	_, conflict, _ := postPage(t, page.URL+"/publish", changed)
 	if !strings.Contains(conflict, `id="publish-outcome">refused<`) || !strings.Contains(conflict, bus.ReasonKeyConflict) {
 		t.Fatalf("conflict\n%s", conflict)
+	}
+	if !strings.Contains(conflict, `id="txid" name="txid" value="idem-9f3a"`) {
+		t.Fatalf("refused publish dropped the id\n%s", conflict)
 	}
 
 	emptyKey := url.Values{}
@@ -246,6 +252,30 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 		t.Fatalf("replay wrote\n%s", final)
 	}
 	if strings.Contains(logs.String(), "idem-9f3a") || strings.Contains(logs.String(), "idem-new") || strings.Contains(logs.String(), "cursor=") {
+		t.Fatalf("log %s", logs.String())
+	}
+}
+
+func TestFailedPublishKeepsThePostedID(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	page, logs := newPage(t, addr, "")
+	form := url.Values{}
+	form.Set("conversation", "job")
+	form.Set("from", "alice")
+	form.Set("body", "hello")
+	form.Set("txid", "keep-me")
+	_, body, _ := postPage(t, page.URL+"/publish", form)
+	if !strings.Contains(body, client.OutcomeConnectionFailure) || !strings.Contains(body, `id="txid" name="txid" value="keep-me"`) {
+		t.Fatalf("page\n%s", body)
+	}
+	if strings.Contains(logs.String(), "keep-me") || strings.Contains(logs.String(), "txid=") {
 		t.Fatalf("log %s", logs.String())
 	}
 }

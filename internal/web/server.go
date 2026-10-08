@@ -296,6 +296,9 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			p.Notice = err.Error()
 		}
 	}
+	if res.Outcome == bus.OutcomeOK {
+		p.TxID = ""
+	}
 	s.render(w, p)
 }
 
