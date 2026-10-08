@@ -16,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,7 +38,18 @@ const (
 	recordName = "hotseat.pid"
 )
 
-var errBusNotRunning = errors.New("bus is not running")
+// statusFailure is a finished status report that exits 1.
+// The report is already on stdout. The error text stays empty so the process
+// does not add a second line.
+type statusFailure struct{}
+
+func (statusFailure) Error() string { return "" }
+
+// StatusFailure reports a finished status check that exits 1.
+func StatusFailure(err error) bool {
+	var failed statusFailure
+	return errors.As(err, &failed)
+}
 
 type busConfig struct {
 	store     string
@@ -375,22 +387,233 @@ func waitStopped(ctx context.Context, pids []int, dir string) error {
 	}
 }
 
-func statusBus(w io.Writer, storeDir string) error {
+type healthReport struct {
+	health string
+	listen string
+	reason string
+	pid    int
+	store  string
+}
+
+var healthClient = &http.Client{
+	Timeout: 5 * time.Second,
+	Transport: &http.Transport{
+		Proxy:                 nil,
+		DisableKeepAlives:     true,
+		ResponseHeaderTimeout: 5 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout: 5 * time.Second,
+		}).DialContext,
+	},
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
+func statusBus(ctx context.Context, w io.Writer, address string) error {
 	if w == nil {
 		w = os.Stdout
 	}
-	dir, err := resolveStore(storeDir)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rep, err := collectStatus(ctx, address)
 	if err != nil {
 		return err
 	}
-	got, err := inspectBus(dir)
-	if err != nil {
+	if err := printHealth(w, rep); err != nil {
 		return err
 	}
-	if !got.running {
-		return errBusNotRunning
+	if rep.health != "pass" {
+		return statusFailure{}
 	}
-	return printBus(w, got.pid, got.addr, dir)
+	return nil
+}
+
+func collectStatus(ctx context.Context, address string) (healthReport, error) {
+	body, code, err := getHealth(ctx, address)
+	if err != nil && ctx.Err() != nil {
+		return healthReport{}, ctx.Err()
+	}
+	return interpretHealth(address, body, code, err)
+}
+
+func interpretHealth(address, body string, code int, dialErr error) (healthReport, error) {
+	if dialErr != nil {
+		return healthReport{
+			health: "connection_failure",
+			listen: address,
+			reason: dialErr.Error(),
+		}, nil
+	}
+	rep := healthReport{health: healthWord(code, body), listen: address}
+	pid, dir, ok, err := localServeBound(address)
+	if err != nil {
+		return healthReport{}, err
+	}
+	if ok {
+		rep.pid = pid
+		rep.store = dir
+	}
+	return rep, nil
+}
+
+func healthWord(code int, body string) string {
+	if code == http.StatusOK && (body == "pass" || body == "pass\n") {
+		return "pass"
+	}
+	return "fail"
+}
+
+func getHealth(ctx context.Context, address string) (body string, code int, err error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", 0, fmt.Errorf("connection failed: %s: %w", address, err)
+	}
+	url := "http://" + net.JoinHostPort(host, port) + bus.PathHealth
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("connection failed: %s: %w", address, err)
+	}
+	resp, err := healthClient.Do(req)
+	if err != nil {
+		return "", 0, fmt.Errorf("connection failed: %s: %w", address, err)
+	}
+	defer resp.Body.Close()
+	// pass plus one newline is the longest accepted body. One extra byte makes it fail.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8))
+	if err != nil {
+		return "", 0, fmt.Errorf("connection failed: %s: %w", address, err)
+	}
+	return string(raw), resp.StatusCode, nil
+}
+
+func printHealth(w io.Writer, rep healthReport) error {
+	if _, err := fmt.Fprintf(w, "health: %s\nlisten: %s\n", rep.health, rep.listen); err != nil {
+		return err
+	}
+	if rep.reason != "" {
+		if _, err := fmt.Fprintf(w, "reason: %s\n", rep.reason); err != nil {
+			return err
+		}
+	}
+	if rep.pid != 0 {
+		if _, err := fmt.Fprintf(w, "pid: %d\nstore: %s\n", rep.pid, rep.store); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func localServeBound(address string) (pid int, dir string, ok bool, err error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0, "", false, fmt.Errorf("list processes: %w", err)
+	}
+	ownNS, nsErr := ownNetNS()
+	if nsErr != nil {
+		ownNS = nil
+	}
+	var foundPid int
+	var foundDir string
+	var found int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 1 || !pidAlive(pid) {
+			continue
+		}
+		args, err := processArgs(pid)
+		if err != nil || !isBusServe(args) {
+			continue
+		}
+		// Loopback in another network is not the socket that answered.
+		// A namespace that cannot be read is skipped. When our own namespace
+		// cannot be read, the scan keeps today's address match.
+		if ownNS != nil && !sameNetNS(ownNS, pid) {
+			continue
+		}
+		addrs, err := processListenAddrs(pid)
+		if err != nil {
+			continue
+		}
+		matched := false
+		for _, addr := range addrs {
+			if sameListen(addr, address) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		storeDir, err := processStore(pid, args)
+		if err != nil {
+			return 0, "", false, err
+		}
+		found++
+		foundPid = pid
+		foundDir = storeDir
+	}
+	if found == 0 {
+		return 0, "", false, nil
+	}
+	if found > 1 {
+		return 0, "", false, fmt.Errorf("more than one bus is bound to %s", address)
+	}
+	return foundPid, foundDir, true, nil
+}
+
+func ownNetNS() (os.FileInfo, error) {
+	info, err := os.Stat("/proc/self/ns/net")
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+func sameNetNS(own os.FileInfo, pid int) bool {
+	info, err := os.Stat(fmt.Sprintf("/proc/%d/ns/net", pid))
+	if err != nil {
+		return false
+	}
+	return os.SameFile(own, info)
+}
+
+func processStore(pid int, args [][]byte) (string, error) {
+	if arg := argValue(args, "--store"); filepath.IsAbs(arg) {
+		return arg, nil
+	}
+	dir, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	if err != nil {
+		return "", fmt.Errorf("bus store: %w", err)
+	}
+	return dir, nil
+}
+
+func sameListen(a, b string) bool {
+	ah, ap, err := net.SplitHostPort(a)
+	if err != nil {
+		return false
+	}
+	bh, bp, err := net.SplitHostPort(b)
+	if err != nil {
+		return false
+	}
+	an, aerr := strconv.Atoi(ap)
+	bn, berr := strconv.Atoi(bp)
+	if aerr != nil || berr != nil || an != bn {
+		return false
+	}
+	aip := net.ParseIP(ah)
+	bip := net.ParseIP(bh)
+	if aip == nil || bip == nil {
+		return strings.EqualFold(ah, bh)
+	}
+	// 127.0.0.1 and ::1 are different addresses. A mapped IPv4 is still IPv4.
+	if (aip.To4() == nil) != (bip.To4() == nil) {
+		return false
+	}
+	return aip.Equal(bip)
 }
 
 func printBus(w io.Writer, pid int, addr, dir string) error {

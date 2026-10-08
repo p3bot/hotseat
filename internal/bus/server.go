@@ -16,6 +16,8 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -37,8 +39,11 @@ type Options struct {
 	OnBlock func(conversation, name string)
 	// Token is the shared capability secret for this listener.
 	// Empty means the listener does not require one. A non-empty token is
-	// required on every request and is not logged or stored.
+	// required on every operation and is not logged or stored.
+	// GET /health does not read it.
 	Token string
+	// schema, when set, replaces the meta read. Nil reads the open store.
+	schema func(context.Context) (string, error)
 }
 
 // Serve accepts connections on ln until ctx is cancelled.
@@ -99,20 +104,85 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST "+PathClose, s.handleClose)
 	mux.HandleFunc("POST "+PathList, s.handleList)
 	mux.HandleFunc("/", s.handleUnknown)
-	if s.token == "" {
-		return mux
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Before the operation, so a refusal cannot block in wait or write.
-		switch checkToken(r.Header, s.token) {
-		case tokenOK:
-			mux.ServeHTTP(w, r)
-		case tokenMissing:
-			s.finish(w, opName(r.URL.Path), "", time.Now(), refused(ReasonTokenRequired), nil)
-		default:
-			s.finish(w, opName(r.URL.Path), "", time.Now(), refused(ReasonTokenRejected), nil)
+		// Before the token check, so a missing credential never sees this route.
+		if r.Method == http.MethodGet && r.URL.Path == PathHealth {
+			s.handleHealth(w, r)
+			return
 		}
+		if s.token != "" {
+			// Before the operation, so a refusal cannot block in wait or write.
+			switch checkToken(r.Header, s.token) {
+			case tokenOK:
+			case tokenMissing:
+				s.finish(w, opName(r.URL.Path), "", time.Now(), refused(ReasonTokenRequired), nil)
+				return
+			default:
+				s.finish(w, opName(r.URL.Path), "", time.Now(), refused(ReasonTokenRejected), nil)
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
 	})
+}
+
+func (svc *Service) readSchema(ctx context.Context) (string, error) {
+	if svc.schema != nil {
+		return svc.schema(ctx)
+	}
+	return svc.store.Schema(ctx)
+}
+
+func healthErrText(err error, st *store.Store, token string) string {
+	msg := err.Error()
+	var hidden []string
+	if st != nil {
+		if path := st.Path(); path != "" {
+			hidden = append(hidden, path)
+			if dir := filepath.Dir(path); dir != "" && dir != "." && dir != "/" {
+				hidden = append(hidden, dir)
+			}
+		}
+	}
+	if token != "" {
+		hidden = append(hidden, token)
+	}
+	for _, secret := range hidden {
+		if strings.Contains(msg, secret) {
+			return "schema"
+		}
+	}
+	return msg
+}
+
+func healthDecision(version string, err error) (code int, word string) {
+	if err == nil && version == store.SchemaVersion {
+		return http.StatusOK, "pass"
+	}
+	return http.StatusServiceUnavailable, "fail"
+}
+
+func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	version, err := s.svc.readSchema(r.Context())
+	// The caller leaving is not a schema result. A cancelled read would otherwise be fail.
+	if r.Context().Err() != nil {
+		s.svc.log.Info("call", "op", "health", "outcome", "dropped", "duration", time.Since(start))
+		abort(w)
+		return
+	}
+	code, word := healthDecision(version, err)
+	if err != nil {
+		// A driver error can name the database or the token. Keep the text only when it does not.
+		s.svc.log.Error("call", "op", "health", "outcome", word, "err", healthErrText(err, s.svc.store, s.token), "duration", time.Since(start))
+	} else {
+		s.svc.log.Info("call", "op", "health", "outcome", word, "duration", time.Since(start))
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(code)
+	if _, werr := io.WriteString(w, word+"\n"); werr != nil {
+		s.svc.log.Error("write response", "op", "health", "err", werr)
+	}
 }
 
 func opName(path string) string {

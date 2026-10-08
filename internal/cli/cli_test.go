@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -294,6 +295,18 @@ func TestBusHelpNamesDataHome(t *testing.T) {
 	if stopOut.String() == "" || strings.Contains(stopOut.String(), "--listen") || strings.Contains(stopOut.String(), "--debug") {
 		t.Fatalf("stop help:\n%s", stopOut.String())
 	}
+	statusOut := bytes.Buffer{}
+	err = execute(context.Background(), []string{"bus", "status", "--help"}, &statusOut, &stderr)
+	if err != nil {
+		t.Fatalf("status help: %v\n%s", err, stderr.String())
+	}
+	statusHelp := statusOut.String()
+	if !strings.Contains(statusHelp, "--address") || !strings.Contains(statusHelp, bus.DefaultListen) || !strings.Contains(statusHelp, "GET /health") || !strings.Contains(statusHelp, "pass") {
+		t.Fatalf("status help:\n%s", statusHelp)
+	}
+	if strings.Contains(statusHelp, "--store") || strings.Contains(statusHelp, "--token-file") {
+		t.Fatalf("status help selects a store or a token:\n%s", statusHelp)
+	}
 }
 
 func TestNonLoopbackDoesNotListenOrCreateStore(t *testing.T) {
@@ -428,17 +441,29 @@ func TestFlagDefaults(t *testing.T) {
 	if pageBus != bus.DefaultListen {
 		t.Fatalf("web address default = %s", pageBus)
 	}
-	for _, name := range []string{"stop", "status"} {
-		sub, _, err := cmd.Find([]string{"bus", name})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if sub.Flags().Lookup("listen") != nil || sub.Flags().Lookup("debug") != nil || sub.Flags().Lookup("token-file") != nil {
-			t.Fatalf("%s accepts a serve flag", name)
-		}
-		if sub.Flags().Lookup("store") == nil {
-			t.Fatalf("%s has no store flag", name)
-		}
+	stop, _, err := cmd.Find([]string{"bus", "stop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stop.Flags().Lookup("listen") != nil || stop.Flags().Lookup("debug") != nil || stop.Flags().Lookup("token-file") != nil {
+		t.Fatal("stop accepts a serve flag")
+	}
+	if stop.Flags().Lookup("store") == nil {
+		t.Fatal("stop has no store flag")
+	}
+	status, _, err := cmd.Find([]string{"bus", "status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Flags().Lookup("listen") != nil || status.Flags().Lookup("debug") != nil || status.Flags().Lookup("token-file") != nil || status.Flags().Lookup("store") != nil {
+		t.Fatal("status accepts a serve flag")
+	}
+	address, err := status.Flags().GetString("address")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if address != bus.DefaultListen {
+		t.Fatalf("status address default = %s", address)
 	}
 }
 
@@ -664,6 +689,43 @@ func runBinCmd(t *testing.T, bin string, args ...string) cmdResult {
 	return cmdResult{stdout: stdout.String(), stderr: stderr.String(), code: exitErr.ExitCode()}
 }
 
+func parseStatus(t *testing.T, text string) (health, listen, reason, storeDir string, pid int) {
+	t.Helper()
+	sawPID := false
+	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		key, val, ok := strings.Cut(line, ": ")
+		if !ok {
+			t.Fatalf("line %q in %q", line, text)
+		}
+		switch key {
+		case "health":
+			health = val
+		case "listen":
+			listen = val
+		case "reason":
+			reason = val
+		case "pid":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				t.Fatalf("pid %q: %v", line, err)
+			}
+			pid = n
+			sawPID = true
+		case "store":
+			storeDir = val
+		default:
+			t.Fatalf("field %s in %q", key, text)
+		}
+	}
+	if health == "" || listen == "" || sawPID != (storeDir != "") {
+		t.Fatalf("report %q", text)
+	}
+	return health, listen, reason, storeDir, pid
+}
+
 func parseBusReport(t *testing.T, text string) (pid int, listen, storeDir string) {
 	t.Helper()
 	for _, line := range strings.Split(text, "\n") {
@@ -734,7 +796,7 @@ func TestReadmeDescribesDetachedBus(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(text)
-	for _, name := range []string{"hotseat bus start", "hotseat bus stop", "hotseat bus status", "hotseat.log", "$XDG_DATA_HOME/hotseat", "text result", "body <<5"} {
+	for _, name := range []string{"hotseat bus start", "hotseat bus stop", "hotseat bus status", "hotseat.log", "$XDG_DATA_HOME/hotseat", "text result", "body <<5", "GET /health", "does not take `--store`"} {
 		if !strings.Contains(body, name) {
 			t.Fatalf("readme missing %s", name)
 		}
@@ -776,12 +838,16 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatalf("data home was created: %v", statErr)
 		}
 		missing := filepath.Join(t.TempDir(), "missing")
-		status := runBinCmd(t, bin, "bus", "status", "--store", missing)
-		if status.code != 1 || !strings.Contains(status.stderr, "not running") {
-			t.Fatalf("status %d\n%s%s", status.code, status.stdout, status.stderr)
+		rejected := runBinCmd(t, bin, "bus", "status", "--store", missing)
+		if rejected.code == 0 || !strings.Contains(rejected.stderr, "unknown flag") || rejected.stdout != "" {
+			t.Fatalf("status --store %d\n%s%s", rejected.code, rejected.stdout, rejected.stderr)
 		}
 		if _, statErr := os.Stat(missing); !os.IsNotExist(statErr) {
 			t.Fatalf("status created the store: %v", statErr)
+		}
+		refused := runBinCmd(t, bin, "bus", "status", "--address", "127.0.0.1:1")
+		if refused.code != 1 || !strings.Contains(refused.stdout, "health: connection_failure") || !strings.Contains(refused.stdout, "127.0.0.1:1") || strings.Contains(refused.stdout, "pid:") || strings.Contains(refused.stdout, "store:") {
+			t.Fatalf("status %d\n%s%s", refused.code, refused.stdout, refused.stderr)
 		}
 		stopped := runBinCmd(t, bin, "bus", "stop", "--store", missing)
 		if stopped.code != 0 {
@@ -917,8 +983,8 @@ func TestDetachedBus(t *testing.T) {
 		if againStop.code != 0 {
 			t.Fatalf("second stop %d\n%s", againStop.code, againStop.stderr)
 		}
-		down := runBinCmd(t, bin, "bus", "status", "--store", storeDir)
-		if down.code != 1 || !strings.Contains(down.stderr, "not running") {
+		down := runBinCmd(t, bin, "bus", "status", "--address", addr)
+		if down.code != 1 || !strings.Contains(down.stdout, "health: connection_failure") || !strings.Contains(down.stdout, addr) || strings.Contains(down.stdout, "pid:") {
 			t.Fatalf("status %d\n%s%s", down.code, down.stdout, down.stderr)
 		}
 		missed := callClient(t, bin, "create", "--address", addr, "--name", "next")
@@ -946,13 +1012,13 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatal("debug output contains the token")
 		}
 
-		status := runBinCmd(t, bin, "bus", "status", "--store", storeDir)
+		status := runBinCmd(t, bin, "bus", "status", "--address", addr)
 		if status.code != 0 {
 			t.Fatalf("status %d\n%s%s", status.code, status.stdout, status.stderr)
 		}
-		statusPID, statusListen, statusStore := parseBusReport(t, status.stdout)
-		if statusPID != debugPID || statusListen != addr || statusStore != storeDir {
-			t.Fatalf("status pid %d listen %s store %s", statusPID, statusListen, statusStore)
+		health, statusListen, _, statusStore, statusPID := parseStatus(t, status.stdout)
+		if health != "pass" || statusPID != debugPID || statusListen != addr || statusStore != storeDir {
+			t.Fatalf("status %s pid %d listen %s store %s", health, statusPID, statusListen, statusStore)
 		}
 
 		if err := syscall.Kill(debugPID, syscall.SIGKILL); err != nil {
@@ -960,8 +1026,8 @@ func TestDetachedBus(t *testing.T) {
 		}
 		deadline := time.Now().Add(3 * time.Second)
 		for {
-			dead := runBinCmd(t, bin, "bus", "status", "--store", storeDir)
-			if dead.code == 1 && strings.Contains(dead.stderr, "not running") {
+			dead := runBinCmd(t, bin, "bus", "status", "--address", addr)
+			if dead.code == 1 && strings.Contains(dead.stdout, "health: connection_failure") && !strings.Contains(dead.stdout, "pid:") {
 				break
 			}
 			if time.Now().After(deadline) {
@@ -1006,13 +1072,13 @@ func TestDetachedBus(t *testing.T) {
 		if listen != addr || !pidAlive(pid) {
 			t.Fatalf("pid %d listen %s", pid, listen)
 		}
-		status := runBinCmd(t, bin, "bus", "status", "--store", real)
+		status := runBinCmd(t, bin, "bus", "status", "--address", addr)
 		if status.code != 0 {
 			t.Fatalf("status %d\n%s%s", status.code, status.stdout, status.stderr)
 		}
-		statusPID, statusListen, statusStore := parseBusReport(t, status.stdout)
-		if statusPID != pid || statusListen != addr || !sameFile(statusStore, real) {
-			t.Fatalf("status pid %d listen %s store %s", statusPID, statusListen, statusStore)
+		health, statusListen, _, statusStore, statusPID := parseStatus(t, status.stdout)
+		if health != "pass" || statusPID != pid || statusListen != addr || !sameFile(statusStore, real) {
+			t.Fatalf("status %s pid %d listen %s store %s", health, statusPID, statusListen, statusStore)
 		}
 		again := runBinCmd(t, bin, "bus", "start", "--store", real, "--listen", freeLoopbackAddr(t))
 		if again.code != 0 {
@@ -1033,8 +1099,8 @@ func TestDetachedBus(t *testing.T) {
 		if err != nil || held {
 			t.Fatalf("lock held %v %v", held, err)
 		}
-		down := runBinCmd(t, bin, "bus", "status", "--store", link)
-		if down.code != 1 || !strings.Contains(down.stderr, "not running") {
+		down := runBinCmd(t, bin, "bus", "status", "--address", addr)
+		if down.code != 1 || !strings.Contains(down.stdout, "health: connection_failure") || strings.Contains(down.stdout, "pid:") {
 			t.Fatalf("status after stop %d\n%s%s", down.code, down.stdout, down.stderr)
 		}
 	})
@@ -1115,13 +1181,13 @@ func TestDetachedBus(t *testing.T) {
 		if err := os.Remove(filepath.Join(storeDir, recordName)); err != nil {
 			t.Fatal(err)
 		}
-		status := runBinCmd(t, bin, "bus", "status", "--store", storeDir)
+		status := runBinCmd(t, bin, "bus", "status", "--address", addr)
 		if status.code != 0 {
 			t.Fatalf("status %d\n%s%s", status.code, status.stdout, status.stderr)
 		}
-		statusPID, statusListen, statusStore := parseBusReport(t, status.stdout)
-		if statusPID != pid || statusListen != listen || !sameFile(statusStore, storeDir) {
-			t.Fatalf("status pid %d listen %s store %s", statusPID, statusListen, statusStore)
+		health, statusListen, _, statusStore, statusPID := parseStatus(t, status.stdout)
+		if health != "pass" || statusPID != pid || statusListen != listen || !sameFile(statusStore, storeDir) {
+			t.Fatalf("status %s pid %d listen %s store %s", health, statusPID, statusListen, statusStore)
 		}
 		again := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", freeLoopbackAddr(t))
 		if again.code != 0 {
@@ -1142,11 +1208,209 @@ func TestDetachedBus(t *testing.T) {
 		if err != nil || held {
 			t.Fatalf("lock held %v %v", held, err)
 		}
-		down := runBinCmd(t, bin, "bus", "status", "--store", storeDir)
-		if down.code != 1 || !strings.Contains(down.stderr, "not running") {
+		down := runBinCmd(t, bin, "bus", "status", "--address", addr)
+		if down.code != 1 || !strings.Contains(down.stdout, "health: connection_failure") || strings.Contains(down.stdout, "pid:") {
 			t.Fatalf("status after stop %d\n%s%s", down.code, down.stdout, down.stderr)
 		}
 	})
+
+	t.Run("default address", func(t *testing.T) {
+		probe, err := net.Listen("tcp", bus.DefaultListen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := probe.Close(); err != nil {
+			t.Fatal(err)
+		}
+		storeDir := filepath.Join(t.TempDir(), "store")
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = stopBus(ctx, storeDir)
+		})
+		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", bus.DefaultListen)
+		if started.code != 0 {
+			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
+		}
+		pid, listen, gotStore := parseBusReport(t, started.stdout)
+		if listen != bus.DefaultListen || gotStore != storeDir {
+			t.Fatalf("listen %s store %s", listen, gotStore)
+		}
+		status := runBinCmd(t, bin, "bus", "status")
+		if status.code != 0 {
+			t.Fatalf("status %d\n%s%s", status.code, status.stdout, status.stderr)
+		}
+		health, statusListen, _, statusStore, statusPID := parseStatus(t, status.stdout)
+		if health != "pass" || statusPID != pid || statusListen != bus.DefaultListen || statusStore != storeDir {
+			t.Fatalf("status %s pid %d listen %s store %s", health, statusPID, statusListen, statusStore)
+		}
+	})
+}
+
+func TestStatusReport(t *testing.T) {
+	if !sameListen("127.0.0.1:4727", "127.0.0.1:4727") || sameListen("127.0.0.1:4727", "[::1]:4727") {
+		t.Fatal("loopback addresses")
+	}
+	if !sameListen("[::1]:4727", "[::1]:4727") || sameListen("0.0.0.0:9", "127.0.0.1:9") {
+		t.Fatal("bound address")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != bus.PathHealth {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Error("status sent a token")
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "pass\n")
+	}))
+	t.Cleanup(srv.Close)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	rep, err := collectStatus(context.Background(), addr)
+	if err != nil || rep.health != "pass" || rep.listen != addr || rep.pid != 0 || rep.store != "" || rep.reason != "" {
+		t.Fatalf("%+v %v", rep, err)
+	}
+
+	odd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "pass\nextra")
+	}))
+	t.Cleanup(odd.Close)
+	oddAddr := strings.TrimPrefix(odd.URL, "http://")
+	rep, err = collectStatus(context.Background(), oddAddr)
+	if err != nil || rep.health != "fail" || rep.pid != 0 {
+		t.Fatalf("odd %+v %v", rep, err)
+	}
+
+	bin := buildBinary(t)
+	storeDir := filepath.Join(t.TempDir(), "store")
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = stopBus(ctx, storeDir)
+	})
+	busAddr := freeLoopbackAddr(t)
+	started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", busAddr)
+	if started.code != 0 {
+		t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
+	}
+	pid, _, _ := parseBusReport(t, started.stdout)
+	failed, err := interpretHealth(busAddr, "fail\n", http.StatusServiceUnavailable, nil)
+	if err != nil || failed.health != "fail" || failed.pid != pid || failed.store != storeDir || failed.listen != busAddr {
+		t.Fatalf("fail %+v %v", failed, err)
+	}
+	missed, err := interpretHealth(busAddr, "", 0, errors.New("connection failed: "+busAddr+": refused"))
+	if err != nil || missed.health != "connection_failure" || missed.pid != 0 || missed.store != "" || !strings.Contains(missed.reason, busAddr) || !strings.Contains(missed.reason, "refused") {
+		t.Fatalf("missed %+v %v", missed, err)
+	}
+	var stdout, stderr bytes.Buffer
+	err = execute(context.Background(), []string{"bus", "status", "--address", "127.0.0.1:1"}, &stdout, &stderr)
+	if !StatusFailure(err) || stderr.Len() != 0 || !strings.Contains(stdout.String(), "health: connection_failure") {
+		t.Fatalf("err %v\n%s%s", err, stdout.String(), stderr.String())
+	}
+}
+
+func TestMain(m *testing.M) {
+	if os.Getenv("HOTSEAT_FAKE_SERVE") == "1" {
+		os.Exit(fakeServeListen())
+	}
+	os.Exit(m.Run())
+}
+
+func fakeServeListen() int {
+	addr := os.Getenv("HOTSEAT_FAKE_LISTEN")
+	if addr == "" {
+		fmt.Fprintln(os.Stderr, "listen address is required")
+		return 1
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer ln.Close()
+	if _, err := ln.Accept(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+func TestLocalServeBoundSkipsOtherNetNS(t *testing.T) {
+	own, err := ownNetNS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameNetNS(own, os.Getpid()) {
+		t.Fatal("this process is in another network")
+	}
+
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Skip("unshare is not installed")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := freeLoopbackAddr(t)
+	cmd := exec.Command("unshare", "-Urn", "--", exe, "bus", "serve")
+	cmd.Env = append(os.Environ(), "HOTSEAT_FAKE_SERVE=1", "HOTSEAT_FAKE_LISTEN="+addr)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+
+	other, ok := waitOtherNetServe(t, own, addr)
+	if !ok {
+		t.Skip("cannot start a bus in another network: " + stderr.String())
+	}
+	if sameNetNS(own, other) {
+		t.Fatalf("pid %d shares this network", other)
+	}
+	pid, dir, bound, err := localServeBound(addr)
+	if err != nil || bound || pid != 0 || dir != "" {
+		t.Fatalf("pid %d store %q ok %v err %v", pid, dir, bound, err)
+	}
+}
+
+func waitOtherNetServe(t *testing.T, own os.FileInfo, addr string) (int, bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir("/proc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			pid, err := strconv.Atoi(entry.Name())
+			if err != nil || pid <= 1 || !pidAlive(pid) {
+				continue
+			}
+			args, err := processArgs(pid)
+			if err != nil || !isBusServe(args) {
+				continue
+			}
+			addrs, err := processListenAddrs(pid)
+			if err != nil {
+				continue
+			}
+			for _, got := range addrs {
+				if !sameListen(got, addr) || sameNetNS(own, pid) {
+					continue
+				}
+				return pid, true
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return 0, false
 }
 
 func callClient(t *testing.T, bin string, args ...string) client.Result {

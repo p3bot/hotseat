@@ -30,7 +30,8 @@ const FileName = "hotseat.db"
 // It is a different file so the lock does not share an inode with SQLite.
 const LockName = FileName + ".lock"
 
-const schemaVersion = "1"
+// SchemaVersion is the schema this process serves.
+const SchemaVersion = "1"
 
 const (
 	// StatusOpen is a conversation that accepts publishes.
@@ -228,6 +229,25 @@ func (s *Store) Path() string {
 		return ""
 	}
 	return s.path
+}
+
+// Schema reads the schema version recorded in meta.
+// The read uses the open connection and writes nothing.
+func (s *Store) Schema(ctx context.Context) (string, error) {
+	if s == nil {
+		return "", errors.New("store is closed")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return "", errors.New("store is closed")
+	}
+	var version string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'schema'`).Scan(&version)
+	if err != nil {
+		return "", err
+	}
+	return version, nil
 }
 
 // Close releases the database and the process lock. It is safe to call twice.
@@ -459,7 +479,7 @@ func (s *Store) ensureSchema(ctx context.Context) error {
 			`SELECT value FROM meta WHERE key = 'schema'`).Scan(&version)
 		if errors.Is(err, sql.ErrNoRows) {
 			_, err = tx.ExecContext(ctx,
-				`INSERT INTO meta (key, value) VALUES ('schema', ?)`, schemaVersion)
+				`INSERT INTO meta (key, value) VALUES ('schema', ?)`, SchemaVersion)
 			if err != nil {
 				return fmt.Errorf("record schema version: %w", err)
 			}
@@ -468,7 +488,7 @@ func (s *Store) ensureSchema(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if version != schemaVersion {
+		if version != SchemaVersion {
 			return fmt.Errorf("%w: %s", ErrSchema, version)
 		}
 		return nil

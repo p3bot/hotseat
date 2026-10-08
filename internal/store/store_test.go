@@ -441,7 +441,7 @@ func TestNewDatabaseSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, cols, tableSQL := schemaOf(t, dir)
-	if version != "1" || !containsCol(cols, "txid") {
+	if version != SchemaVersion || !containsCol(cols, "txid") {
 		t.Fatalf("version=%s cols=%v", version, cols)
 	}
 	if !strings.Contains(tableSQL, "UNIQUE (conversation, sender, txid)") {
@@ -548,6 +548,28 @@ func containsCol(cols []string, name string) bool {
 		}
 	}
 	return false
+}
+
+func TestSchemaRead(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	version, err := st.Schema(ctx)
+	if err != nil || version != SchemaVersion {
+		t.Fatalf("schema %q %v", version, err)
+	}
+	if _, err := st.db.Exec(`UPDATE meta SET value = '99' WHERE key = 'schema'`); err != nil {
+		t.Fatal(err)
+	}
+	version, err = st.Schema(ctx)
+	if err != nil || version != "99" {
+		t.Fatalf("schema %q %v", version, err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Schema(ctx); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("closed %v", err)
+	}
 }
 
 func TestSchemaMismatchKeepsMessages(t *testing.T) {

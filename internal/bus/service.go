@@ -55,6 +55,7 @@ type Service struct {
 	clock   func() time.Time
 	log     *slog.Logger
 	onBlock func(conversation, name string)
+	schema  func(context.Context) (string, error)
 	mu      sync.Mutex
 	waiters map[string][]*waiter
 	cancel  context.CancelFunc
@@ -78,6 +79,7 @@ func newService(st *store.Store, opt Options) *Service {
 		clock:   opt.Clock,
 		log:     opt.Logger,
 		onBlock: opt.OnBlock,
+		schema:  opt.schema,
 		waiters: make(map[string][]*waiter),
 		cancel:  cancel,
 		done:    ctx.Done(),

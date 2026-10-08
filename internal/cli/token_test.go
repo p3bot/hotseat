@@ -303,9 +303,36 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 	assertBytesOmit(t, busLine, secrets)
 	assertBytesOmit(t, busEnv, secrets)
 	waitDial(t, dialAddr, nil)
-	running := runBinCmd(t, bin, "bus", "status", "--store", storeDir)
-	if running.code != 0 || !strings.Contains(running.stdout, strconv.Itoa(pid)) {
+	running := runBinCmd(t, bin, "bus", "status", "--address", listenAddr)
+	if running.code != 0 || !strings.Contains(running.stdout, "health: pass") || !strings.Contains(running.stdout, strconv.Itoa(pid)) || !strings.Contains(running.stdout, storeDir) {
 		t.Fatalf("status %d\n%s%s", running.code, running.stdout, running.stderr)
+	}
+	for _, auth := range []string{"", "Bearer " + wrong} {
+		req, err := http.NewRequest(http.MethodGet, "http://"+listenAddr+bus.PathHealth, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if auth != "" {
+			req.Header.Set(bus.TokenHeader, auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := io.ReadAll(resp.Body)
+		if cerr := resp.Body.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK || string(raw) != "pass\n" {
+			t.Fatalf("health %d %q auth %q", resp.StatusCode, raw, auth)
+		}
+		assertBytesOmit(t, raw, secrets)
+		if bytes.Contains(raw, []byte(storeDir)) || bytes.Contains(raw, []byte(strconv.Itoa(pid))) {
+			t.Fatalf("health body %q", raw)
+		}
 	}
 	assertBytesOmit(t, []byte(running.stdout+running.stderr), secrets)
 	record, err := os.ReadFile(filepath.Join(storeDir, recordName))

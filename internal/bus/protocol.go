@@ -59,6 +59,7 @@ const MaxNameLen = 64
 const valueAll = "all"
 
 // PathCreate and the routes beside it are the listener operations.
+// PathHealth is the unauthenticated pass or fail check. It is not an operation.
 const (
 	PathCreate  = "/create"
 	PathPublish = "/publish"
@@ -66,6 +67,7 @@ const (
 	PathWait    = "/wait"
 	PathClose   = "/close"
 	PathList    = "/list"
+	PathHealth  = "/health"
 )
 
 type ruleError struct {

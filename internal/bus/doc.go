@@ -11,8 +11,9 @@
 // It listens on one address until it is signalled. The default is loopback
 // and requires no token. A hostname is resolved once. The socket is a loopback
 // address only when every answer is loopback; any other socket requires the
-// shared capability token on every request. It does not launch agents and it
-// does not open connections to clients.
+// shared capability token on every operation. GET /health is not an operation
+// and answers pass or fail with no token, on every address. The process does
+// not launch agents and it does not open connections to clients.
 //
 // # Protocol
 //
@@ -21,9 +22,11 @@
 // timeout, refused, or unavailable. Read that field. A dropped
 // connection has no body and is not a timeout, a refusal, or unavailable.
 // Unknown JSON fields are ignored. A loopback listener accepts a request
-// with no token. Any other listener requires the token on every request.
+// with no token. Any other listener requires the token on every operation.
 // WriteToken sets that header. A missing or wrong token is refused and
 // writes nothing. The token is not a sender name and is not stored.
+// GET /health is not an operation. It reads the schema this process serves
+// and answers pass or fail with no token, on every address.
 //
 //	POST /create   {"name":"job"}
 //	POST /publish  {"conversation","from","to","body","txid"}

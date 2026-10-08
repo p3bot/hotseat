@@ -5,7 +5,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Package cli is the hotseat command line.
-// The bus runs detached: start, stop, and status manage that process.
+// The bus runs detached: start and stop manage that process.
+// status asks a listen address whether it can serve.
 // It does not launch agents and it does not open connections to clients.
 package cli
 
@@ -130,7 +131,8 @@ The database is ` + store.FileName + ` inside the store directory. When --store
 is omitted the directory is $XDG_DATA_HOME/hotseat. An unset, empty, or relative
 $XDG_DATA_HOME uses $HOME/.local/share/hotseat. A relative home directory is
 refused and nothing is created. hotseat bus start leaves the bus running until
-hotseat bus stop.`,
+hotseat bus stop. status asks a listen address, ` + bus.DefaultListen + ` by
+default, and does not select a store directory.`,
 		RunE: func(*cobra.Command, []string) error {
 			return errors.New("choose start, stop, or status")
 		},
@@ -210,20 +212,30 @@ success. stop does not signal any other process.`,
 }
 
 func newBusStatusCmd() *cobra.Command {
-	var storeDir string
+	var address string
 	cmd := &cobra.Command{
 		Use:           "status",
-		Short:         "Report whether the bus is running",
+		Short:         "Ask a listen address whether the bus can serve",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
-		Long: `Print the pid, the listen address, and the store path when the bus is
-running. When it is not running, exit 1 and report that.`,
+		Long: `Send GET /health to the address and print the result. The default
+address is ` + bus.DefaultListen + `. The request carries no token. GET /health
+is pass or fail, and it is not an operation.
+
+health is pass, fail, or connection_failure. listen is the address contacted.
+pass exits 0. fail and connection_failure exit 1. A completed response that is
+not 200 with a pass body is fail. When the request does not complete, health
+is connection_failure and reason names the address and the cause.
+
+When a bus serve process on this machine is bound to that address, the report
+also prints its pid and the store directory it holds. A remote answer prints
+health and listen only.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return statusBus(cmd.OutOrStdout(), storeDir)
+			return statusBus(cmd.Context(), cmd.OutOrStdout(), address)
 		},
 	}
-	cmd.Flags().StringVar(&storeDir, "store", "", "directory for the SQLite database (default $XDG_DATA_HOME/hotseat)")
+	cmd.Flags().StringVar(&address, "address", bus.DefaultListen, "bus address")
 	return cmd
 }
 
