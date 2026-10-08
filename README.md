@@ -24,7 +24,7 @@ A loopback listener ignores credentials. Any other listener requires the token o
 | Call | Body |
 | --- | --- |
 | `/v1/create` | `{"name"}` |
-| `/v1/publish` | `{"conversation","from","to","body","idempotency_key"}` |
+| `/v1/publish` | `{"conversation","from","to","body","txid"}` |
 | `/v1/read` | `{"conversation","cursor","limit","name"?}` |
 | `/v1/wait` | `{"conversation","cursor","name"?,"deadline"?}` |
 | `/v1/close` | `{"conversation"}` |
@@ -32,40 +32,40 @@ A loopback listener ignores credentials. Any other listener requires the token o
 
 `to` is an array. `[]` is empty. `["all"]` is the single value all. Any other array is an ordered name list and is not sorted or deduplicated. A different order is different content. `deadline` is a Go duration such as `30s` or `500ms`, or an RFC3339 end time. Omit it to wait until a match or a dropped connection. A duration is measured from arrival. An end time is absolute on the bus clock. A time already past times out at once when nothing matches, and a retry sends that same time.
 
-`cursor` `0` means the caller has seen no message. The bus does not store cursors or idempotency keys except the key recorded on an accepted message. The caller passes both on each call.
+`cursor` `0` means the caller has seen no message. The bus does not store cursors or transaction ids except the txid recorded on an accepted message. The caller passes both on each call.
 
-An ok create returns the conversation. A name that already exists returns that conversation, its status, and `"already_existed": true`, and writes nothing. An ok publish returns the message, including `seq`, and `conversation` with `name` and `status`, only after it is durable. The same key with the same `from`, `to`, and body returns that message and `"already_stored": true`, including after close, and writes nothing. Close sets `status` to `closed` and still accepts a new message. That publish returns `status` `closed`. An ok named wait returns every message after the cursor through the match and `match_seq`. An ok unnamed wait returns only the next message. Timeout returns no messages. Close does not end a wait.
+An ok create returns the conversation. A name that already exists returns that conversation, its status, and `"already_existed": true`, and writes nothing. An ok publish returns the message, including `seq`, and `conversation` with `name` and `status`, only after it is durable. The same txid with the same `from`, `to`, and body returns that message and `"already_stored": true`, including after close, and writes nothing. Close sets `status` to `closed` and still accepts a new message. That publish returns `status` `closed`. An ok named wait returns every message after the cursor through the match and `match_seq`. An ok unnamed wait returns only the next message. Timeout returns no messages. Close does not end a wait.
 
 `refused` names the broken rule in `reason` and writes nothing. `unavailable` means the change could not be made durable and writes nothing.
 
 ```bash
 curl -s localhost:4727/v1/create -d '{"name":"job"}'
-curl -s localhost:4727/v1/publish -d '{"conversation":"job","from":"alice","to":["bob"],"body":"hello","idempotency_key":"1"}'
+curl -s localhost:4727/v1/publish -d '{"conversation":"job","from":"alice","to":["bob"],"body":"hello","txid":"1"}'
 curl -s localhost:4727/v1/wait -d '{"conversation":"job","cursor":0,"name":"bob","deadline":"30s"}'
 ```
 
 ## Client
 
-The same binary calls a bus that is already running, then exits. The default address is `127.0.0.1:4727`. `--address` aims one invocation at another bus. `--token-file` reads the token for a non-loopback bus. The token is not a command-line argument. Omit the flag for loopback. The caller passes the cursor and the idempotency key. The client does not store them and does not mint a key.
+The same binary calls a bus that is already running, then exits. The default address is `127.0.0.1:4727`. `--address` aims one invocation at another bus. `--token-file` reads the token for a non-loopback bus. The token is not a command-line argument. Omit the flag for loopback. The caller passes the cursor and the transaction id. The client does not store them and does not mint one.
 
 ```bash
 hotseat create --name job
-hotseat publish --conversation job --from alice --to bob --body hello --idempotency-key 1
-hotseat publish --address 192.0.2.10:4727 --token-file /run/hotseat/token --conversation job --from alice --to bob --body hello --idempotency-key 1
-hotseat publish --conversation job --from alice --to bob --body-file - --idempotency-key 1
+hotseat publish --conversation job --from alice --to bob --body hello --txid 1
+hotseat publish --address 192.0.2.10:4727 --token-file /run/hotseat/token --conversation job --from alice --to bob --body hello --txid 1
+hotseat publish --conversation job --from alice --to bob --body-file - --txid 1
 hotseat read --conversation job --cursor 0 --limit 50
 hotseat wait --conversation job --cursor 0 --name bob --deadline 30s
 hotseat close --conversation job
 hotseat list
 ```
 
-`--body` is the message. `--body-file` reads it from a file, and `--body-file -` reads stdin, so a body can be larger than one command argument. Pass exactly one of the two. A body or an idempotency key that is not valid UTF-8 is `refused` with that bus rule, and the client does not connect.
+`--body` is the message. `--body-file` reads it from a file, and `--body-file -` reads stdin, so a body can be larger than one command argument. Pass exactly one of the two. A body or a transaction id that is not valid UTF-8 is `refused` with that bus rule, and the client does not connect.
 
 Each command prints one JSON object and exits. `outcome` is `ok`, `timeout`, `refused`, `unavailable`, or `connection_failure`. A usage error is a message on stderr and no object. A dropped call is retried once with the same arguments. Timeout is only the bus outcome. A full read page carries each message `seq`. The client does not request the next page.
 
 ## Web
 
-`hotseat web` serves a page that lists conversations, reads one transcript, and publishes. It calls a bus that is already running. It does not open the database. The default bus address is `127.0.0.1:4727`. The default page address is `127.0.0.1:4728`. The page listens on loopback. Any other listen address is refused. The page answers for the address it listens on. On loopback, localhost with that port is the same address. `--token-file` reads the token for a non-loopback bus. The page does not receive the token. Omit the flag for loopback. The person at the page supplies `from`, `to`, the body, the cursor, and the idempotency key. The server does not store the cursor or the key and does not invent a key. The page does not create, wait, or close.
+`hotseat web` serves a page that lists conversations, reads one transcript, and publishes. It calls a bus that is already running. It does not open the database. The default bus address is `127.0.0.1:4727`. The default page address is `127.0.0.1:4728`. The page listens on loopback. Any other listen address is refused. The page answers for the address it listens on. On loopback, localhost with that port is the same address. `--token-file` reads the token for a non-loopback bus. The page does not receive the token. Omit the flag for loopback. The person at the page supplies `from`, `to`, the body, the cursor, and the transaction id. The server does not store the cursor or the transaction id and does not invent one. The page does not create, wait, or close.
 
 ```bash
 hotseat web

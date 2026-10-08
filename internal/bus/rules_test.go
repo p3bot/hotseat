@@ -13,7 +13,7 @@ import (
 )
 
 func msg(seq int64, from string, to []string, body string) store.Message {
-	return store.Message{Seq: seq, From: from, To: to, Body: body, Key: body}
+	return store.Message{Seq: seq, From: from, To: to, Body: body, TxID: body}
 }
 
 func TestDecideWait(t *testing.T) {

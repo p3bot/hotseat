@@ -145,7 +145,7 @@ func TestTokenGateRefusesBeforeWrite(t *testing.T) {
 	if created.Outcome != OutcomeOK || created.Conversation == nil || created.Conversation.Name != "job" {
 		t.Fatalf("create %+v", created.Conversation)
 	}
-	badKey, _ := authPost(t, base, PathPublish, "Bearer "+wrong, []byte(`{"conversation":"job","from":"alice","to":["bob"],"body":"one","idempotency_key":"k1"}`), secrets)
+	badKey, _ := authPost(t, base, PathPublish, "Bearer "+wrong, []byte(`{"conversation":"job","from":"alice","to":["bob"],"body":"one","txid":"k1"}`), secrets)
 	if badKey.Outcome != OutcomeRefused || badKey.Reason != ReasonTokenRejected {
 		t.Fatalf("bad publish %+v", badKey)
 	}
@@ -158,7 +158,7 @@ func TestTokenGateRefusesBeforeWrite(t *testing.T) {
 	if alice.From != "alice" || alice.Body != "one" {
 		t.Fatalf("alice %+v", alice)
 	}
-	replay, _ := authPost(t, base, PathPublish, "Bearer "+wrong, []byte(`{"conversation":"job","from":"alice","to":["bob"],"body":"one","idempotency_key":"k1"}`), secrets)
+	replay, _ := authPost(t, base, PathPublish, "Bearer "+wrong, []byte(`{"conversation":"job","from":"alice","to":["bob"],"body":"one","txid":"k1"}`), secrets)
 	if replay.Outcome != OutcomeRefused || replay.Reason != ReasonTokenRejected || replay.AlreadyStored != nil {
 		t.Fatalf("replay without token %+v", replay)
 	}
@@ -213,7 +213,7 @@ func publishAuth(t *testing.T, base, token, from, key, body string, secrets []st
 		"from":            from,
 		"to":              []string{"bob"},
 		"body":            body,
-		"idempotency_key": key,
+		"txid": key,
 	})
 	if err != nil {
 		t.Fatal(err)

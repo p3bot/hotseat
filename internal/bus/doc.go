@@ -26,7 +26,7 @@
 // writes nothing. The token is not a sender name and is not stored.
 //
 //	POST /v1/create   {"name":"job"}
-//	POST /v1/publish  {"conversation","from","to","body","idempotency_key"}
+//	POST /v1/publish  {"conversation","from","to","body","txid"}
 //	POST /v1/read     {"conversation","cursor","limit","name"?}
 //	POST /v1/wait     {"conversation","cursor","name"?,"deadline"?}
 //	POST /v1/close    {"conversation"}
@@ -50,10 +50,10 @@
 // that conversation, its status, and already_existed true, and writes nothing.
 //
 // A publish response is written only after the message is durable. It carries
-// the message and the conversation name and status. The same idempotency key
+// the message and the conversation name and status. The same transaction id
 // with the same from, to, and body returns the original message and
 // already_stored true, including after the conversation is closed, and writes
-// nothing. The same key with any of those three different is refused. A
+// nothing. The same transaction id with any of those three different is refused. A
 // different name order in to is different content. Close sets status to closed
 // and still accepts a new message. That publish reports status closed.
 //

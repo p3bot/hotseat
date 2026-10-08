@@ -49,18 +49,18 @@ func newPublishCmd() *cobra.Command {
 	var address, conv, from, body, key string
 	var to []string
 	var bodyFile string
-	cmd := newClientCmd("publish", "Publish a message", `  hotseat publish --conversation job --from alice --to bob --body hello --idempotency-key 1
-  hotseat publish --conversation job --from alice --to bob --body-file note.txt --idempotency-key 1`, func(cmd *cobra.Command) error {
+	cmd := newClientCmd("publish", "Publish a message", `  hotseat publish --conversation job --from alice --to bob --body hello --txid 1
+  hotseat publish --conversation job --from alice --to bob --body-file note.txt --txid 1`, func(cmd *cobra.Command) error {
 		text, err := publishBody(cmd, body, bodyFile)
 		if err != nil {
 			return err
 		}
 		return call(cmd, address, "publish", client.PublishRequest{
-			Conversation:   conv,
-			From:           from,
-			To:             to,
-			Body:           text,
-			IdempotencyKey: key,
+			Conversation: conv,
+			From:         from,
+			To:           to,
+			Body:         text,
+			TxID:         key,
 		})
 	})
 	addAddress(cmd, &address)
@@ -69,8 +69,8 @@ func newPublishCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&to, "to", nil, "addressee; repeat for more than one; omit for none")
 	cmd.Flags().StringVar(&body, "body", "", "message body")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "file to read the body from; - reads stdin")
-	cmd.Flags().StringVar(&key, "idempotency-key", "", "caller-supplied idempotency key")
-	markRequired(cmd, "conversation", "from", "idempotency-key")
+	cmd.Flags().StringVar(&key, "txid", "", "caller-supplied transaction id")
+	markRequired(cmd, "conversation", "from", "txid")
 	return cmd
 }
 

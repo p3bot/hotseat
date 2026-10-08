@@ -28,7 +28,7 @@ type PublishInput struct {
 	To           []string
 	Body         string
 	BodyMissing  bool
-	Key          string
+	TxID         string
 }
 
 // Result is one completed protocol call.
@@ -118,7 +118,7 @@ func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) 
 		From:         in.From,
 		To:           append([]string{}, in.To...),
 		Body:         in.Body,
-		Key:          in.Key,
+		TxID:         in.TxID,
 		Time:         s.clock().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {

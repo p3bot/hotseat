@@ -267,22 +267,22 @@ func TestPublishSendsEmptyToAndTheCallerKey(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_, _ = io.WriteString(w, `{"outcome":"ok","already_stored":false,"message":{"seq":1,"time":"t","from":"alice","to":[],"body":"<b>","idempotency_key":"k"}}`)
+		_, _ = io.WriteString(w, `{"outcome":"ok","already_stored":false,"message":{"seq":1,"time":"t","from":"alice","to":[],"body":"<b>","txid":"k"}}`)
 	}))
 	defer srv.Close()
 	res, err := Do(context.Background(), srv.Listener.Addr().String(), "publish", "", PublishRequest{
-		Conversation:   "job",
-		From:           "alice",
-		Body:           "<b>",
-		IdempotencyKey: "k",
+		Conversation: "job",
+		From:         "alice",
+		Body:         "<b>",
+		TxID:         "k",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(got, []byte(`"to":[]`)) || !bytes.Contains(got, []byte(`"idempotency_key":"k"`)) || !bytes.Contains(got, []byte(`"<b>"`)) {
+	if !bytes.Contains(got, []byte(`"to":[]`)) || !bytes.Contains(got, []byte(`"txid":"k"`)) || !bytes.Contains(got, []byte(`"<b>"`)) {
 		t.Fatalf("body %s", got)
 	}
-	if res.Message == nil || res.Message.Key != "k" || res.Message.Body != "<b>" || res.AlreadyStored == nil || *res.AlreadyStored {
+	if res.Message == nil || res.Message.TxID != "k" || res.Message.Body != "<b>" || res.AlreadyStored == nil || *res.AlreadyStored {
 		t.Fatalf("result %+v", res)
 	}
 }
@@ -291,15 +291,15 @@ func TestInvalidUTF8PublishBodyDoesNotPost(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = io.WriteString(w, `{"outcome":"ok","message":{"seq":1,"time":"t","from":"alice","to":[],"body":"x","idempotency_key":"k"}}`)
+		_, _ = io.WriteString(w, `{"outcome":"ok","message":{"seq":1,"time":"t","from":"alice","to":[],"body":"x","txid":"k"}}`)
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
 	res, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation:   "job",
-		From:           "alice",
-		Body:           string([]byte{0xff}),
-		IdempotencyKey: "k",
+		Conversation: "job",
+		From:         "alice",
+		Body:         string([]byte{0xff}),
+		TxID:         "k",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -311,10 +311,10 @@ func TestInvalidUTF8PublishBodyDoesNotPost(t *testing.T) {
 		t.Fatalf("calls = %d", calls)
 	}
 	okRes, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation:   "job",
-		From:           "alice",
-		Body:           "café",
-		IdempotencyKey: "ok",
+		Conversation: "job",
+		From:         "alice",
+		Body:         "café",
+		TxID:         "ok",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -335,15 +335,15 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_, _ = io.WriteString(w, `{"outcome":"ok","already_stored":false,"message":{"seq":1,"time":"t","from":"alice","to":[],"body":"hi","idempotency_key":"k"}}`)
+		_, _ = io.WriteString(w, `{"outcome":"ok","already_stored":false,"message":{"seq":1,"time":"t","from":"alice","to":[],"body":"hi","txid":"k"}}`)
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
 	res, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation:   "job",
-		From:           "alice",
-		Body:           "hi",
-		IdempotencyKey: string([]byte{0xff}),
+		Conversation: "job",
+		From:         "alice",
+		Body:         "hi",
+		TxID:         string([]byte{0xff}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -352,10 +352,10 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 		t.Fatalf("result %+v", res)
 	}
 	both, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation:   "job",
-		From:           "alice",
-		Body:           string([]byte{0xfe}),
-		IdempotencyKey: string([]byte{0xff}),
+		Conversation: "job",
+		From:         "alice",
+		Body:         string([]byte{0xfe}),
+		TxID:         string([]byte{0xff}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -367,15 +367,15 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 		t.Fatalf("calls = %d", calls)
 	}
 	okRes, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation:   "job",
-		From:           "alice",
-		Body:           "hi",
-		IdempotencyKey: "\uFFFD",
+		Conversation: "job",
+		From:         "alice",
+		Body:         "hi",
+		TxID:         "\uFFFD",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if okRes.Outcome != bus.OutcomeOK || calls != 1 || !bytes.Contains(got, []byte(`"idempotency_key":"`+"\uFFFD"+`"`)) {
+	if okRes.Outcome != bus.OutcomeOK || calls != 1 || !bytes.Contains(got, []byte(`"txid":"`+"\uFFFD"+`"`)) {
 		t.Fatalf("outcome %s calls %d body %s", okRes.Outcome, calls, got)
 	}
 	if _, err := Do(context.Background(), addr, "publish", "", PublishRequest{
@@ -385,7 +385,7 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 || !bytes.Contains(got, []byte(`"idempotency_key":""`)) {
+	if calls != 2 || !bytes.Contains(got, []byte(`"txid":""`)) {
 		t.Fatalf("empty key calls %d body %s", calls, got)
 	}
 }

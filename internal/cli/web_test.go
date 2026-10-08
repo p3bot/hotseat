@@ -112,7 +112,7 @@ func TestWebCommandUsesTokenFile(t *testing.T) {
 	form.Set("from", "alice")
 	form.Set("to", "bob")
 	form.Set("body", "hello")
-	form.Set("idempotency_key", "idem-web")
+	form.Set("txid", "idem-web")
 	_, stored := httpPost(t, "http://"+webAddr+"/publish", form)
 	_, read := httpGet(t, "http://"+webAddr+"/c?conversation=job&cursor=0&limit=10")
 	if !strings.Contains(body, ">job<") || !strings.Contains(stored, `id="stored"`) || !strings.Contains(read, ">hello<") {

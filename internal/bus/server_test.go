@@ -162,11 +162,11 @@ func publish(t *testing.T, base, conv, from string, to []string, body, key strin
 		to = []string{}
 	}
 	res := mustPost(t, base, PathPublish, map[string]any{
-		"conversation":    conv,
-		"from":            from,
-		"to":              to,
-		"body":            body,
-		"idempotency_key": key,
+		"conversation": conv,
+		"from":         from,
+		"to":           to,
+		"body":         body,
+		"txid":         key,
 	})
 	return res
 }
@@ -206,7 +206,7 @@ func TestCreateFreshAndTaken(t *testing.T) {
 	}
 }
 
-func TestPublishDurableIdempotentAndConflict(t *testing.T) {
+func TestPublishDurableRetryAndConflict(t *testing.T) {
 	fixed := time.Date(2026, 10, 3, 7, 0, 0, 123, time.UTC)
 	base, _, _, _ := startServer(t, Options{Clock: func() time.Time { return fixed }})
 	create(t, base, "job")
@@ -267,9 +267,9 @@ func TestPublishRejectsBrokenRules(t *testing.T) {
 	publish(t, base, "job", "alice", []string{"bob"}, "ok", "seed")
 
 	badUTF := append([]byte(`{"conversation":"job","from":"alice","to":[],"body":"`), 0xff)
-	badUTF = append(badUTF, []byte(`","idempotency_key":"bad"}`)...)
+	badUTF = append(badUTF, []byte(`","txid":"bad"}`)...)
 	badFrom := append([]byte(`{"conversation":"job","from":"al`), 0xff)
-	badFrom = append(badFrom, []byte(`ice","to":[],"body":"ok","idempotency_key":"k"}`)...)
+	badFrom = append(badFrom, []byte(`ice","to":[],"body":"ok","txid":"k"}`)...)
 	cases := []struct {
 		name   string
 		body   any
@@ -277,15 +277,15 @@ func TestPublishRejectsBrokenRules(t *testing.T) {
 	}{
 		{"non utf8", badUTF, ReasonRequestUTF8},
 		{"non utf8 outside body", badFrom, ReasonRequestUTF8},
-		{"oversize", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "hello", "idempotency_key": "big"}, ReasonBodySize},
+		{"oversize", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "hello", "txid": "big"}, ReasonBodySize},
 		{"missing key", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x"}, ReasonKeyRequired},
-		{"from all", map[string]any{"conversation": "job", "from": "all", "to": []string{"bob"}, "body": "x", "idempotency_key": "a"}, ReasonFromAll},
-		{"all mixed", map[string]any{"conversation": "job", "from": "alice", "to": []string{"all", "bob"}, "body": "x", "idempotency_key": "b"}, ReasonToAllMixed},
-		{"missing to", map[string]any{"conversation": "job", "from": "alice", "body": "x", "idempotency_key": "c"}, ReasonToRequired},
-		{"string all", map[string]any{"conversation": "job", "from": "alice", "to": "all", "body": "x", "idempotency_key": "d"}, ReasonToShape},
-		{"missing conversation", map[string]any{"from": "alice", "to": []string{}, "body": "x", "idempotency_key": "e"}, ReasonConversationRequired},
-		{"bad conversation", map[string]any{"conversation": "bad name", "from": "alice", "to": []string{}, "body": "x", "idempotency_key": "f"}, ReasonBadConversation},
-		{"bad from", map[string]any{"conversation": "job", "from": "bad from", "to": []string{}, "body": "x", "idempotency_key": "g"}, ReasonFromBad},
+		{"from all", map[string]any{"conversation": "job", "from": "all", "to": []string{"bob"}, "body": "x", "txid": "a"}, ReasonFromAll},
+		{"all mixed", map[string]any{"conversation": "job", "from": "alice", "to": []string{"all", "bob"}, "body": "x", "txid": "b"}, ReasonToAllMixed},
+		{"missing to", map[string]any{"conversation": "job", "from": "alice", "body": "x", "txid": "c"}, ReasonToRequired},
+		{"string all", map[string]any{"conversation": "job", "from": "alice", "to": "all", "body": "x", "txid": "d"}, ReasonToShape},
+		{"missing conversation", map[string]any{"from": "alice", "to": []string{}, "body": "x", "txid": "e"}, ReasonConversationRequired},
+		{"bad conversation", map[string]any{"conversation": "bad name", "from": "alice", "to": []string{}, "body": "x", "txid": "f"}, ReasonBadConversation},
+		{"bad from", map[string]any{"conversation": "job", "from": "bad from", "to": []string{}, "body": "x", "txid": "g"}, ReasonFromBad},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -312,12 +312,12 @@ func TestPublishRejectsBrokenRules(t *testing.T) {
 	}
 }
 
-func TestLongIdempotencyKeyAccepted(t *testing.T) {
+func TestLongTxIDAccepted(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	key := strings.Repeat("k", 1025)
 	res := publish(t, base, "job", "alice", []string{"bob"}, "hi", key)
-	if res.Outcome != OutcomeOK || res.Message == nil || res.Message.Key != key || res.Message.Seq != 1 {
+	if res.Outcome != OutcomeOK || res.Message == nil || res.Message.TxID != key || res.Message.Seq != 1 {
 		t.Fatalf("long key = outcome %s", res.Outcome)
 	}
 }
@@ -748,7 +748,7 @@ func TestUnavailableWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := mustPost(t, base, PathPublish, map[string]any{
-		"conversation": "job", "from": "alice", "to": []string{"bob"}, "body": "next", "idempotency_key": "n",
+		"conversation": "job", "from": "alice", "to": []string{"bob"}, "body": "next", "txid": "n",
 	})
 	if res.Outcome != OutcomeUnavailable || res.Reason != ReasonUnavailable || res.Message != nil {
 		t.Fatalf("unavailable = %+v", res)
@@ -827,7 +827,7 @@ func TestRefusedEdges(t *testing.T) {
 func TestOversizedRequestIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{MaxBody: 32})
 	create(t, base, "job")
-	raw := append([]byte(`{"conversation":"job","from":"alice","to":[],"body":"ok","idempotency_key":"k","pad":"`), bytes.Repeat([]byte("x"), 80_000)...)
+	raw := append([]byte(`{"conversation":"job","from":"alice","to":[],"body":"ok","txid":"k","pad":"`), bytes.Repeat([]byte("x"), 80_000)...)
 	raw = append(raw, '"', '}')
 	res := mustPost(t, base, PathPublish, raw)
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonRequestSize {

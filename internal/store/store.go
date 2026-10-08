@@ -55,17 +55,17 @@ var schemaStmts = []string{
   sender TEXT NOT NULL,
   recipients TEXT NOT NULL,
   body TEXT NOT NULL,
-  idempotency_key TEXT NOT NULL,
+  txid TEXT NOT NULL,
   PRIMARY KEY (conversation, seq),
-  UNIQUE (conversation, idempotency_key)
+  UNIQUE (conversation, txid)
 ) STRICT`,
 }
 
 var (
 	// ErrNotFound means the conversation does not exist.
 	ErrNotFound = errors.New("conversation not found")
-	// ErrConflict means the idempotency key is already stored with different content.
-	ErrConflict = errors.New("idempotency key reused with different content")
+	// ErrConflict means the transaction id is already stored with different content.
+	ErrConflict = errors.New("transaction id reused with different content")
 	// ErrHeld means another process already has the database.
 	ErrHeld = errors.New("database is held by another process")
 	// ErrSchema means the file was written by a different store version.
@@ -90,7 +90,7 @@ type Message struct {
 	From string
 	To   []string
 	Body string
-	Key  string
+	TxID string
 }
 
 // Publish is a validated publish to commit.
@@ -99,7 +99,7 @@ type Publish struct {
 	From         string
 	To           []string
 	Body         string
-	Key          string
+	TxID         string
 	Time         string
 }
 
@@ -319,9 +319,9 @@ func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 	return out, err
 }
 
-// Publish commits one message, or returns the original when the key matches.
-// The same key with different from, to, or body returns ErrConflict.
-// A matching key returns the original message and writes nothing.
+// Publish commits one message, or returns the original when the txid matches.
+// The same txid with different from, to, or body returns ErrConflict.
+// A matching txid returns the original message and writes nothing.
 // The status is the conversation state committed with that result.
 // A missing conversation returns ErrNotFound and writes nothing.
 func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool, error) {
@@ -338,7 +338,7 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool,
 			return err
 		}
 
-		stored, found, err := messageByKey(ctx, tx, in.Conversation, in.Key)
+		stored, found, err := messageByTxID(ctx, tx, in.Conversation, in.TxID)
 		if err != nil {
 			return err
 		}
@@ -364,9 +364,9 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool,
 		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO messages (
-				conversation, seq, time, sender, recipients, body, idempotency_key
+				conversation, seq, time, sender, recipients, body, txid
 			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			in.Conversation, seq, in.Time, in.From, rec, in.Body, in.Key)
+			in.Conversation, seq, in.Time, in.From, rec, in.Body, in.TxID)
 		if err != nil {
 			return err
 		}
@@ -376,7 +376,7 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool,
 			From: in.From,
 			To:   copyTo(in.To),
 			Body: in.Body,
-			Key:  in.Key,
+			TxID: in.TxID,
 		}
 		return nil
 	})
@@ -418,7 +418,7 @@ func (s *Store) Scan(ctx context.Context, name string, after int64, fn func(Mess
 			return err
 		}
 		rows, err := tx.QueryContext(ctx, `
-			SELECT seq, time, sender, recipients, body, idempotency_key
+			SELECT seq, time, sender, recipients, body, txid
 			FROM messages
 			WHERE conversation = ? AND seq > ?
 			ORDER BY seq`, name, after)
@@ -533,7 +533,7 @@ func scanConversations(rows *sql.Rows) ([]Conversation, error) {
 func scanOne(rows *sql.Rows) (Message, error) {
 	var m Message
 	var rec string
-	if err := rows.Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.Key); err != nil {
+	if err := rows.Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID); err != nil {
 		return Message{}, err
 	}
 	to, err := unmarshalTo(rec)
@@ -554,14 +554,14 @@ func joinClose(err, cerr error) error {
 	return fmt.Errorf("%w; close rows: %v", err, cerr)
 }
 
-func messageByKey(ctx context.Context, tx *sql.Tx, conversation, key string) (Message, bool, error) {
+func messageByTxID(ctx context.Context, tx *sql.Tx, conversation, txid string) (Message, bool, error) {
 	var m Message
 	var rec string
 	err := tx.QueryRowContext(ctx, `
-		SELECT seq, time, sender, recipients, body, idempotency_key
+		SELECT seq, time, sender, recipients, body, txid
 		FROM messages
-		WHERE conversation = ? AND idempotency_key = ?`,
-		conversation, key).Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.Key)
+		WHERE conversation = ? AND txid = ?`,
+		conversation, txid).Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, false, nil
 	}

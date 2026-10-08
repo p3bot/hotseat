@@ -332,7 +332,7 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 		t.Fatalf("create %+v", created.Conversation)
 	}
 	missed := runBin(t, bin, secrets, "publish", "--address", dialAddr, "--token-file", wrongPath,
-		"--conversation", "job", "--from", "alice", "--to", "bob", "--body", "one", "--idempotency-key", "k1")
+		"--conversation", "job", "--from", "alice", "--to", "bob", "--body", "one", "--txid", "k1")
 	if missed.Outcome != bus.OutcomeRefused || missed.Reason != bus.ReasonTokenRejected {
 		t.Fatalf("publish wrong %+v", missed)
 	}
@@ -342,9 +342,9 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 		t.Fatalf("read %+v", none.Messages)
 	}
 	alice := runBin(t, bin, secrets, "publish", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--from", "alice", "--to", "bob", "--body", "one", "--idempotency-key", "k1")
+		"--conversation", "job", "--from", "alice", "--to", "bob", "--body", "one", "--txid", "k1")
 	carol := runBin(t, bin, secrets, "publish", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--from", "carol", "--to", "bob", "--body", "two", "--idempotency-key", "k2")
+		"--conversation", "job", "--from", "carol", "--to", "bob", "--body", "two", "--txid", "k2")
 	if alice.Message == nil || alice.Message.From != "alice" || carol.Message == nil || carol.Message.From != "carol" {
 		t.Fatalf("from %v %v", alice.Message, carol.Message)
 	}
@@ -398,7 +398,7 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 	_ = parked.Wait()
 
 	dave := runBin(t, bin, secrets, "publish", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--from", "dave", "--to", "bob", "--body", "from-bin", "--idempotency-key", "bin-1")
+		"--conversation", "job", "--from", "dave", "--to", "bob", "--body", "from-bin", "--txid", "bin-1")
 	if dave.Outcome != bus.OutcomeOK || dave.Message == nil || dave.Message.From != "dave" || dave.Message.Body != "from-bin" {
 		t.Fatalf("dave %+v", dave.Message)
 	}

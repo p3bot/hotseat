@@ -153,11 +153,11 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation   *string         `json:"conversation"`
-		From           *string         `json:"from"`
-		To             json.RawMessage `json:"to"`
-		Body           *string         `json:"body"`
-		IdempotencyKey *string         `json:"idempotency_key"`
+		Conversation *string         `json:"conversation"`
+		From         *string         `json:"from"`
+		To           json.RawMessage `json:"to"`
+		Body         *string         `json:"body"`
+		TxID         *string         `json:"txid"`
 	}
 	if !s.decode(w, r, "publish", "", start, &req) {
 		return
@@ -172,8 +172,8 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if req.Body != nil {
 		in.Body = *req.Body
 	}
-	if req.IdempotencyKey != nil {
-		in.Key = *req.IdempotencyKey
+	if req.TxID != nil {
+		in.TxID = *req.TxID
 	}
 	names, err := parseTo(req.To)
 	if err != nil {
@@ -322,7 +322,7 @@ func requestLimit(maxBody int) int64 {
 		maxBody = DefaultMaxBody
 	}
 	// A JSON string encodes one body byte as at most six bytes (\u00XX).
-	// requestOverhead is the envelope and the idempotency key.
+	// requestOverhead is the envelope and the transaction id.
 	const jsonEscape = 6
 	if int64(maxBody) > (math.MaxInt64-requestOverhead)/jsonEscape {
 		return math.MaxInt64
@@ -411,7 +411,7 @@ type wireMessage struct {
 	From string   `json:"from"`
 	To   []string `json:"to"`
 	Body string   `json:"body"`
-	Key  string   `json:"idempotency_key"`
+	TxID string   `json:"txid"`
 }
 
 type wireConversation struct {
@@ -464,7 +464,7 @@ func wireMsg(m *store.Message) *wireMessage {
 		From: m.From,
 		To:   to,
 		Body: m.Body,
-		Key:  m.Key,
+		TxID: m.TxID,
 	}
 }
 

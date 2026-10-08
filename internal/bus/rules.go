@@ -221,10 +221,10 @@ func validatePublish(in PublishInput, maxBody int) error {
 	if len(in.Body) > maxBody {
 		return rule(ReasonBodySize)
 	}
-	if in.Key == "" {
+	if in.TxID == "" {
 		return rule(ReasonKeyRequired)
 	}
-	if !utf8.ValidString(in.Key) {
+	if !utf8.ValidString(in.TxID) {
 		return rule(ReasonKeyUTF8)
 	}
 	return nil

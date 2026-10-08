@@ -6,7 +6,7 @@
 
 // Package web serves a page that lists conversations, reads a transcript,
 // and publishes a message. It is a client of a running bus. It does not
-// open the store. The cursor and the idempotency key come from the page
+// open the store. The cursor and the transaction id come from the page
 // on each request and are not kept. The capability token is sent to the
 // bus and is not written into the page or the logs. The page listens on
 // loopback. Any other socket is closed. It answers for the host it listens

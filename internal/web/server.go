@@ -259,11 +259,11 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 	res, err := client.Do(r.Context(), s.BusAddress, "publish", s.Token, client.PublishRequest{
-		Conversation:   name,
-		From:           p.From,
-		To:             namesFromLines(p.ToText),
-		Body:           p.Body,
-		IdempotencyKey: p.Key,
+		Conversation: name,
+		From:         p.From,
+		To:           namesFromLines(p.ToText),
+		Body:         p.Body,
+		TxID:         p.TxID,
 	})
 	if err != nil {
 		if r.Context().Err() != nil {
@@ -315,7 +315,7 @@ func fillPosted(p *page, r *http.Request) {
 	p.From = r.PostForm.Get("from")
 	p.ToText = r.PostForm.Get("to")
 	p.Body = r.PostForm.Get("body")
-	p.Key = r.PostForm.Get("idempotency_key")
+	p.TxID = r.PostForm.Get("txid")
 }
 
 // applyCursor reads when the request asked for a transcript.

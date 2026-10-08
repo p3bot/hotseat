@@ -41,7 +41,7 @@ func TestOpenRelativeDirectory(t *testing.T) {
 	}
 	if _, _, _, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob"},
-		Body: "hello", Key: "k", Time: "t",
+		Body: "hello", TxID: "k", Time: "t",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestOpenTightensDirectoryAndRefusesSymlinks(t *testing.T) {
 	}
 }
 
-func TestPublishRestartAndIdempotency(t *testing.T) {
+func TestPublishRestartAndRetry(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 	st, err := Open(dir)
@@ -269,28 +269,28 @@ func TestPublishRestartAndIdempotency(t *testing.T) {
 	}
 	first, _, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
-		Body: "one", Key: "k", Time: "2026-10-03T07:00:00Z",
+		Body: "one", TxID: "k", Time: "2026-10-03T07:00:00Z",
 	})
 	if err != nil || already || first.Seq != 1 {
 		t.Fatalf("first = %+v already=%v err=%v", first, already, err)
 	}
 	other, _, _, err := st.Publish(ctx, Publish{
 		Conversation: "other", From: "alice", To: []string{"bob"},
-		Body: "o", Key: "k", Time: "2026-10-03T07:00:01Z",
+		Body: "o", TxID: "k", Time: "2026-10-03T07:00:01Z",
 	})
 	if err != nil || other.Seq != 1 {
 		t.Fatalf("other conversation seq = %+v err=%v", other, err)
 	}
 	again, _, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
-		Body: "one", Key: "k", Time: "later",
+		Body: "one", TxID: "k", Time: "later",
 	})
 	if err != nil || !already || again.Seq != 1 || again.Time != first.Time {
 		t.Fatalf("retry = %+v already=%v err=%v", again, already, err)
 	}
 	if _, _, _, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"carol", "bob"},
-		Body: "one", Key: "k", Time: "later",
+		Body: "one", TxID: "k", Time: "later",
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("reordered to: %v", err)
 	}
@@ -299,14 +299,14 @@ func TestPublishRestartAndIdempotency(t *testing.T) {
 	}
 	closedRetry, closedStatus, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
-		Body: "one", Key: "k", Time: "later",
+		Body: "one", TxID: "k", Time: "later",
 	})
 	if err != nil || !already || closedRetry.Seq != 1 || closedStatus != StatusClosed {
 		t.Fatalf("closed retry = %+v status=%s already=%v err=%v", closedRetry, closedStatus, already, err)
 	}
 	late, lateStatus, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob"},
-		Body: "new", Key: "new", Time: "later",
+		Body: "new", TxID: "new", Time: "later",
 	})
 	if err != nil || already || late.Seq != 2 || lateStatus != StatusClosed || late.Body != "new" {
 		t.Fatalf("publish after close = %+v status=%s already=%v err=%v", late, lateStatus, already, err)
@@ -349,7 +349,7 @@ func TestScanStopsBeforeLaterMessages(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		if _, _, _, err := st.Publish(ctx, Publish{
 			Conversation: "job", From: "alice", To: []string{"bob"},
-			Body: fmt.Sprintf("m%d", i), Key: fmt.Sprintf("k%d", i), Time: "t",
+			Body: fmt.Sprintf("m%d", i), TxID: fmt.Sprintf("k%d", i), Time: "t",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -398,7 +398,7 @@ func TestConcurrentPublish(t *testing.T) {
 			defer wg.Done()
 			_, _, _, err := st.Publish(ctx, Publish{
 				Conversation: "job", From: "alice", To: []string{"bob"},
-				Body: fmt.Sprintf("m%d", i), Key: fmt.Sprintf("k%d", i), Time: "t",
+				Body: fmt.Sprintf("m%d", i), TxID: fmt.Sprintf("k%d", i), Time: "t",
 			})
 			errs <- err
 		}(i)
@@ -431,6 +431,76 @@ func TestConcurrentPublish(t *testing.T) {
 	}
 }
 
+func TestNewDatabaseSchema(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	version, cols, tableSQL := schemaOf(t, dir)
+	if version != "1" || !containsCol(cols, "txid") {
+		t.Fatalf("version=%s cols=%v", version, cols)
+	}
+	if !strings.Contains(tableSQL, "UNIQUE (conversation, txid)") {
+		t.Fatalf("sql=%s", tableSQL)
+	}
+}
+
+func schemaOf(t *testing.T, dir string) (string, []string, string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	var version, tableSQL string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'schema'`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'`).Scan(&tableSQL); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`PRAGMA table_info(messages)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Errorf("close rows: %v", err)
+		}
+	}()
+	var cols []string
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatal(err)
+		}
+		cols = append(cols, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return version, cols, tableSQL
+}
+
+func containsCol(cols []string, name string) bool {
+	for _, col := range cols {
+		if col == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSchemaMismatchKeepsMessages(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -442,7 +512,7 @@ func TestSchemaMismatchKeepsMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, _, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{}, Body: "keep", Key: "k", Time: "t",
+		Conversation: "job", From: "alice", To: []string{}, Body: "keep", TxID: "k", Time: "t",
 	}); err != nil {
 		t.Fatal(err)
 	}

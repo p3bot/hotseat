@@ -142,7 +142,7 @@ func TestReadRepeatsAndPagesWithoutStoringCursor(t *testing.T) {
 	if !strings.Contains(onlyCursor, "cursor and limit are both required") || strings.Contains(onlyCursor, `id="transcript"`) {
 		t.Fatalf("missing limit\n%s", onlyCursor)
 	}
-	if strings.Contains(logs.String(), "cursor=") || strings.Contains(logs.String(), "k1") || strings.Contains(logs.String(), "idempotency") {
+	if strings.Contains(logs.String(), "cursor=") || strings.Contains(logs.String(), "k1") || strings.Contains(logs.String(), "txid") {
 		t.Fatalf("log %s", logs.String())
 	}
 }
@@ -156,7 +156,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	form.Set("from", "alice")
 	form.Set("to", "carol\n\nbob")
 	form.Set("body", "<b>&")
-	form.Set("idempotency_key", "idem-9f3a")
+	form.Set("txid", "idem-9f3a")
 
 	_, stored, hdr := postPage(t, page.URL+"/publish", form)
 	assertNoCookie(t, hdr)
@@ -171,7 +171,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	if carol < 0 || bob < carol {
 		t.Fatalf("to order\n%s", stored)
 	}
-	if !strings.Contains(stored, `class="from">alice<`) || !strings.Contains(stored, `class="key">idem-9f3a<`) {
+	if !strings.Contains(stored, `class="from">alice<`) || !strings.Contains(stored, `class="txid">idem-9f3a<`) {
 		t.Fatalf("identity\n%s", stored)
 	}
 	if !strings.Contains(stored, `value="idem-9f3a"`) {
@@ -191,7 +191,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	changed.Set("from", "alice")
 	changed.Set("to", "carol\n\nbob")
 	changed.Set("body", "other")
-	changed.Set("idempotency_key", "idem-9f3a")
+	changed.Set("txid", "idem-9f3a")
 	_, conflict, _ := postPage(t, page.URL+"/publish", changed)
 	if !strings.Contains(conflict, `id="publish-outcome">refused<`) || !strings.Contains(conflict, bus.ReasonKeyConflict) {
 		t.Fatalf("conflict\n%s", conflict)
@@ -202,7 +202,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	emptyKey.Set("from", "alice")
 	emptyKey.Set("to", "bob")
 	emptyKey.Set("body", "nope")
-	emptyKey.Set("idempotency_key", "")
+	emptyKey.Set("txid", "")
 	_, missing, _ := postPage(t, page.URL+"/publish", emptyKey)
 	if !strings.Contains(missing, bus.ReasonKeyRequired) {
 		t.Fatalf("empty key\n%s", missing)
@@ -222,7 +222,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	fresh.Set("from", "alice")
 	fresh.Set("to", "bob")
 	fresh.Set("body", "later")
-	fresh.Set("idempotency_key", "idem-new")
+	fresh.Set("txid", "idem-new")
 	_, stored, _ = postPage(t, page.URL+"/publish", fresh)
 	if !strings.Contains(stored, `id="publish-outcome">ok<`) || !strings.Contains(stored, `id="stored">Stored.<`) || !strings.Contains(stored, ">later<") {
 		t.Fatalf("closed publish\n%s", stored)
@@ -275,7 +275,7 @@ func TestPublishEchoesTheRequestCursor(t *testing.T) {
 	form.Set("from", "alice")
 	form.Set("to", "bob")
 	form.Set("body", "via-page")
-	form.Set("idempotency_key", "page-key")
+	form.Set("txid", "page-key")
 	_, published, _ := postPage(t, page.URL+"/publish", form)
 	if !strings.Contains(published, `id="stored"`) || !strings.Contains(published, `id="cursor" name="cursor" value="1"`) {
 		t.Fatalf("publish\n%s", published)
@@ -291,7 +291,7 @@ func TestPublishEchoesTheRequestCursor(t *testing.T) {
 	read.Set("conversation", "job")
 	read.Set("cursor", "1")
 	read.Set("limit", "1")
-	read.Set("idempotency_key", "page-key")
+	read.Set("txid", "page-key")
 	status, body, _ := postPage(t, page.URL+"/c", read)
 	if status != http.StatusOK || !strings.Contains(body, `value="page-key"`) || !strings.Contains(body, `id="cursor" name="cursor" value="1"`) {
 		t.Fatalf("read post %d %s", status, body)
@@ -313,7 +313,7 @@ func TestPublishRejectsForeignOrigin(t *testing.T) {
 	form.Set("from", "alice")
 	form.Set("to", "bob")
 	form.Set("body", "pwned-cross-site")
-	form.Set("idempotency_key", "idem-foreign")
+	form.Set("txid", "idem-foreign")
 	foreign := []http.Header{
 		{"Origin": {"https://evil.example"}, "Sec-Fetch-Site": {"cross-site"}},
 		{"Origin": {"null"}},
@@ -374,7 +374,7 @@ func TestPublishShowsParseFormError(t *testing.T) {
 		return resp.StatusCode, string(got)
 	}
 
-	status, got := postRaw("conversation=job&idempotency_key=idem-bad-escape&body=%")
+	status, got := postRaw("conversation=job&txid=idem-bad-escape&body=%")
 	const escape = `invalid URL escape "%"`
 	if status != http.StatusOK || !strings.Contains(got, `id="notice">`+html.EscapeString(escape)+`<`) {
 		t.Fatalf("escape %d %s", status, got)
@@ -424,7 +424,7 @@ func TestPageRejectsADifferentHost(t *testing.T) {
 	form.Set("from", "alice")
 	form.Set("to", "bob")
 	form.Set("body", "pwned-rebind")
-	form.Set("idempotency_key", "idem-rebind")
+	form.Set("txid", "idem-rebind")
 
 	post := func(host, origin, site string) (int, string) {
 		t.Helper()
@@ -620,7 +620,7 @@ func TestLoopbackWorksWithoutToken(t *testing.T) {
 	form.Set("from", "alice")
 	form.Set("to", "bob")
 	form.Set("body", "hello")
-	form.Set("idempotency_key", "k")
+	form.Set("txid", "k")
 	_, stored, _ := postPage(t, page.URL+"/publish", form)
 	if !strings.Contains(stored, `id="stored"`) {
 		t.Fatalf("publish\n%s", stored)
@@ -675,13 +675,13 @@ func TestTokenStaysOffThePage(t *testing.T) {
 	form.Set("from", "alice")
 	form.Set("to", "bob")
 	form.Set("body", "hello")
-	form.Set("idempotency_key", "idem-token")
+	form.Set("txid", "idem-token")
 	_, stored, shdr := postPage(t, page.URL+"/publish", form)
 	if !strings.Contains(stored, `id="stored"`) || !strings.Contains(stored, ">hello<") || !strings.Contains(stored, `class="from">alice<`) {
 		t.Fatalf("publish\n%s", stored)
 	}
 	_, read, rhdr := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
-	if !strings.Contains(read, ">hello<") || !strings.Contains(read, `class="key">idem-token<`) {
+	if !strings.Contains(read, ">hello<") || !strings.Contains(read, `class="txid">idem-token<`) {
 		t.Fatalf("read\n%s", read)
 	}
 	for _, part := range []struct{ name, text string }{
@@ -718,9 +718,9 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 		case bus.PathList:
 			payload = `{"outcome":"ok","conversations":[{"name":"job","status":"open"}]}`
 		case bus.PathRead:
-			payload = `{"outcome":"ok","messages":[{"seq":4,"time":"t","from":"alice","to":["bob"],"body":"hello","idempotency_key":"k"}]}`
+			payload = `{"outcome":"ok","messages":[{"seq":4,"time":"t","from":"alice","to":["bob"],"body":"hello","txid":"k"}]}`
 		case bus.PathPublish:
-			payload = `{"outcome":"ok","already_stored":false,"message":{"seq":5,"time":"t","from":"alice","to":["carol","bob"],"body":"hello","idempotency_key":"k1"}}`
+			payload = `{"outcome":"ok","already_stored":false,"message":{"seq":5,"time":"t","from":"alice","to":["carol","bob"],"body":"hello","txid":"k1"}}`
 		default:
 			http.Error(w, "no", http.StatusNotFound)
 			return
@@ -786,10 +786,10 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 	form.Set("from", "alice")
 	form.Set("to", "carol\nbob")
 	form.Set("body", "hello")
-	form.Set("idempotency_key", "k1")
+	form.Set("txid", "k1")
 	_, body, _ = postPage(t, page.URL+"/publish", form)
 	got = take()
-	wantPub := bus.PathPublish + " " + auth + ` {"conversation":"job","from":"alice","to":["carol","bob"],"body":"hello","idempotency_key":"k1"}`
+	wantPub := bus.PathPublish + " " + auth + ` {"conversation":"job","from":"alice","to":["carol","bob"],"body":"hello","txid":"k1"}`
 	if len(got) != 2 || got[0] != bus.PathList+" "+auth+" {}" || got[1] != wantPub {
 		t.Fatalf("publish %#v", got)
 	}
@@ -1001,11 +1001,11 @@ func createConv(t *testing.T, addr, token, name string) {
 func publishMsg(t *testing.T, addr, token, conv, from string, to []string, body, key string) {
 	t.Helper()
 	res := busCall(t, addr, token, "publish", client.PublishRequest{
-		Conversation:   conv,
-		From:           from,
-		To:             to,
-		Body:           body,
-		IdempotencyKey: key,
+		Conversation: conv,
+		From:         from,
+		To:           to,
+		Body:         body,
+		TxID:         key,
 	})
 	if res.Outcome != bus.OutcomeOK {
 		t.Fatalf("publish %s: %+v", key, res)

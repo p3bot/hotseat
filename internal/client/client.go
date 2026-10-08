@@ -5,8 +5,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Package client performs one call against a running hotseat bus.
-// It does not open the store. It does not keep the cursor, the idempotency
-// key, or the capability token after the call returns.
+// It does not open the store. It does not keep the cursor, the transaction
+// id, or the capability token after the call returns.
 package client
 
 import (
@@ -91,7 +91,7 @@ type Message struct {
 	From string   `json:"from"`
 	To   []string `json:"to"`
 	Body string   `json:"body"`
-	Key  string   `json:"idempotency_key"`
+	TxID string   `json:"txid"`
 }
 
 // Conversation is a name and its open or closed status.
@@ -108,11 +108,11 @@ type CreateRequest struct {
 // PublishRequest is the publish body. To keeps the caller's order.
 // A nil To is sent as an empty array.
 type PublishRequest struct {
-	Conversation   string   `json:"conversation"`
-	From           string   `json:"from"`
-	To             []string `json:"to"`
-	Body           string   `json:"body"`
-	IdempotencyKey string   `json:"idempotency_key"`
+	Conversation string   `json:"conversation"`
+	From         string   `json:"from"`
+	To           []string `json:"to"`
+	Body         string   `json:"body"`
+	TxID         string   `json:"txid"`
 }
 
 // ReadRequest is the read body. A nil Name omits the field.
@@ -158,7 +158,7 @@ var httpClient = &http.Client{
 // cannot be a header is an error and is not posted.
 // A dropped call is retried once with the same body and the same token.
 // A failure to connect is not retried. Neither result is a timeout.
-// A publish body or idempotency key that is not valid UTF-8 is refused and not posted.
+// A publish body or transaction id that is not valid UTF-8 is refused and not posted.
 func Do(ctx context.Context, address, op, token string, body any) (Result, error) {
 	if token != "" {
 		if err := bus.WriteToken(make(http.Header), token); err != nil {
@@ -166,12 +166,12 @@ func Do(ctx context.Context, address, op, token string, body any) (Result, error
 		}
 	}
 	if op == "publish" {
-		// JSON replaces invalid UTF-8, so the bus would store a different message or a different key.
+		// JSON replaces invalid UTF-8, so the bus would store a different message or a different transaction id.
 		if req, ok := body.(PublishRequest); ok {
 			switch {
 			case !utf8.ValidString(req.Body):
 				return Result{Outcome: bus.OutcomeRefused, Reason: bus.ReasonBodyUTF8}, nil
-			case !utf8.ValidString(req.IdempotencyKey):
+			case !utf8.ValidString(req.TxID):
 				return Result{Outcome: bus.OutcomeRefused, Reason: bus.ReasonKeyUTF8}, nil
 			}
 		}
