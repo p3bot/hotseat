@@ -196,15 +196,24 @@ func newBusStopCmd() *cobra.Command {
 	var storeDir string
 	cmd := &cobra.Command{
 		Use:           "stop",
-		Short:         "Stop the bus for a store",
+		Short:         "Stop the bus",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
-		Long: `Send SIGTERM to the bus recorded for this store and return after that
-process has exited and ` + store.LockName + ` is released. Already stopped is
-success. stop does not signal any other process.`,
+		Long: `Send SIGTERM and return after the process has exited and ` + store.LockName + `
+is released. Already stopped is success.
+
+With --store, stop signals only the bus for that directory. Without --store,
+stop signals the bus for the default store and any other local bus serve bound
+to ` + bus.DefaultListen + `. A process that is not bus serve and holds that
+address is left running, and stop fails. The default store is
+$XDG_DATA_HOME/hotseat. An unset, empty, or relative $XDG_DATA_HOME uses
+$HOME/.local/share/hotseat.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return stopBus(cmd.Context(), storeDir)
+			if cmd.Flags().Changed("store") {
+				return stopBus(cmd.Context(), storeDir)
+			}
+			return stopBare(cmd.Context())
 		},
 	}
 	cmd.Flags().StringVar(&storeDir, "store", "", "directory for the SQLite database (default $XDG_DATA_HOME/hotseat)")

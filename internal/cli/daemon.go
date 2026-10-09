@@ -360,23 +360,157 @@ func stopBus(ctx context.Context, storeDir string) error {
 	if len(pids) == 0 {
 		return nil
 	}
-	for _, pid := range pids {
-		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-			return err
-		}
-	}
-	return waitStopped(ctx, pids, dir)
+	return signalAndWait(ctx, []stopTarget{{dir: dir, pids: pids}})
 }
 
-func waitStopped(ctx context.Context, pids []int, dir string) error {
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		held, err := lockHeld(dir)
+// stopBare stops the default-store bus and any other local bus serve on the
+// default listen address. An explicit --store does not call this.
+func stopBare(ctx context.Context) error {
+	dir, err := resolveStore("")
+	if err != nil {
+		return err
+	}
+	pids, err := busPIDs(dir)
+	if err != nil {
+		return err
+	}
+	_, nsErr := ownNetNS()
+	nsRead := nsErr == nil
+	var owners []listenOwner
+	if nsRead {
+		owners, err = listenOwners(bus.DefaultListen)
 		if err != nil {
 			return err
 		}
-		if busesGone(pids, dir) && !held {
+	}
+	if err := signalAndWait(ctx, bareStopTargets(dir, pids, nsRead, owners)); err != nil {
+		return err
+	}
+	// A row seen before the signal can belong to a bus this call stops.
+	held, err := addressListened(bus.DefaultListen)
+	if err != nil {
+		return err
+	}
+	return listenStopError(nsRead, held)
+}
+
+// bareStopTargets keeps address matches only when this process's network
+// namespace was read. Another namespace's loopback uses the same address text.
+func bareStopTargets(dir string, pids []int, nsRead bool, owners []listenOwner) []stopTarget {
+	var targets []stopTarget
+	if len(pids) > 0 {
+		targets = append(targets, stopTarget{dir: dir, pids: pids})
+	}
+	if !nsRead {
+		return targets
+	}
+	for _, owner := range owners {
+		if pidListed(pids, owner.pid) {
+			continue
+		}
+		targets = addStop(targets, owner.dir, owner.pid)
+	}
+	return targets
+}
+
+func listenStopError(nsRead, held bool) error {
+	if !held {
+		return nil
+	}
+	if !nsRead {
+		return fmt.Errorf("network namespace could not be read; %s is still listening", bus.DefaultListen)
+	}
+	return fmt.Errorf("listen address %s is held by another process", bus.DefaultListen)
+}
+
+type stopTarget struct {
+	dir  string
+	pids []int
+}
+
+func addStop(targets []stopTarget, dir string, pid int) []stopTarget {
+	for i := range targets {
+		if targets[i].dir == dir || sameFile(targets[i].dir, dir) {
+			if pidListed(targets[i].pids, pid) {
+				return targets
+			}
+			targets[i].pids = append(targets[i].pids, pid)
+			return targets
+		}
+	}
+	return append(targets, stopTarget{dir: dir, pids: []int{pid}})
+}
+
+func pidListed(pids []int, pid int) bool {
+	for _, got := range pids {
+		if got == pid {
+			return true
+		}
+	}
+	return false
+}
+
+func signalAndWait(ctx context.Context, targets []stopTarget) error {
+	return waitAfterSignal(ctx, targets, syscall.Kill)
+}
+
+// waitAfterSignal signals every pid. A failed signal is returned once the
+// processes that accepted the signal have exited. The lock is waited on only
+// when every signal succeeded, because a process that could not be signalled
+// can hold it indefinitely.
+func waitAfterSignal(ctx context.Context, targets []stopTarget, kill func(int, syscall.Signal) error) error {
+	signalled, killErr := signalTargets(targets, kill)
+	if killErr != nil {
+		if err := waitTargets(ctx, signalled, false); err != nil {
+			return errors.Join(killErr, err)
+		}
+		return killErr
+	}
+	return waitTargets(ctx, signalled, true)
+}
+
+func signalTargets(targets []stopTarget, kill func(int, syscall.Signal) error) ([]stopTarget, error) {
+	var killErr error
+	var signalled []stopTarget
+	for _, target := range targets {
+		var got []int
+		for _, pid := range target.pids {
+			err := kill(pid, syscall.SIGTERM)
+			// ESRCH means the process is already gone, so its lock is still waited on.
+			if err != nil && !errors.Is(err, syscall.ESRCH) {
+				killErr = errors.Join(killErr, err)
+				continue
+			}
+			got = append(got, pid)
+		}
+		if len(got) > 0 {
+			signalled = append(signalled, stopTarget{dir: target.dir, pids: got})
+		}
+	}
+	return signalled, killErr
+}
+
+func waitTargets(ctx context.Context, targets []stopTarget, locks bool) error {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		done := true
+		for _, target := range targets {
+			if !busesGone(target.pids, target.dir) {
+				done = false
+			}
+			if !locks {
+				continue
+			}
+			held, err := lockHeld(target.dir)
+			if err != nil {
+				return err
+			}
+			if held {
+				done = false
+			}
+		}
+		if done {
 			return nil
 		}
 		select {
@@ -505,18 +639,43 @@ func printHealth(w io.Writer, rep healthReport) error {
 	return nil
 }
 
+type listenOwner struct {
+	pid int
+	dir string
+}
+
 func localServeBound(address string) (pid int, dir string, ok bool, err error) {
+	owners, err := listenOwners(address)
+	if err != nil {
+		return 0, "", false, err
+	}
+	var foundPid int
+	var foundDir string
+	var found int
+	for _, owner := range owners {
+		found++
+		foundPid = owner.pid
+		foundDir = owner.dir
+	}
+	if found == 0 {
+		return 0, "", false, nil
+	}
+	if found > 1 {
+		return 0, "", false, fmt.Errorf("more than one bus is bound to %s", address)
+	}
+	return foundPid, foundDir, true, nil
+}
+
+func listenOwners(address string) ([]listenOwner, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return 0, "", false, fmt.Errorf("list processes: %w", err)
+		return nil, fmt.Errorf("list processes: %w", err)
 	}
 	ownNS, nsErr := ownNetNS()
 	if nsErr != nil {
 		ownNS = nil
 	}
-	var foundPid int
-	var foundDir string
-	var found int
+	var owners []listenOwner
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 1 || !pidAlive(pid) {
@@ -536,31 +695,71 @@ func localServeBound(address string) (pid int, dir string, ok bool, err error) {
 		if err != nil {
 			continue
 		}
-		matched := false
-		for _, addr := range addrs {
-			if sameListen(addr, address) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
+		if !addrListed(addrs, address) {
 			continue
 		}
 		storeDir, err := processStore(pid, args)
 		if err != nil {
-			return 0, "", false, err
+			return nil, err
 		}
-		found++
-		foundPid = pid
-		foundDir = storeDir
+		owners = append(owners, listenOwner{pid: pid, dir: storeDir})
 	}
-	if found == 0 {
-		return 0, "", false, nil
+	return owners, nil
+}
+
+func addrListed(addrs []string, address string) bool {
+	for _, addr := range addrs {
+		if sameListen(addr, address) {
+			return true
+		}
 	}
-	if found > 1 {
-		return 0, "", false, fmt.Errorf("more than one bus is bound to %s", address)
+	return false
+}
+
+func addressListened(address string) (bool, error) {
+	saw := false
+	for _, proto := range []string{"tcp", "tcp6"} {
+		held, err := protoListens("/proc/self/net/"+proto, address)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		saw = true
+		if held {
+			return true, nil
+		}
 	}
-	return foundPid, foundDir, true, nil
+	if !saw {
+		return false, errors.New("listen table is unreadable")
+	}
+	return false, nil
+}
+
+func protoListens(path, address string) (bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(string(b), "\n")
+	for i, line := range lines {
+		if i == 0 || line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 || !strings.EqualFold(fields[3], "0A") {
+			continue
+		}
+		addr, err := decodeProcAddr(fields[1])
+		if err != nil {
+			return false, err
+		}
+		if sameListen(addr, address) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func ownNetNS() (os.FileInfo, error) {

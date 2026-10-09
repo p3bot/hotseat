@@ -7,11 +7,150 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/p3bot/hotseat/internal/bus"
+	"github.com/p3bot/hotseat/internal/store"
 )
+
+func TestBareStopTargetsSkipAddressWithoutNetNS(t *testing.T) {
+	storePIDs := []int{10}
+	owners := []listenOwner{{pid: 20, dir: t.TempDir()}}
+	got := bareStopTargets(t.TempDir(), storePIDs, false, owners)
+	if len(got) != 1 || len(got[0].pids) != 1 || got[0].pids[0] != 10 {
+		t.Fatalf("targets %+v", got)
+	}
+	got = bareStopTargets(t.TempDir(), storePIDs, true, owners)
+	if len(got) != 2 {
+		t.Fatalf("targets %+v", got)
+	}
+	var sawOther bool
+	for _, target := range got {
+		for _, pid := range target.pids {
+			if pid == 20 {
+				sawOther = true
+			}
+		}
+	}
+	if !sawOther {
+		t.Fatalf("targets %+v", got)
+	}
+}
+
+func TestSignalTargetsContinuesAfterKillError(t *testing.T) {
+	var got []int
+	denied := errors.New("operation not permitted")
+	targets := []stopTarget{
+		{dir: "/default", pids: []int{10}},
+		{dir: "/other", pids: []int{20, 30}},
+	}
+	signalled, err := signalTargets(targets, func(pid int, sig syscall.Signal) error {
+		if sig != syscall.SIGTERM {
+			t.Fatalf("signal %d", sig)
+		}
+		got = append(got, pid)
+		if pid == 10 {
+			return denied
+		}
+		if pid == 30 {
+			return syscall.ESRCH
+		}
+		return nil
+	})
+	if !errors.Is(err, denied) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got) != 3 || got[0] != 10 || got[1] != 20 || got[2] != 30 {
+		t.Fatalf("signalled pids %v", got)
+	}
+	if len(signalled) != 1 || signalled[0].dir != "/other" || len(signalled[0].pids) != 2 || signalled[0].pids[0] != 20 || signalled[0].pids[1] != 30 {
+		t.Fatalf("wait targets %+v", signalled)
+	}
+}
+
+func TestSignalTargetsJoinsKillErrors(t *testing.T) {
+	first := errors.New("operation not permitted")
+	second := errors.New("invalid argument")
+	_, err := signalTargets([]stopTarget{{dir: "/store", pids: []int{10, 20}}}, func(pid int, sig syscall.Signal) error {
+		if sig != syscall.SIGTERM {
+			t.Fatalf("signal %d", sig)
+		}
+		if pid == 10 {
+			return first
+		}
+		return second
+	})
+	if !errors.Is(err, first) || !errors.Is(err, second) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestWaitAfterSignalKillErrorDoesNotWaitForLock(t *testing.T) {
+	dir := t.TempDir()
+	holdStoreLock(t, dir)
+	denied := errors.New("operation not permitted")
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	err := waitAfterSignal(ctx, []stopTarget{{dir: dir, pids: []int{os.Getpid(), os.Getpid() + 1}}}, func(pid int, _ syscall.Signal) error {
+		if pid == os.Getpid() {
+			return nil
+		}
+		return denied
+	})
+	if !errors.Is(err, denied) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestWaitAfterSignalWaitsForLockWhenSignalled(t *testing.T) {
+	dir := t.TempDir()
+	holdStoreLock(t, dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := waitAfterSignal(ctx, []stopTarget{{dir: dir, pids: []int{os.Getpid()}}}, func(int, syscall.Signal) error {
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func holdStoreLock(t *testing.T, dir string) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(dir, store.LockName), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListenStopError(t *testing.T) {
+	if err := listenStopError(false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := listenStopError(true, false); err != nil {
+		t.Fatal(err)
+	}
+	err := listenStopError(false, true)
+	if err == nil || !strings.Contains(err.Error(), "network namespace") || !strings.Contains(err.Error(), bus.DefaultListen) {
+		t.Fatalf("err = %v", err)
+	}
+	err = listenStopError(true, true)
+	if err == nil || !strings.Contains(err.Error(), "another process") || !strings.Contains(err.Error(), bus.DefaultListen) {
+		t.Fatalf("err = %v", err)
+	}
+}
 
 func TestProcAddrDecode(t *testing.T) {
 	got, err := decodeProcAddr("0100007F:1277")

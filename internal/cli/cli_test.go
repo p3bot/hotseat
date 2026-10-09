@@ -292,8 +292,12 @@ func TestBusHelpNamesDataHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stop help: %v\n%s", err, stderr.String())
 	}
-	if stopOut.String() == "" || strings.Contains(stopOut.String(), "--listen") || strings.Contains(stopOut.String(), "--debug") {
-		t.Fatalf("stop help:\n%s", stopOut.String())
+	stopHelp := stopOut.String()
+	if stopHelp == "" || strings.Contains(stopHelp, "--listen") || strings.Contains(stopHelp, "--debug") {
+		t.Fatalf("stop help:\n%s", stopHelp)
+	}
+	if !strings.Contains(stopHelp, "--store") || !strings.Contains(stopHelp, bus.DefaultListen) || !strings.Contains(stopHelp, "left running") {
+		t.Fatalf("stop help missing the bare-stop rule:\n%s", stopHelp)
 	}
 	statusOut := bytes.Buffer{}
 	err = execute(context.Background(), []string{"bus", "status", "--help"}, &statusOut, &stderr)
@@ -1309,6 +1313,202 @@ func TestStatusReport(t *testing.T) {
 	if !StatusFailure(err) || stderr.Len() != 0 || !strings.Contains(stdout.String(), "health: connection_failure") {
 		t.Fatalf("err %v\n%s%s", err, stdout.String(), stderr.String())
 	}
+}
+
+func TestBareStop(t *testing.T) {
+	probe, err := net.Listen("tcp", bus.DefaultListen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	bin := buildBinary(t)
+	home := t.TempDir()
+	data := t.TempDir()
+	env := replaceEnv("HOME="+home, "XDG_DATA_HOME="+data)
+	defaultStore := filepath.Join(data, "hotseat")
+
+	t.Run("other store on default listen", func(t *testing.T) {
+		other := filepath.Join(t.TempDir(), "other")
+		pid := startManaged(t, bin, env, other, bus.DefaultListen)
+		stopped := runBinEnv(t, bin, env, "bus", "stop")
+		if stopped.code != 0 {
+			t.Fatalf("stop %d\n%s%s", stopped.code, stopped.stdout, stopped.stderr)
+		}
+		if pidAlive(pid) {
+			t.Fatal("process still alive")
+		}
+		assertLockFree(t, other)
+		again := runBinEnv(t, bin, env, "bus", "stop")
+		if again.code != 0 {
+			t.Fatalf("second stop %d\n%s%s", again.code, again.stdout, again.stderr)
+		}
+	})
+
+	t.Run("default store on another port", func(t *testing.T) {
+		pid := startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		stopped := runBinEnv(t, bin, env, "bus", "stop")
+		if stopped.code != 0 {
+			t.Fatalf("stop %d\n%s%s", stopped.code, stopped.stdout, stopped.stderr)
+		}
+		if pidAlive(pid) {
+			t.Fatal("process still alive")
+		}
+		assertLockFree(t, defaultStore)
+	})
+
+	t.Run("both", func(t *testing.T) {
+		other := filepath.Join(t.TempDir(), "other")
+		defaultPID := startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		otherPID := startManaged(t, bin, env, other, bus.DefaultListen)
+		stopped := runBinEnv(t, bin, env, "bus", "stop")
+		if stopped.code != 0 {
+			t.Fatalf("stop %d\n%s%s", stopped.code, stopped.stdout, stopped.stderr)
+		}
+		if pidAlive(defaultPID) || pidAlive(otherPID) {
+			t.Fatalf("default %v other %v", pidAlive(defaultPID), pidAlive(otherPID))
+		}
+		assertLockFree(t, defaultStore)
+		assertLockFree(t, other)
+	})
+
+	t.Run("store flag leaves the other", func(t *testing.T) {
+		other := filepath.Join(t.TempDir(), "other")
+		defaultPID := startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		otherPID := startManaged(t, bin, env, other, bus.DefaultListen)
+		stopped := runBinEnv(t, bin, env, "bus", "stop", "--store", other)
+		if stopped.code != 0 {
+			t.Fatalf("stop other %d\n%s%s", stopped.code, stopped.stdout, stopped.stderr)
+		}
+		if !pidAlive(defaultPID) || pidAlive(otherPID) {
+			t.Fatalf("default alive %v other alive %v", pidAlive(defaultPID), pidAlive(otherPID))
+		}
+		stopped = runBinEnv(t, bin, env, "bus", "stop", "--store", defaultStore)
+		if stopped.code != 0 || pidAlive(defaultPID) {
+			t.Fatalf("stop default %d alive %v\n%s%s", stopped.code, pidAlive(defaultPID), stopped.stdout, stopped.stderr)
+		}
+		defaultPID = startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		otherPID = startManaged(t, bin, env, other, bus.DefaultListen)
+		stopped = runBinEnv(t, bin, env, "bus", "stop", "--store", defaultStore)
+		if stopped.code != 0 || pidAlive(defaultPID) || !pidAlive(otherPID) {
+			t.Fatalf("stop default %d default %v other %v\n%s%s", stopped.code, pidAlive(defaultPID), pidAlive(otherPID), stopped.stdout, stopped.stderr)
+		}
+		stopped = runBinEnv(t, bin, env, "bus", "stop")
+		if stopped.code != 0 || pidAlive(otherPID) {
+			t.Fatalf("bare stop %d other %v\n%s%s", stopped.code, pidAlive(otherPID), stopped.stdout, stopped.stderr)
+		}
+	})
+
+	t.Run("foreign listener", func(t *testing.T) {
+		ln, err := net.Listen("tcp", bus.DefaultListen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		stopped := runBinEnv(t, bin, env, "bus", "stop")
+		if stopped.code == 0 || !strings.Contains(stopped.stderr, bus.DefaultListen) {
+			t.Fatalf("stop %d\n%s%s", stopped.code, stopped.stdout, stopped.stderr)
+		}
+		conn, err := net.DialTimeout("tcp", bus.DefaultListen, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("foreign listener and default store", func(t *testing.T) {
+		pid := startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		ln, err := net.Listen("tcp", bus.DefaultListen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		stopped := runBinEnv(t, bin, env, "bus", "stop")
+		if stopped.code == 0 || !strings.Contains(stopped.stderr, bus.DefaultListen) {
+			t.Fatalf("stop %d\n%s%s", stopped.code, stopped.stdout, stopped.stderr)
+		}
+		if pidAlive(pid) {
+			t.Fatal("default store bus still alive")
+		}
+		assertLockFree(t, defaultStore)
+		conn, err := net.DialTimeout("tcp", bus.DefaultListen, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func startManaged(t *testing.T, bin string, env []string, storeDir, addr string) int {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = stopBus(ctx, storeDir)
+	})
+	started := runBinEnv(t, bin, env, "bus", "start", "--store", storeDir, "--listen", addr)
+	if started.code != 0 {
+		t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
+	}
+	pid, listen, got := parseBusReport(t, started.stdout)
+	if listen != addr || got != storeDir {
+		t.Fatalf("listen %s store %s", listen, got)
+	}
+	return pid
+}
+
+func assertLockFree(t *testing.T, storeDir string) {
+	t.Helper()
+	held, err := lockHeld(storeDir)
+	if err != nil || held {
+		t.Fatalf("lock held %v %v", held, err)
+	}
+}
+
+func replaceEnv(pairs ...string) []string {
+	env := os.Environ()
+	for _, pair := range pairs {
+		key, _, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		prefix := key + "="
+		found := false
+		for i, entry := range env {
+			if strings.HasPrefix(entry, prefix) {
+				env[i] = pair
+				found = true
+				break
+			}
+		}
+		if !found {
+			env = append(env, pair)
+		}
+	}
+	return env
+}
+
+func runBinEnv(t *testing.T, bin string, env []string, args ...string) cmdResult {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Env = env
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return cmdResult{stdout: stdout.String(), stderr: stderr.String()}
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("%v: %v\n%s", args, err, stderr.String())
+	}
+	return cmdResult{stdout: stdout.String(), stderr: stderr.String(), code: exitErr.ExitCode()}
 }
 
 func TestMain(m *testing.M) {
