@@ -214,6 +214,7 @@ func publishAuth(t *testing.T, base, token, from, key, body string, secrets []st
 		"to":           []string{"bob"},
 		"body":         body,
 		"txid":         key,
+		"kind":         "say",
 	})
 	if err != nil {
 		t.Fatal(err)

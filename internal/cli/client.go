@@ -34,6 +34,7 @@ func addClientCommands(root *cobra.Command) {
 		newWaitCmd(),
 		newCloseCmd(),
 		newListCmd(),
+		newMemberCmd(),
 	)
 }
 
@@ -50,12 +51,12 @@ func newCreateCmd() *cobra.Command {
 }
 
 func newPublishCmd() *cobra.Command {
-	var address, conv, from, body, key string
+	var address, conv, from, body, key, kind string
 	var to []string
 	var bodyFile string
-	cmd := newClientCmd("publish", "Publish a message", `  hotseat publish --conversation job --from alice --to bob --body hello
-  hotseat publish --conversation job --from alice --to bob --body hello --txid 1
-  hotseat publish --conversation job --from alice --to bob --body-file note.txt`, func(cmd *cobra.Command) error {
+	cmd := newClientCmd("publish", "Publish a message", `  hotseat publish --conversation job --from alice --kind say --to bob --body hello
+  hotseat publish --conversation job --from alice --kind say --to bob --body hello --txid 1
+  hotseat publish --conversation job --from alice --kind say --to bob --body-file note.txt`, func(cmd *cobra.Command) error {
 		text, err := publishBody(cmd, body, bodyFile)
 		if err != nil {
 			return err
@@ -75,29 +76,33 @@ func newPublishCmd() *cobra.Command {
 			To:           to,
 			Body:         text,
 			TxID:         key,
+			Kind:         kind,
 		})
 	})
 	addAddress(cmd, &address)
 	cmd.Flags().StringVar(&conv, "conversation", "", "conversation name")
 	cmd.Flags().StringVar(&from, "from", "", "sender name")
+	cmd.Flags().StringVar(&kind, "kind", "", "message kind")
 	cmd.Flags().StringArrayVar(&to, "to", nil, "addressee; repeat for more than one; omit for none")
 	cmd.Flags().StringVar(&body, "body", "", "message body")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "file to read the body from; - reads stdin")
 	cmd.Flags().StringVar(&key, "txid", "", "transaction id; 10 hex characters when omitted")
-	markRequired(cmd, "conversation", "from")
+	markRequired(cmd, "conversation", "from", "kind")
 	return cmd
 }
 
 func newReadCmd() *cobra.Command {
 	var address, conv, name string
+	var kinds []string
 	var cursor, limit int64
 	cmd := newClientCmd("read", "Read messages after a cursor", `  hotseat read --conversation job --cursor 0 --limit 50
-  hotseat read --conversation job --cursor 0 --limit 50 --name bob`, func(cmd *cobra.Command) error {
+  hotseat read --conversation job --cursor 0 --limit 50 --name bob --kind say`, func(cmd *cobra.Command) error {
 		return call(cmd, address, "read", client.ReadRequest{
 			Conversation: conv,
 			Cursor:       cursor,
 			Limit:        limit,
 			Name:         changedString(cmd, "name", name),
+			Kinds:        changedKinds(cmd, kinds),
 		})
 	})
 	addAddress(cmd, &address)
@@ -105,25 +110,29 @@ func newReadCmd() *cobra.Command {
 	cmd.Flags().Int64Var(&cursor, "cursor", 0, "last finished sequence; 0 has seen nothing")
 	cmd.Flags().Int64Var(&limit, "limit", 0, "maximum number of messages")
 	cmd.Flags().StringVar(&name, "name", "", "participant name; omit to read every message")
+	cmd.Flags().StringArrayVar(&kinds, "kind", nil, "kind to keep; repeat to list more than one; omit to keep every kind")
 	markRequired(cmd, "conversation", "cursor", "limit")
 	return cmd
 }
 
 func newWaitCmd() *cobra.Command {
 	var address, conv, name, deadline string
+	var kinds []string
 	var cursor int64
-	cmd := newClientCmd("wait", "Wait for a matching message", `  hotseat wait --conversation job --cursor 0 --name bob --deadline 30s`, func(cmd *cobra.Command) error {
+	cmd := newClientCmd("wait", "Wait for a matching message", `  hotseat wait --conversation job --cursor 0 --name bob --kind turn --deadline 30s`, func(cmd *cobra.Command) error {
 		return call(cmd, address, "wait", client.WaitRequest{
 			Conversation: conv,
 			Cursor:       cursor,
 			Name:         changedString(cmd, "name", name),
 			Deadline:     changedString(cmd, "deadline", deadline),
+			Kinds:        changedKinds(cmd, kinds),
 		})
 	})
 	addAddress(cmd, &address)
 	cmd.Flags().StringVar(&conv, "conversation", "", "conversation name")
 	cmd.Flags().Int64Var(&cursor, "cursor", 0, "last finished sequence; 0 has seen nothing")
 	cmd.Flags().StringVar(&name, "name", "", "participant name; omit to wait for the next message")
+	cmd.Flags().StringArrayVar(&kinds, "kind", nil, "kind to keep; repeat to list more than one; omit to keep every kind")
 	cmd.Flags().StringVar(&deadline, "deadline", "", "wait limit: a duration such as 30s, or an RFC3339 end time; omit to wait without one")
 	markRequired(cmd, "conversation", "cursor")
 	return cmd
@@ -133,6 +142,44 @@ func newCloseCmd() *cobra.Command {
 	var address, conv string
 	cmd := newClientCmd("close", "Close a conversation", `  hotseat close --conversation job`, func(cmd *cobra.Command) error {
 		return call(cmd, address, "close", client.CloseRequest{Conversation: conv})
+	})
+	addAddress(cmd, &address)
+	cmd.Flags().StringVar(&conv, "conversation", "", "conversation name")
+	markRequired(cmd, "conversation")
+	return cmd
+}
+
+func newMemberCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "member",
+		Short:         "Register a member or list member rows",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return errors.New("choose register or list")
+		},
+	}
+	cmd.AddCommand(newMemberRegisterCmd(), newMemberListCmd())
+	return cmd
+}
+
+func newMemberRegisterCmd() *cobra.Command {
+	var address, conv, name string
+	cmd := newClientCmd("register", "Register a member", `  hotseat member register --conversation job --name alpha`, func(cmd *cobra.Command) error {
+		return call(cmd, address, "register", client.RegisterRequest{Conversation: conv, Name: name})
+	})
+	addAddress(cmd, &address)
+	cmd.Flags().StringVar(&conv, "conversation", "", "conversation name")
+	cmd.Flags().StringVar(&name, "name", "", "roster name")
+	markRequired(cmd, "conversation", "name")
+	return cmd
+}
+
+func newMemberListCmd() *cobra.Command {
+	var address, conv string
+	cmd := newClientCmd("list", "List member rows", `  hotseat member list --conversation job`, func(cmd *cobra.Command) error {
+		return call(cmd, address, "members", client.MembersRequest{Conversation: conv})
 	})
 	addAddress(cmd, &address)
 	cmd.Flags().StringVar(&conv, "conversation", "", "conversation name")
@@ -189,6 +236,18 @@ func changedString(cmd *cobra.Command, flag, value string) *string {
 		return nil
 	}
 	return &value
+}
+
+// changedKinds omits the field when --kind was not passed.
+// A passed flag sends the list, including one that is empty.
+func changedKinds(cmd *cobra.Command, kinds []string) *[]string {
+	if !cmd.Flags().Changed("kind") {
+		return nil
+	}
+	if kinds == nil {
+		kinds = []string{}
+	}
+	return &kinds
 }
 
 // publishBody takes exactly one source. A file is how a body outgrows one

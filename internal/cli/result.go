@@ -51,6 +51,15 @@ func writeResult(w io.Writer, res client.Result) error {
 			lw.message(msg)
 		}
 	}
+	if res.Member != nil {
+		lw.member(*res.Member, true)
+	}
+	if res.Members != nil {
+		lw.header("members")
+		for _, m := range *res.Members {
+			lw.member(m, false)
+		}
+	}
 	return lw.err
 }
 
@@ -114,6 +123,27 @@ func (lw *lineWriter) integer(key string, n int64) {
 func (lw *lineWriter) conversation(conv client.Conversation) {
 	lw.plain("name", conv.Name)
 	lw.plain("status", conv.Status)
+	if conv.Task != "" {
+		lw.plain("task", conv.Task)
+	}
+	if conv.Ticket != "" {
+		lw.plain("ticket", conv.Ticket)
+	}
+	if conv.Seat != "" {
+		lw.plain("seat", conv.Seat)
+	}
+	if conv.Directory != "" {
+		lw.plain("directory", conv.Directory)
+	}
+	for _, prompt := range conv.Prompts {
+		lw.plain("prompts", prompt)
+	}
+	if conv.Custom != "" {
+		lw.plain("custom", conv.Custom)
+	}
+	for _, name := range conv.Roster {
+		lw.plain("roster", name)
+	}
 }
 
 func (lw *lineWriter) message(msg client.Message) {
@@ -121,9 +151,21 @@ func (lw *lineWriter) message(msg client.Message) {
 	lw.integer("seq", msg.Seq)
 	lw.plain("time", msg.Time)
 	lw.plain("from", msg.From)
+	lw.plain("kind", msg.Kind)
 	for _, name := range msg.To {
 		lw.plain("to", name)
 	}
 	lw.plain("txid", msg.TxID)
 	lw.framed("body", msg.Body)
+}
+
+func (lw *lineWriter) member(m client.Member, pid bool) {
+	lw.header("member")
+	lw.plain("name", m.Name)
+	lw.plain("status", m.Status)
+	lw.plain("launched", m.Launched)
+	lw.plain("registered", m.Registered)
+	if pid && m.PID != nil {
+		lw.integer("pid", *m.PID)
+	}
 }

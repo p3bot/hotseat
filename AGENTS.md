@@ -2,7 +2,7 @@
 
 One process hosts named conversations in SQLite. Callers publish into a transcript and block until a matching message exists or a deadline passes. Module `github.com/p3bot/hotseat`. The bus does not launch agents.
 
-`hotseat run`, `hotseat attend`, message field `kind`, and member rows are the draft runner in design `hotseat-r7gj`. They are not in this tree. See Runner before adding them.
+`hotseat run` and `hotseat attend` are the runner in design `hotseat-r7gj`. They are not in this tree until `hotseat-y7t5` and `hotseat-q8us`. See Runner before adding them.
 
 Operator contract: `README.md` and the package doc comments. A behaviour those texts state changes in the same edit as the code.
 
@@ -64,17 +64,23 @@ Every operation is `POST` of one JSON object. A completed call is HTTP 200. Read
 | `ok`, `timeout`, `refused`, `unavailable` | Bus JSON |
 | `connection_failure` | Client and CLI only. The call never completed |
 
-`refused` names the rule in `reason` and writes nothing. `unavailable` writes nothing. A dropped connection has no body. The client retries that once, with the same body and the same token. Dial failure, cancellation, a non-200 or unexpected outcome, and a completed outcome are returned without a second attempt. Keep-alives are off so the retry cannot reuse the connection that dropped. Dial timeout is 5s. There is no request timeout. A wait blocks until the bus replies.
+`refused` names the rule in `reason` and writes nothing. `unavailable` writes nothing. A dropped connection has no body. The client retries that once, with the same body and the same token. A dropped launch whose retry is refused because the member is already launched returns the stored row. A second launch, after a reply was received, stays refused. Dial failure, cancellation, a non-200 or unexpected outcome, and a completed outcome are returned without a second attempt. Keep-alives are off so the retry cannot reuse the connection that dropped. Dial timeout is 5s. There is no request timeout. A wait blocks until the bus replies.
 
-Routes: `/create`, `/publish`, `/read`, `/wait`, `/close`, `/list`. `GET /health` is not an operation. It takes no token on any address. The body is `pass` (200) or `fail` (503) plus a newline.
+Routes: `/create`, `/publish`, `/read`, `/wait`, `/close`, `/list`, `/register`, `/member`, `/session`, `/members`. `GET /health` is not an operation. It takes no token on any address. The body is `pass` (200) or `fail` (503) plus a newline. Off loopback the new routes require the same bearer token. Loopback stays unauthenticated.
 
-Publish is acknowledged only after a durable commit. The attempt is the conversation, the sender, and `txid`. The bus requires that id and does not generate one. The same attempt with the same `to` and body returns the original message and `already_stored`, including after close. The same attempt with a different `to` or body is refused. `to` order is content. The bus does not sort or dedupe it. Another sender with that `txid` stores a new message.
+Publish requires `kind`. It uses the participant name grammar. The vocabulary is open. Publish is acknowledged only after a durable commit. The attempt is the conversation, the sender, and `txid`. The bus requires that id and does not generate one. `kind` is part of the content, with `to` and body. The same attempt with the same kind, the same `to`, and the same body returns the original message and `already_stored`, including after close. A different kind, `to`, or body is refused. `to` order is content. The bus does not sort or dedupe it. Another sender with that `txid` stores a new message.
 
-The CLI mints an omitted id as 10 lowercase hex characters, prints `txid: <id>` to stderr, flushes, then sends it. A dropped CLI call retries that same id. Pass `--txid` to send that value. `--body` and `--body-file` are exclusive. `--body-file -` reads stdin. A body whose text is `-` is `--body -`. Invalid UTF-8 in a publish body or txid is `refused` in the client and is not posted. JSON would otherwise replace the bytes and store a different message.
+`read` and `wait` take an optional `kinds` array. Omit it and the address rule alone stands. A present empty array is refused. A named wait still returns the span through the match, including other kinds. A named read returns a message when it is addressed to that name and its kind is listed. The limit counts returned messages.
+
+Create stores the binding on the conversation: `task`, `ticket`, `seat`, `directory`, `prompts`, `custom`, and `roster`. Omitted fields are empty. `prompts` and `roster` keep the caller's order. A roster requires a seat that is one of the roster names. Empty roster and empty seat is the name-only create. Create and list return the binding. JSON objects include the keys. `hotseat create` stays name-only. Empty binding fields are omitted in the text result.
+
+A member row is one roster name. It holds launched time, registered time, status, session id, and pid. Status is `launched`, `registered`, `running`, `exited`, or `timed-out`. `/register` sets the registered time. The status becomes `registered` only when the row is `launched`. `/member` inserts `launched` and updates `running`, `exited`, and `timed-out`. A pid without a status is refused and writes nothing. A call with neither returns the row. `/members` is `hotseat member list` and returns name, launched time, registered time, and status, in roster order. It does not return a session id or a pid. `/session` stores and returns session ids. There is no CLI for that route. Session ids and pids stay off read, wait, list, member list, the page, and the bus log. Create does not insert a row for `owner` or for a roster name.
+
+The CLI mints an omitted id as 10 lowercase hex characters, prints `txid: <id>` to stderr, flushes, then sends it. A dropped CLI call retries that same id. Pass `--txid` to send that value. `--kind` is required on publish. `hotseat read` and `hotseat wait` take repeatable `--kind` and omit `kinds` when the flag is absent. `--body` and `--body-file` are exclusive. `--body-file -` reads stdin. A body whose text is `-` is `--body -`. Invalid UTF-8 in a publish body or txid is `refused` in the client and is not posted. JSON would otherwise replace the bytes and store a different message.
 
 `cursor` `0` means the caller has seen nothing. The bus does not store cursors. `deadline` is a Go duration (`30s`, `500ms`) from arrival, or an RFC3339 end time on the bus clock. Omit it to wait until a match or a dropped connection. `0s` and a time already past time out at once when nothing matches. A stored match still returns `ok`.
 
-Close sets `closed` and still accepts a later publish. Close does not end a wait. `["all"]` wakes every named waiter except the sender. Empty `to` matches only an unnamed wait. A named read skips messages that are not addressed to that name. `from` must not be `all`.
+Close sets `closed` and still accepts a later publish. A member write after close is stored. Close does not end a wait. `["all"]` wakes every named waiter except the sender. Empty `to` matches only an unnamed wait. A named read skips messages that are not addressed to that name. `from` must not be `all`.
 
 Names are 1 to 64 characters from ASCII letters, digits, `.`, `_`, and `-`. Exact refusal strings are the `bus.Reason*` constants. A new reason is a constant beside the others, plus a test whose name states the rule.
 
@@ -106,11 +112,11 @@ DSN pragmas: `busy_timeout=0`, `journal_mode=WAL`, `locking_mode=EXCLUSIVE`, `fo
 
 Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, the string `1`. Statements are `CREATE TABLE IF NOT EXISTS`.
 
-WARNING: a new column at version `1` opens an old file and never adds the column. A different recorded version makes `Open` return `store.ErrSchema`. There is no migration.
+`Open` returns `store.ErrSchema` for a recorded version other than `1`, and for a version-`1` file that lacks `kind`, the binding columns, or the member table. It does not alter the file and it does not serve it. There is no migration. Delete a database this binary already created before the new process opens it.
 
 Idempotent publish, and close of an already-closed conversation, return the unexported `errNoChange` so the transaction rolls back instead of committing an empty write.
 
-Sentinels: `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`. Wrap with `%w` when the caller branches on the cause.
+Sentinels: `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, `ErrLaunched`. Wrap with `%w` when the caller branches on the cause.
 
 ## Access
 
@@ -120,7 +126,7 @@ Loopback accepts every operation with no token. Passing `--token-file` on loopba
 
 The header is `Authorization: Bearer` plus the token. `bus.WriteToken` sets it. A missing token is `token is required`. A wrong token is `token does not match`. Nothing is written. The token is not a flag, not a sender, and not stored. Logs, the page, and prompts do not contain it.
 
-The page default is `127.0.0.1:4728`. It listens on loopback only. Any other socket is closed. The page holds the bus token, so a public socket would hand that token to the network. The request host is checked before a bus call. On loopback, `localhost` with the same port is that host. An empty listen host refuses every request. The page lists, reads, and publishes. It does not create, wait, or close. An empty transaction id is filled in the page script on submit. The server forwards the posted id.
+The page default is `127.0.0.1:4728`. It listens on loopback only. Any other socket is closed. The page holds the bus token, so a public socket would hand that token to the network. The request host is checked before a bus call. On loopback, `localhost` with the same port is that host. An empty listen host refuses every request. The page lists, reads, and publishes. The publish form sends `kind`, and the publish result and the transcript show it. The page does not create, wait, close, or manage members. An empty transaction id is filled in the page script on submit. The server forwards the posted id. The script does not invent `kind`.
 
 `from` is caller-supplied. The token does not authenticate the sender.
 
@@ -150,22 +156,25 @@ Name the test for the rule (`TestNonLoopbackDoesNotListenOrCreateStore`). Do not
 
 ## Runner
 
-Draft design `hotseat-r7gj` (Hotseat conversation runner). Read it with `tk design get hotseat-r7gj --content`. Build it when a task asks. The bus design `hotseat-ppyt` is decomposed and its tickets are done. This tree is that bus.
+Design `hotseat-r7gj` (Hotseat conversation runner). Read it with `tk design get hotseat-r7gj --content`. The bus design `hotseat-ppyt` is decomposed and its tickets are done. This tree stores `kind`, the conversation binding, and member rows. `hotseat run` and `hotseat attend` are not in this tree until `hotseat-y7t5` and `hotseat-q8us`.
+
+Settled, and in this tree:
+
+- `kind` is a message field. `mode` stays the first line of a turn body. The database does not gain a phase, a mode column, or a cursor.
+- Member rows hold registration, status, pid, and session id. Speech stays in the transcript. Registration replaces ack.
+- Session ids stay out of the transcript, `member list`, logs, status lines, and prompts. An id works on the machine that stored it.
+- Schema version stays `1`. Delete a database this binary already created. Do not add a migration.
+- The bus process still does not launch agents. The web page shows message `kind` and does not manage members.
 
 Settled for the runner, and absent here:
 
 - `hotseat run` and `hotseat attend` are clients. They do not start the bus and do not open the database.
 - Shell out to `start` and `tk`. A missing task resolver, prompt, session-id locator, or ticket code-root is a change in that program. Hotseat does not grow its own.
-- `kind` is a message field. `mode` stays the first line of a turn body. The database does not gain a phase, a mode column, or a cursor.
-- Member rows hold registration, status, pid, and session id. Speech stays in the transcript. Registration replaces ack.
-- Session ids stay out of the transcript, `member list`, logs, status lines, and prompts. An id works on the machine that stored it.
-- Schema version stays `1`. Delete a database this binary already created. Do not add a migration.
-- The bus process still does not launch agents. The web page shows `kind` and does not manage members.
 - Roster is `--agents` / `HOTSEAT_AGENTS` as `name=module:model`. There is no `HOTSEAT_MEMBERS`. The flag wins over the matching `HOTSEAT_*` variable. The turn cap defaults to 500 `turn` messages. The member process limit defaults to 8 hours. Interactive mode disables that process timeout and keeps the cap.
 - Instruction bodies over the 512 KiB maximum are refused before create. Naming, seat backup, and the turn loop are in the design. Follow that text.
-- Gemini and Copilot are out. `herdr` is not a dependency.
+- Copilot is out. agy (Antigravity CLI) has no hotseat module in this work. `herdr` is not a dependency.
 
-`internal/web` already uses `kind` for page rendering (`kindList`, `kindConversation`). That is not the message field.
+`internal/web` uses `kindList` and `kindConversation` for page modes. Those names are not the message field.
 
 ## Scope
 

@@ -155,6 +155,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	form.Set("conversation", "job")
 	form.Set("from", "alice")
 	form.Set("to", "carol\n\nbob")
+	form.Set("kind", "say")
 	form.Set("body", "<b>&")
 	form.Set("txid", "idem-9f3a")
 
@@ -171,8 +172,11 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	if carol < 0 || bob < carol {
 		t.Fatalf("to order\n%s", stored)
 	}
-	if !strings.Contains(stored, `class="from">alice<`) || !strings.Contains(stored, `class="txid">idem-9f3a<`) {
+	if !strings.Contains(stored, `class="from">alice<`) || !strings.Contains(stored, `class="txid">idem-9f3a<`) || !strings.Contains(stored, `class="kind">say<`) {
 		t.Fatalf("identity\n%s", stored)
+	}
+	if !strings.Contains(stored, `id="kind" name="kind"`) || strings.Contains(stored, "member register") || strings.Contains(stored, "/members") {
+		t.Fatalf("form\n%s", stored)
 	}
 	if strings.Contains(stored, `value="idem-9f3a"`) || !strings.Contains(stored, `id="txid" name="txid" value=""`) {
 		t.Fatalf("ok publish kept the field\n%s", stored)
@@ -193,6 +197,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	changed.Set("conversation", "job")
 	changed.Set("from", "alice")
 	changed.Set("to", "carol\n\nbob")
+	changed.Set("kind", "say")
 	changed.Set("body", "other")
 	changed.Set("txid", "idem-9f3a")
 	_, conflict, _ := postPage(t, page.URL+"/publish", changed)
@@ -207,6 +212,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	emptyKey.Set("conversation", "job")
 	emptyKey.Set("from", "alice")
 	emptyKey.Set("to", "bob")
+	emptyKey.Set("kind", "say")
 	emptyKey.Set("body", "nope")
 	emptyKey.Set("txid", "")
 	_, missing, _ := postPage(t, page.URL+"/publish", emptyKey)
@@ -215,7 +221,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	}
 
 	_, transcript, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
-	if strings.Count(transcript, "&lt;b&gt;&amp;") != 1 || strings.Contains(transcript, ">other<") || strings.Contains(transcript, ">nope<") {
+	if strings.Count(transcript, "&lt;b&gt;&amp;") != 1 || strings.Contains(transcript, ">other<") || strings.Contains(transcript, ">nope<") || !strings.Contains(transcript, `class="kind">say<`) {
 		t.Fatalf("transcript\n%s", transcript)
 	}
 
@@ -227,6 +233,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	fresh.Set("conversation", "job")
 	fresh.Set("from", "alice")
 	fresh.Set("to", "bob")
+	fresh.Set("kind", "say")
 	fresh.Set("body", "later")
 	fresh.Set("txid", "idem-new")
 	_, stored, _ = postPage(t, page.URL+"/publish", fresh)
@@ -269,6 +276,7 @@ func TestFailedPublishKeepsThePostedID(t *testing.T) {
 	form := url.Values{}
 	form.Set("conversation", "job")
 	form.Set("from", "alice")
+	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "keep-me")
 	_, body, _ := postPage(t, page.URL+"/publish", form)
@@ -304,6 +312,7 @@ func TestPublishEchoesTheRequestCursor(t *testing.T) {
 	form.Set("limit", "1")
 	form.Set("from", "alice")
 	form.Set("to", "bob")
+	form.Set("kind", "say")
 	form.Set("body", "via-page")
 	form.Set("txid", "page-key")
 	_, published, _ := postPage(t, page.URL+"/publish", form)
@@ -342,6 +351,7 @@ func TestPublishRejectsForeignOrigin(t *testing.T) {
 	form.Set("conversation", "job")
 	form.Set("from", "alice")
 	form.Set("to", "bob")
+	form.Set("kind", "say")
 	form.Set("body", "pwned-cross-site")
 	form.Set("txid", "idem-foreign")
 	foreign := []http.Header{
@@ -453,6 +463,7 @@ func TestPageRejectsADifferentHost(t *testing.T) {
 	form.Set("conversation", "job")
 	form.Set("from", "alice")
 	form.Set("to", "bob")
+	form.Set("kind", "say")
 	form.Set("body", "pwned-rebind")
 	form.Set("txid", "idem-rebind")
 
@@ -649,6 +660,7 @@ func TestLoopbackWorksWithoutToken(t *testing.T) {
 	form.Set("conversation", "job")
 	form.Set("from", "alice")
 	form.Set("to", "bob")
+	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "k")
 	_, stored, _ := postPage(t, page.URL+"/publish", form)
@@ -704,6 +716,7 @@ func TestTokenStaysOffThePage(t *testing.T) {
 	form.Set("conversation", "job")
 	form.Set("from", "alice")
 	form.Set("to", "bob")
+	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "idem-token")
 	_, stored, shdr := postPage(t, page.URL+"/publish", form)
@@ -815,11 +828,12 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 	form.Set("conversation", "job")
 	form.Set("from", "alice")
 	form.Set("to", "carol\nbob")
+	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "k1")
 	_, body, _ = postPage(t, page.URL+"/publish", form)
 	got = take()
-	wantPub := bus.PathPublish + " " + auth + ` {"conversation":"job","from":"alice","to":["carol","bob"],"body":"hello","txid":"k1"}`
+	wantPub := bus.PathPublish + " " + auth + ` {"conversation":"job","from":"alice","to":["carol","bob"],"body":"hello","txid":"k1","kind":"say"}`
 	if len(got) != 2 || got[0] != bus.PathList+" "+auth+" {}" || got[1] != wantPub {
 		t.Fatalf("publish %#v", got)
 	}
@@ -1036,6 +1050,7 @@ func publishMsg(t *testing.T, addr, token, conv, from string, to []string, body,
 		To:           to,
 		Body:         body,
 		TxID:         key,
+		Kind:         "say",
 	})
 	if res.Outcome != bus.OutcomeOK {
 		t.Fatalf("publish %s: %+v", key, res)

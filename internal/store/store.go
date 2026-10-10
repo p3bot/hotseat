@@ -6,6 +6,8 @@
 
 // Package store is the bus SQLite database.
 // One process holds hotseat.db.lock. Cursors and blocked waits are not stored.
+// A message carries kind. A conversation row holds the binding.
+// A member row holds registration, status, pid, and session id for one roster name.
 package store
 
 import (
@@ -40,6 +42,17 @@ const (
 	StatusClosed = "closed"
 )
 
+// Member status values stored on a roster row.
+const (
+	MemberLaunched   = "launched"
+	MemberRegistered = "registered"
+	MemberRunning    = "running"
+	MemberExited     = "exited"
+	MemberTimedOut   = "timed-out"
+)
+
+const conversationColumns = `name, status, task, ticket, seat, directory, prompts, custom, roster`
+
 var schemaStmts = []string{
 	`CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -47,7 +60,14 @@ var schemaStmts = []string{
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS conversations (
   name TEXT PRIMARY KEY,
-  status TEXT NOT NULL CHECK (status IN ('open', 'closed'))
+  status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
+  task TEXT NOT NULL,
+  ticket TEXT NOT NULL,
+  seat TEXT NOT NULL,
+  directory TEXT NOT NULL,
+  prompts TEXT NOT NULL,
+  custom TEXT NOT NULL,
+  roster TEXT NOT NULL
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS messages (
   conversation TEXT NOT NULL REFERENCES conversations(name),
@@ -57,8 +77,19 @@ var schemaStmts = []string{
   recipients TEXT NOT NULL,
   body TEXT NOT NULL,
   txid TEXT NOT NULL,
+  kind TEXT NOT NULL,
   PRIMARY KEY (conversation, seq),
   UNIQUE (conversation, sender, txid)
+) STRICT`,
+	`CREATE TABLE IF NOT EXISTS members (
+  conversation TEXT NOT NULL REFERENCES conversations(name),
+  name TEXT NOT NULL,
+  launched TEXT NOT NULL,
+  registered TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('launched', 'registered', 'running', 'exited', 'timed-out')),
+  session TEXT NOT NULL,
+  pid INTEGER,
+  PRIMARY KEY (conversation, name)
 ) STRICT`,
 }
 
@@ -69,8 +100,15 @@ var (
 	ErrConflict = errors.New("transaction id reused with different content")
 	// ErrHeld means another process already has the database.
 	ErrHeld = errors.New("database is held by another process")
-	// ErrSchema means the file was written by a different store version.
+	// ErrSchema means this binary will not serve the file.
+	// The recorded version differs, or a version-1 file lacks kind, the binding columns, or the member table.
 	ErrSchema = errors.New("store schema is not supported by this binary")
+	// ErrNotRoster means the name is not on the conversation roster.
+	ErrNotRoster = errors.New("name is not in the roster")
+	// ErrNotMember means the roster name has no member row.
+	ErrNotMember = errors.New("member has not been launched")
+	// ErrLaunched means launched was asked for a name that already has a row.
+	ErrLaunched = errors.New("member is already launched")
 
 	// errNoChange tells withTx to roll the transaction back and return nil.
 	// Idempotent publish and close of an already-closed conversation take it
@@ -78,10 +116,23 @@ var (
 	errNoChange = errors.New("store transaction made no change")
 )
 
-// Conversation is a name and its status.
+// Binding is the conversation row beside the name and status.
+// Prompts and Roster keep the caller's order.
+type Binding struct {
+	Task      string
+	Ticket    string
+	Seat      string
+	Directory string
+	Prompts   []string
+	Custom    string
+	Roster    []string
+}
+
+// Conversation is a name, its status, and its binding.
 type Conversation struct {
 	Name   string
 	Status string
+	Binding
 }
 
 // Message is one accepted publish. To keeps the caller's order.
@@ -92,6 +143,7 @@ type Message struct {
 	To   []string
 	Body string
 	TxID string
+	Kind string
 }
 
 // Publish is a validated publish to commit.
@@ -101,7 +153,25 @@ type Publish struct {
 	To           []string
 	Body         string
 	TxID         string
+	Kind         string
 	Time         string
+}
+
+// Member is one roster row without its session id.
+// PID is set only when HasPID is true.
+type Member struct {
+	Name       string
+	Status     string
+	Launched   string
+	Registered string
+	PID        int64
+	HasPID     bool
+}
+
+// MemberSession is a roster name and the session id stored for it.
+type MemberSession struct {
+	Name    string
+	Session string
 }
 
 // Store is the open database. Close releases it for another process.
@@ -271,24 +341,35 @@ func (s *Store) Close() error {
 	return err
 }
 
-// Create inserts an open conversation.
-// A name already present returns that conversation and already true, and writes nothing.
-func (s *Store) Create(ctx context.Context, name string) (Conversation, bool, error) {
+// Create inserts an open conversation and its binding.
+// A name already present returns the stored conversation and already true, and writes nothing.
+// The binding on that call is ignored.
+func (s *Store) Create(ctx context.Context, name string, b Binding) (Conversation, bool, error) {
+	b = normalizeBinding(b)
+	prompts, err := marshalTo(b.Prompts)
+	if err != nil {
+		return Conversation{}, false, err
+	}
+	roster, err := marshalTo(b.Roster)
+	if err != nil {
+		return Conversation{}, false, err
+	}
 	var conv Conversation
 	var already bool
-	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO conversations (name, status) VALUES (?, ?)`,
-			name, StatusOpen)
+	err = s.withTx(ctx, true, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO conversations (
+				name, status, task, ticket, seat, directory, prompts, custom, roster
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			name, StatusOpen, b.Task, b.Ticket, b.Seat, b.Directory, prompts, b.Custom, roster)
 		if err == nil {
-			conv = Conversation{Name: name, Status: StatusOpen}
+			conv = Conversation{Name: name, Status: StatusOpen, Binding: b}
 			return nil
 		}
 		if !isConstraint(err) {
 			return err
 		}
-		err = tx.QueryRowContext(ctx,
-			`SELECT name, status FROM conversations WHERE name = ?`, name).Scan(&conv.Name, &conv.Status)
+		conv, err = conversationByName(ctx, tx, name)
 		if err != nil {
 			return err
 		}
@@ -302,26 +383,31 @@ func (s *Store) Create(ctx context.Context, name string) (Conversation, bool, er
 }
 
 // CloseConversation sets status to closed and appends nothing.
-// Closing a conversation that is already closed writes nothing and returns nil.
-func (s *Store) CloseConversation(ctx context.Context, name string) error {
-	return s.withTx(ctx, true, func(tx *sql.Tx) error {
-		var status string
-		err := tx.QueryRowContext(ctx,
-			`SELECT status FROM conversations WHERE name = ?`, name).Scan(&status)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
+// Closing a conversation that is already closed writes nothing and returns that row.
+func (s *Store) CloseConversation(ctx context.Context, name string) (Conversation, error) {
+	var conv Conversation
+	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
+		var err error
+		conv, err = conversationByName(ctx, tx, name)
 		if err != nil {
 			return err
 		}
-		if status == StatusClosed {
+		if conv.Status == StatusClosed {
 			return errNoChange
 		}
 		_, err = tx.ExecContext(ctx,
 			`UPDATE conversations SET status = ? WHERE name = ?`,
 			StatusClosed, name)
-		return err
+		if err != nil {
+			return err
+		}
+		conv.Status = StatusClosed
+		return nil
 	})
+	if err != nil {
+		return Conversation{}, err
+	}
+	return conv, nil
 }
 
 // List returns every conversation, open and closed, ordered by name.
@@ -329,7 +415,7 @@ func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 	var out []Conversation
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx,
-			`SELECT name, status FROM conversations ORDER BY name`)
+			`SELECT `+conversationColumns+` FROM conversations ORDER BY name`)
 		if err != nil {
 			return err
 		}
@@ -340,22 +426,19 @@ func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 }
 
 // Publish commits one message, or returns the original when this sender
-// already stored this txid with the same to and body.
-// The same sender and txid with different to or body returns ErrConflict.
+// already stored this txid with the same kind, to, and body.
+// The same sender and txid with a different kind, to, or body returns ErrConflict.
 // Another sender using that txid is a different attempt.
 // A matching attempt returns the original message and writes nothing.
-// The status is the conversation state committed with that result.
+// The conversation is the row committed with that result.
 // A missing conversation returns ErrNotFound and writes nothing.
-func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool, error) {
+func (s *Store) Publish(ctx context.Context, in Publish) (Message, Conversation, bool, error) {
 	var msg Message
-	var status string
+	var conv Conversation
 	var already bool
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx,
-			`SELECT status FROM conversations WHERE name = ?`, in.Conversation).Scan(&status)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
+		var err error
+		conv, err = conversationByName(ctx, tx, in.Conversation)
 		if err != nil {
 			return err
 		}
@@ -365,7 +448,7 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool,
 			return err
 		}
 		if found {
-			if stored.From == in.From && stored.Body == in.Body && sameTo(stored.To, in.To) {
+			if stored.From == in.From && stored.Kind == in.Kind && stored.Body == in.Body && sameTo(stored.To, in.To) {
 				msg = stored
 				already = true
 				return errNoChange
@@ -386,9 +469,9 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool,
 		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO messages (
-				conversation, seq, time, sender, recipients, body, txid
-			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			in.Conversation, seq, in.Time, in.From, rec, in.Body, in.TxID)
+				conversation, seq, time, sender, recipients, body, txid, kind
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			in.Conversation, seq, in.Time, in.From, rec, in.Body, in.TxID, in.Kind)
 		if err != nil {
 			return err
 		}
@@ -399,13 +482,14 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, string, bool,
 			To:   copyTo(in.To),
 			Body: in.Body,
 			TxID: in.TxID,
+			Kind: in.Kind,
 		}
 		return nil
 	})
 	if err != nil {
-		return Message{}, "", false, err
+		return Message{}, Conversation{}, false, err
 	}
-	return msg, status, already, nil
+	return msg, conv, already, nil
 }
 
 // Transcript returns the conversation status and every message with seq greater than after.
@@ -431,16 +515,13 @@ func (s *Store) Scan(ctx context.Context, name string, after int64, fn func(Mess
 	}
 	var status string
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx,
-			`SELECT status FROM conversations WHERE name = ?`, name).Scan(&status)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
+		conv, err := conversationByName(ctx, tx, name)
 		if err != nil {
 			return err
 		}
+		status = conv.Status
 		rows, err := tx.QueryContext(ctx, `
-			SELECT seq, time, sender, recipients, body, txid
+			SELECT seq, time, sender, recipients, body, txid, kind
 			FROM messages
 			WHERE conversation = ? AND seq > ?
 			ORDER BY seq`, name, after)
@@ -469,27 +550,42 @@ func (s *Store) Scan(ctx context.Context, name string, after int64, fn func(Mess
 
 func (s *Store) ensureSchema(ctx context.Context) error {
 	return s.withTx(ctx, true, func(tx *sql.Tx) error {
+		version, hasVersion, err := recordedSchema(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if hasVersion && version != SchemaVersion {
+			return fmt.Errorf("%w: %s", ErrSchema, version)
+		}
+		match, err := shapeMatches(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if hasVersion && !match {
+			return ErrSchema
+		}
+		if !hasVersion && !match {
+			exists, err := tableExists(ctx, tx, "messages")
+			if err != nil {
+				return err
+			}
+			// A file that already has messages and lacks this shape is not a place to add tables.
+			if exists {
+				return ErrSchema
+			}
+		}
 		for _, stmt := range schemaStmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("create schema: %w", err)
 			}
 		}
-		var version string
-		err := tx.QueryRowContext(ctx,
-			`SELECT value FROM meta WHERE key = 'schema'`).Scan(&version)
-		if errors.Is(err, sql.ErrNoRows) {
-			_, err = tx.ExecContext(ctx,
-				`INSERT INTO meta (key, value) VALUES ('schema', ?)`, SchemaVersion)
-			if err != nil {
-				return fmt.Errorf("record schema version: %w", err)
-			}
+		if hasVersion {
 			return nil
 		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO meta (key, value) VALUES ('schema', ?)`, SchemaVersion)
 		if err != nil {
-			return err
-		}
-		if version != SchemaVersion {
-			return fmt.Errorf("%w: %s", ErrSchema, version)
+			return fmt.Errorf("record schema version: %w", err)
 		}
 		return nil
 	})
@@ -534,11 +630,102 @@ func (s *Store) withTx(ctx context.Context, write bool, fn func(*sql.Tx) error) 
 	return nil
 }
 
+func normalizeBinding(b Binding) Binding {
+	b.Prompts = copyTo(b.Prompts)
+	b.Roster = copyTo(b.Roster)
+	return b
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func conversationByName(ctx context.Context, tx *sql.Tx, name string) (Conversation, error) {
+	conv, err := scanConversation(tx.QueryRowContext(ctx,
+		`SELECT `+conversationColumns+` FROM conversations WHERE name = ?`, name))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Conversation{}, ErrNotFound
+	}
+	return conv, err
+}
+
+func scanConversation(row rowScanner) (Conversation, error) {
+	var c Conversation
+	var prompts, roster string
+	if err := row.Scan(
+		&c.Name, &c.Status, &c.Task, &c.Ticket, &c.Seat, &c.Directory, &prompts, &c.Custom, &roster,
+	); err != nil {
+		return Conversation{}, err
+	}
+	var err error
+	c.Prompts, err = unmarshalTo(prompts)
+	if err != nil {
+		return Conversation{}, fmt.Errorf("conversation %s prompts: %w", c.Name, err)
+	}
+	c.Roster, err = unmarshalTo(roster)
+	if err != nil {
+		return Conversation{}, fmt.Errorf("conversation %s roster: %w", c.Name, err)
+	}
+	return c, nil
+}
+
+func recordedSchema(ctx context.Context, tx *sql.Tx) (string, bool, error) {
+	ok, err := tableExists(ctx, tx, "meta")
+	if err != nil || !ok {
+		return "", false, err
+	}
+	var version string
+	err = tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'schema'`).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return version, true, nil
+}
+
+func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
+	kind, err := columnExists(ctx, tx, "messages", "kind")
+	if err != nil || !kind {
+		return false, err
+	}
+	for _, col := range []string{"task", "ticket", "seat", "directory", "prompts", "custom", "roster"} {
+		ok, err := columnExists(ctx, tx, "conversations", col)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	return tableExists(ctx, tx, "members")
+}
+
+func tableExists(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
+	var n int
+	err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&n)
+	return n > 0, err
+}
+
+func columnExists(ctx context.Context, tx *sql.Tx, table, col string) (bool, error) {
+	var q string
+	switch table {
+	case "messages":
+		q = `SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = ?`
+	case "conversations":
+		q = `SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = ?`
+	default:
+		return false, fmt.Errorf("unknown table %s", table)
+	}
+	var n int
+	err := tx.QueryRowContext(ctx, q, col).Scan(&n)
+	return n > 0, err
+}
+
 func scanConversations(rows *sql.Rows) ([]Conversation, error) {
 	out := make([]Conversation, 0)
 	for rows.Next() {
-		var c Conversation
-		if err := rows.Scan(&c.Name, &c.Status); err != nil {
+		c, err := scanConversation(rows)
+		if err != nil {
 			return nil, joinClose(err, rows.Close())
 		}
 		out = append(out, c)
@@ -555,7 +742,7 @@ func scanConversations(rows *sql.Rows) ([]Conversation, error) {
 func scanOne(rows *sql.Rows) (Message, error) {
 	var m Message
 	var rec string
-	if err := rows.Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID); err != nil {
+	if err := rows.Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind); err != nil {
 		return Message{}, err
 	}
 	to, err := unmarshalTo(rec)
@@ -580,10 +767,10 @@ func messageByAttempt(ctx context.Context, tx *sql.Tx, conversation, sender, txi
 	var m Message
 	var rec string
 	err := tx.QueryRowContext(ctx, `
-		SELECT seq, time, sender, recipients, body, txid
+		SELECT seq, time, sender, recipients, body, txid, kind
 		FROM messages
 		WHERE conversation = ? AND sender = ? AND txid = ?`,
-		conversation, sender, txid).Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID)
+		conversation, sender, txid).Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, false, nil
 	}

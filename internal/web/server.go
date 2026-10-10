@@ -264,6 +264,7 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		To:           namesFromLines(p.ToText),
 		Body:         p.Body,
 		TxID:         p.TxID,
+		Kind:         p.MessageKind,
 	})
 	if err != nil {
 		if r.Context().Err() != nil {
@@ -317,6 +318,7 @@ func fillPosted(p *page, r *http.Request) {
 	p.Limit = r.PostForm.Get("limit")
 	p.From = r.PostForm.Get("from")
 	p.ToText = r.PostForm.Get("to")
+	p.MessageKind = r.PostForm.Get("kind")
 	p.Body = r.PostForm.Get("body")
 	p.TxID = r.PostForm.Get("txid")
 }

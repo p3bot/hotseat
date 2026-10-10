@@ -36,7 +36,7 @@ func TestOpenRelativeDirectory(t *testing.T) {
 		t.Fatalf("path = %s, want %s", st.Path(), want)
 	}
 	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := st.Publish(ctx, Publish{
@@ -257,13 +257,13 @@ func TestPublishRestartAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.Create(ctx, "other"); err != nil {
+	if _, _, err := st.Create(ctx, "other", Binding{}); err != nil {
 		t.Fatal(err)
 	}
-	againConv, already, err := st.Create(ctx, "job")
+	againConv, already, err := st.Create(ctx, "job", Binding{})
 	if err != nil || !already || againConv.Name != "job" || againConv.Status != StatusOpen {
 		t.Fatalf("duplicate create = %+v already=%v err=%v", againConv, already, err)
 	}
@@ -294,24 +294,24 @@ func TestPublishRestartAndRetry(t *testing.T) {
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("reordered to: %v", err)
 	}
-	if err := st.CloseConversation(ctx, "job"); err != nil {
+	if _, err := st.CloseConversation(ctx, "job"); err != nil {
 		t.Fatal(err)
 	}
-	closedRetry, closedStatus, already, err := st.Publish(ctx, Publish{
+	closedRetry, closedConv, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
 		Body: "one", TxID: "k", Time: "later",
 	})
-	if err != nil || !already || closedRetry.Seq != 1 || closedStatus != StatusClosed {
-		t.Fatalf("closed retry = %+v status=%s already=%v err=%v", closedRetry, closedStatus, already, err)
+	if err != nil || !already || closedRetry.Seq != 1 || closedConv.Status != StatusClosed {
+		t.Fatalf("closed retry = %+v status=%s already=%v err=%v", closedRetry, closedConv.Status, already, err)
 	}
-	late, lateStatus, already, err := st.Publish(ctx, Publish{
+	late, lateConv, already, err := st.Publish(ctx, Publish{
 		Conversation: "job", From: "alice", To: []string{"bob"},
 		Body: "new", TxID: "new", Time: "later",
 	})
-	if err != nil || already || late.Seq != 2 || lateStatus != StatusClosed || late.Body != "new" {
-		t.Fatalf("publish after close = %+v status=%s already=%v err=%v", late, lateStatus, already, err)
+	if err != nil || already || late.Seq != 2 || lateConv.Status != StatusClosed || late.Body != "new" {
+		t.Fatalf("publish after close = %+v status=%s already=%v err=%v", late, lateConv.Status, already, err)
 	}
-	closedConv, already, err := st.Create(ctx, "job")
+	closedConv, already, err = st.Create(ctx, "job", Binding{})
 	if err != nil || !already || closedConv.Status != StatusClosed {
 		t.Fatalf("create after close = %+v already=%v err=%v", closedConv, already, err)
 	}
@@ -343,7 +343,7 @@ func TestPublishRestartAndRetry(t *testing.T) {
 func TestScanStopsBeforeLaterMessages(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
 	for i := 1; i <= 3; i++ {
@@ -386,7 +386,7 @@ func TestScanStopsBeforeLaterMessages(t *testing.T) {
 func TestConcurrentPublish(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
 	const n = 20
@@ -441,18 +441,34 @@ func TestNewDatabaseSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, cols, tableSQL := schemaOf(t, dir)
-	if version != SchemaVersion || !containsCol(cols, "txid") {
+	if version != SchemaVersion || !containsCol(cols, "txid") || !containsCol(cols, "kind") {
 		t.Fatalf("version=%s cols=%v", version, cols)
 	}
 	if !strings.Contains(tableSQL, "UNIQUE (conversation, sender, txid)") {
 		t.Fatalf("sql=%s", tableSQL)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	var members int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'members'`).Scan(&members); err != nil {
+		t.Fatal(err)
+	}
+	if members != 1 {
+		t.Fatalf("members tables = %d", members)
 	}
 }
 
 func TestPublishAttemptIsPerSender(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
 	alice, _, already, err := st.Publish(ctx, Publish{
@@ -541,6 +557,128 @@ func schemaOf(t *testing.T, dir string) (string, []string, string) {
 	return version, cols, tableSQL
 }
 
+func TestOpenRejectsVersion1WithoutKindOrMembers(t *testing.T) {
+	t.Run("no kind column", func(t *testing.T) {
+		dir := writeOldDB(t, false)
+		if _, err := Open(dir); !errors.Is(err, ErrSchema) {
+			t.Fatalf("open = %v", err)
+		}
+		assertOldShapeUntouched(t, dir)
+	})
+	t.Run("no member table", func(t *testing.T) {
+		dir := writeOldDB(t, true)
+		if _, err := Open(dir); !errors.Is(err, ErrSchema) {
+			t.Fatalf("open = %v", err)
+		}
+		db := openRaw(t, dir)
+		defer func() {
+			if err := db.Close(); err != nil {
+				t.Errorf("close: %v", err)
+			}
+		}()
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'members'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatal("members table was created")
+		}
+	})
+}
+
+func writeOldDB(t *testing.T, withKind bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kindCol := ""
+	if withKind {
+		kindCol = ", kind TEXT NOT NULL"
+	}
+	stmts := []string{
+		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`,
+		`INSERT INTO meta (key, value) VALUES ('schema', '1')`,
+		`CREATE TABLE conversations (
+			name TEXT PRIMARY KEY,
+			status TEXT NOT NULL,
+			task TEXT NOT NULL,
+			ticket TEXT NOT NULL,
+			seat TEXT NOT NULL,
+			directory TEXT NOT NULL,
+			prompts TEXT NOT NULL,
+			custom TEXT NOT NULL,
+			roster TEXT NOT NULL
+		) STRICT`,
+		`INSERT INTO conversations (name, status, task, ticket, seat, directory, prompts, custom, roster)
+			VALUES ('job', 'open', '', '', '', '', '[]', '', '[]')`,
+		`CREATE TABLE messages (
+			conversation TEXT NOT NULL,
+			seq INTEGER NOT NULL,
+			time TEXT NOT NULL,
+			sender TEXT NOT NULL,
+			recipients TEXT NOT NULL,
+			body TEXT NOT NULL,
+			txid TEXT NOT NULL` + kindCol + `,
+			PRIMARY KEY (conversation, seq)
+		) STRICT`,
+	}
+	insert := `INSERT INTO messages (conversation, seq, time, sender, recipients, body, txid) VALUES ('job', 1, 't', 'alice', '[]', 'keep', 'k')`
+	if withKind {
+		insert = `INSERT INTO messages (conversation, seq, time, sender, recipients, body, txid, kind) VALUES ('job', 1, 't', 'alice', '[]', 'keep', 'k', 'say')`
+	}
+	stmts = append(stmts, insert)
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func assertOldShapeUntouched(t *testing.T, dir string) {
+	t.Helper()
+	db := openRaw(t, dir)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	var body string
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'members'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("members table was created")
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'kind'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("kind column was added")
+	}
+	if err := db.QueryRow(`SELECT body FROM messages`).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body != "keep" {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func openRaw(t *testing.T, dir string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
 func containsCol(cols []string, name string) bool {
 	for _, col := range cols {
 		if col == name {
@@ -579,7 +717,7 @@ func TestSchemaMismatchKeepsMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.Create(ctx, "job"); err != nil {
+	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := st.Publish(ctx, Publish{

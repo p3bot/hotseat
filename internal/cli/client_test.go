@@ -94,7 +94,7 @@ func TestClientCommandsExit(t *testing.T) {
 	}
 	base := []string{"--address", addr}
 	run(append([]string{"create"}, append(base, "--name", "job")...)...)
-	run(append([]string{"publish"}, append(base, "--conversation", "job", "--from", "alice", "--to", "bob", "--body", "hello", "--txid", "1")...)...)
+	run(append([]string{"publish"}, append(base, "--conversation", "job", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "hello", "--txid", "1")...)...)
 	run(append([]string{"read"}, append(base, "--conversation", "job", "--cursor", "0", "--limit", "10")...)...)
 	run(append([]string{"wait"}, append(base, "--conversation", "job", "--cursor", "0")...)...)
 	run(append([]string{"list"}, base...)...)
@@ -111,7 +111,7 @@ func TestPublishRetryAndNoTokenFile(t *testing.T) {
 	args := []string{
 		"--address", addr,
 		"--conversation", "dup",
-		"--from", "alice",
+		"--from", "alice", "--kind", "say",
 		"--to", "carol",
 		"--to", "bob",
 		"--body", "<b>",
@@ -151,7 +151,7 @@ func TestPublishMintsWhenOmittedAndReusesAPassedID(t *testing.T) {
 	defer stop()
 	ctx := context.Background()
 	create(t, ctx, addr, "mint")
-	base := []string{"publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--to", "bob", "--body", "same"}
+	base := []string{"publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "same"}
 	first, id1, _ := runPublish(t, ctx, base...)
 	second, id2, _ := runPublish(t, ctx, base...)
 	if first.Outcome != bus.OutcomeOK || first.AlreadyStored == nil || *first.AlreadyStored || first.Message == nil || first.Message.TxID != id1 {
@@ -168,15 +168,15 @@ func TestPublishMintsWhenOmittedAndReusesAPassedID(t *testing.T) {
 	if id != "1" || retry.Outcome != bus.OutcomeOK || retry.AlreadyStored == nil || !*retry.AlreadyStored || retry.Message == nil || retry.Message.Seq != 3 {
 		t.Fatalf("retry %+v id %q", retry, id)
 	}
-	conflict, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--to", "bob", "--body", "other", "--txid", "1")
+	conflict, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "other", "--txid", "1")
 	if id != "1" || conflict.Outcome != bus.OutcomeRefused || conflict.Reason != bus.ReasonKeyConflict {
 		t.Fatalf("conflict %+v id %q", conflict, id)
 	}
-	bob, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "bob", "--body", "same", "--txid", "1")
+	bob, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "bob", "--kind", "say", "--body", "same", "--txid", "1")
 	if id != "1" || bob.Outcome != bus.OutcomeOK || bob.AlreadyStored == nil || *bob.AlreadyStored || bob.Message == nil || bob.Message.From != "bob" || bob.Message.TxID != "1" {
 		t.Fatalf("bob %+v id %q", bob, id)
 	}
-	empty, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--body", "nope", "--txid", "")
+	empty, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--kind", "say", "--body", "nope", "--txid", "")
 	if id != "" || empty.Outcome != bus.OutcomeRefused || empty.Reason != bus.ReasonKeyRequired {
 		t.Fatalf("empty id %q %+v", id, empty)
 	}
@@ -249,7 +249,7 @@ func TestDroppedPublishRetriesThePrintedID(t *testing.T) {
 
 	stderr := &orderWriter{note: note}
 	var stdout bytes.Buffer
-	args := []string{"publish", "--address", ln.Addr().String(), "--conversation", "drop", "--from", "alice", "--body", "once"}
+	args := []string{"publish", "--address", ln.Addr().String(), "--conversation", "drop", "--from", "alice", "--kind", "say", "--body", "once"}
 	if err := execute(ctx, args, &stdout, stderr); err != nil {
 		t.Fatalf("%v\n%s", err, stderr.buf.String())
 	}
@@ -398,7 +398,7 @@ func TestClosedNamedWaitReturnsTail(t *testing.T) {
 	if res.Outcome != bus.OutcomeTimeout || res.MatchSeq != nil {
 		t.Fatalf("wait %s", raw)
 	}
-	pub, raw := runClient(t, ctx, "publish", "--address", addr, "--conversation", "tail", "--from", "alice", "--to", "bob", "--body", "later", "--txid", "k3")
+	pub, raw := runClient(t, ctx, "publish", "--address", addr, "--conversation", "tail", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "later", "--txid", "k3")
 	if pub.Outcome != bus.OutcomeOK || pub.Conversation == nil || pub.Conversation.Status != "closed" || pub.Message == nil || pub.Message.Body != "later" {
 		t.Fatalf("publish %s", raw)
 	}
@@ -419,7 +419,7 @@ func TestRefusedNamesTheRule(t *testing.T) {
 	}
 	create(t, ctx, addr, "shut")
 	runClient(t, ctx, "close", "--address", addr, "--conversation", "shut")
-	pub, _ := runClient(t, ctx, "publish", "--address", addr, "--conversation", "shut", "--from", "alice", "--body", "nope", "--txid", "k")
+	pub, _ := runClient(t, ctx, "publish", "--address", addr, "--conversation", "shut", "--from", "alice", "--kind", "say", "--body", "nope", "--txid", "k")
 	if pub.Outcome != bus.OutcomeOK || pub.Conversation == nil || pub.Conversation.Status != "closed" || pub.Message == nil || pub.Message.Body != "nope" {
 		t.Fatalf("publish %+v", pub)
 	}
@@ -593,7 +593,7 @@ func TestPublishBodyFileAndStdinCarryTheBusMaximum(t *testing.T) {
 		t.Fatal(err)
 	}
 	fromFile := runBinOK(t, bin, nil, "publish", "--address", addr,
-		"--conversation", "big", "--from", "alice", "--body-file", file, "--txid", "file")
+		"--conversation", "big", "--from", "alice", "--kind", "say", "--body-file", file, "--txid", "file")
 	if fromFile.Message == nil || fromFile.Message.Body != fileBody {
 		n := 0
 		if fromFile.Message != nil {
@@ -604,7 +604,7 @@ func TestPublishBodyFileAndStdinCarryTheBusMaximum(t *testing.T) {
 
 	piped := strings.Repeat("b", bus.DefaultMaxBody)
 	fromStdin := runBinOK(t, bin, strings.NewReader(piped), "publish", "--address", addr,
-		"--conversation", "big", "--from", "alice", "--body-file", "-", "--txid", "pipe")
+		"--conversation", "big", "--from", "alice", "--kind", "say", "--body-file", "-", "--txid", "pipe")
 	if fromStdin.Message == nil || fromStdin.Message.Body != piped {
 		n := 0
 		if fromStdin.Message != nil {
@@ -624,7 +624,7 @@ func TestOversizeBodyFileIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "big", "--from", "alice", "--body-file", file, "--txid", "over")
+		"--conversation", "big", "--from", "alice", "--kind", "say", "--body-file", file, "--txid", "over")
 	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonBodySize {
 		t.Fatalf("outcome %s reason %s", res.Outcome, res.Reason)
 	}
@@ -636,7 +636,7 @@ func TestLiteralHyphenBodyIsNotStdin(t *testing.T) {
 	ctx := context.Background()
 	create(t, ctx, addr, "hyphen")
 	res, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "hyphen", "--from", "alice", "--body=-", "--txid", "dash")
+		"--conversation", "hyphen", "--from", "alice", "--kind", "say", "--body=-", "--txid", "dash")
 	if res.Outcome != bus.OutcomeOK || res.Message == nil || res.Message.Body != "-" {
 		got := ""
 		if res.Message != nil {
@@ -661,7 +661,7 @@ func TestPublishBodyChoiceDoesNotDial(t *testing.T) {
 		}
 	}()
 	addr := ln.Addr().String()
-	base := []string{"publish", "--address", addr, "--conversation", "job", "--from", "alice", "--txid", "k"}
+	base := []string{"publish", "--address", addr, "--conversation", "job", "--from", "alice", "--kind", "say", "--txid", "k"}
 	assertNoTxID := func(args []string) {
 		t.Helper()
 		var stderr bytes.Buffer
@@ -675,7 +675,7 @@ func TestPublishBodyChoiceDoesNotDial(t *testing.T) {
 	assertNoTxID(base)
 	assertNoTxID(append(append([]string{}, base...), "--body", "hi", "--body-file", "note.txt"))
 	assertNoTxID(append(append([]string{}, base...), "--body-file", filepath.Join(t.TempDir(), "absent")))
-	assertNoTxID([]string{"publish", "--address", addr, "--from", "alice", "--body", "hi"})
+	assertNoTxID([]string{"publish", "--address", addr, "--from", "alice", "--kind", "say", "--body", "hi"})
 	assertNoTxID([]string{"publish", "--address", addr, "--conversation", "job", "--body", "hi"})
 	select {
 	case <-accepted:
@@ -697,7 +697,7 @@ func TestInvalidUTF8BodyIsRefusedWithoutDialling(t *testing.T) {
 	if err := os.WriteFile(file, []byte{0xff}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	base := []string{"publish", "--address", addr, "--conversation", "job", "--from", "alice", "--txid", "k"}
+	base := []string{"publish", "--address", addr, "--conversation", "job", "--from", "alice", "--kind", "say", "--txid", "k"}
 	fromFile, _ := runClient(t, ctx, append(base, "--body-file", file)...)
 	if fromFile.Outcome != bus.OutcomeRefused || fromFile.Reason != bus.ReasonBodyUTF8 {
 		t.Fatalf("file outcome %s reason %s", fromFile.Outcome, fromFile.Reason)
@@ -730,7 +730,7 @@ func TestInvalidUTF8KeyIsRefusedWithoutDialling(t *testing.T) {
 	}))
 	defer srv.Close()
 	res, _ := runClient(t, context.Background(), "publish", "--address", srv.Listener.Addr().String(),
-		"--conversation", "job", "--from", "alice", "--body", "hi",
+		"--conversation", "job", "--from", "alice", "--kind", "say", "--body", "hi",
 		"--txid", string([]byte{0xff}))
 	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonKeyUTF8 {
 		t.Fatalf("outcome %s reason %s", res.Outcome, res.Reason)
@@ -746,13 +746,13 @@ func TestValidUTF8BodiesStillPublish(t *testing.T) {
 	ctx := context.Background()
 	create(t, ctx, addr, "text")
 	empty, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "text", "--from", "alice", "--body", "", "--txid", "empty")
+		"--conversation", "text", "--from", "alice", "--kind", "say", "--body", "", "--txid", "empty")
 	if empty.Outcome != bus.OutcomeOK || empty.Message == nil || empty.Message.Body != "" {
 		t.Fatalf("empty %+v", empty.Message)
 	}
 	const cafe = "café"
 	inline, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "text", "--from", "alice", "--body", cafe, "--txid", "cafe")
+		"--conversation", "text", "--from", "alice", "--kind", "say", "--body", cafe, "--txid", "cafe")
 	if inline.Outcome != bus.OutcomeOK || inline.Message == nil || inline.Message.Body != cafe {
 		got := ""
 		if inline.Message != nil {
@@ -765,7 +765,7 @@ func TestValidUTF8BodiesStillPublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	fromFile, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "text", "--from", "alice", "--body-file", file, "--txid", "file")
+		"--conversation", "text", "--from", "alice", "--kind", "say", "--body-file", file, "--txid", "file")
 	if fromFile.Outcome != bus.OutcomeOK || fromFile.Message == nil || fromFile.Message.Body != cafe {
 		got := ""
 		if fromFile.Message != nil {
@@ -778,7 +778,7 @@ func TestValidUTF8BodiesStillPublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	fromBlank, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "text", "--from", "alice", "--body-file", blank, "--txid", "blank")
+		"--conversation", "text", "--from", "alice", "--kind", "say", "--body-file", blank, "--txid", "blank")
 	if fromBlank.Outcome != bus.OutcomeOK || fromBlank.Message == nil || fromBlank.Message.Body != "" {
 		t.Fatalf("blank file %+v", fromBlank.Message)
 	}
@@ -801,7 +801,7 @@ func TestCommandTextRoundTripsBodies(t *testing.T) {
 	}
 	for _, tc := range cases {
 		res, id, raw := runPublish(t, ctx, "publish", "--address", addr,
-			"--conversation", "frame", "--from", "alice", "--to", "bob", "--to", "carol",
+			"--conversation", "frame", "--from", "alice", "--kind", "say", "--to", "bob", "--to", "carol",
 			"--body", tc.body, "--txid", tc.txid)
 		if id != tc.txid || res.Outcome != bus.OutcomeOK || res.AlreadyStored == nil || *res.AlreadyStored {
 			t.Fatalf("publish %q id %q %+v\n%s", tc.body, id, res, raw)
@@ -1210,7 +1210,7 @@ func create(t *testing.T, ctx context.Context, addr, name string) {
 func publish(t *testing.T, ctx context.Context, addr, conv, from string, to []string, body, key string) {
 	t.Helper()
 	args := []string{
-		"publish", "--address", addr, "--conversation", conv, "--from", from,
+		"publish", "--address", addr, "--conversation", conv, "--from", from, "--kind", "say",
 		"--body", body, "--txid", key,
 	}
 	for _, name := range to {

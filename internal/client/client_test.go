@@ -78,6 +78,138 @@ func TestDroppedCallRetriesTheSameBody(t *testing.T) {
 	}
 }
 
+func TestDroppedLaunchReturnsTheStoredRow(t *testing.T) {
+	var mu sync.Mutex
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		n := len(bodies)
+		bodies = append(bodies, append([]byte(nil), body...))
+		mu.Unlock()
+		if n == 0 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				http.Error(w, "hijack", http.StatusInternalServerError)
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		if n == 1 {
+			_, _ = io.WriteString(w, `{"outcome":"refused","reason":"`+bus.ReasonAlreadyLaunched+`"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"outcome":"ok","member":{"name":"alpha","status":"launched","launched":"2026-10-10T01:00:00Z","registered":"","pid":424242}}`)
+	}))
+	defer srv.Close()
+
+	status := "launched"
+	pid := int64(424242)
+	res, err := Do(context.Background(), srv.Listener.Addr().String(), "member", "", MemberRequest{
+		Conversation: "job",
+		Name:         "alpha",
+		Status:       &status,
+		PID:          &pid,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != bus.OutcomeOK || res.Member == nil || res.Member.Name != "alpha" || res.Member.Status != "launched" || res.Member.PID == nil || *res.Member.PID != pid {
+		t.Fatalf("result %+v", res.Member)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 3 || !bytes.Equal(bodies[0], bodies[1]) {
+		t.Fatalf("bodies %q", bodies)
+	}
+	if bytes.Contains(bodies[2], []byte(`"status"`)) || bytes.Contains(bodies[2], []byte(`"pid"`)) {
+		t.Fatalf("read sent a write %s", bodies[2])
+	}
+}
+
+func TestSecondLaunchIsStillRefused(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"outcome":"refused","reason":"`+bus.ReasonAlreadyLaunched+`"}`)
+	}))
+	defer srv.Close()
+
+	status := "launched"
+	res, err := Do(context.Background(), srv.Listener.Addr().String(), "member", "", MemberRequest{
+		Conversation: "job",
+		Name:         "alpha",
+		Status:       &status,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonAlreadyLaunched {
+		t.Fatalf("result %+v", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if n != 1 {
+		t.Fatalf("posts = %d", n)
+	}
+}
+
+func TestDroppedMemberRefusalIsReturned(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen := n
+		n++
+		mu.Unlock()
+		if seen == 0 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				http.Error(w, "hijack", http.StatusInternalServerError)
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, `{"outcome":"refused","reason":"`+bus.ReasonNotInRoster+`"}`)
+	}))
+	defer srv.Close()
+
+	status := "running"
+	res, err := Do(context.Background(), srv.Listener.Addr().String(), "member", "", MemberRequest{
+		Conversation: "job",
+		Name:         "alpha",
+		Status:       &status,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonNotInRoster {
+		t.Fatalf("result %+v", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if n != 2 {
+		t.Fatalf("posts = %d", n)
+	}
+}
+
 func TestDialFailureIsNotRetried(t *testing.T) {
 	dials := 0
 	restore := swapClient(&http.Client{

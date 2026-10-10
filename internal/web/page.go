@@ -35,6 +35,7 @@ type page struct {
 	Read          *readView
 	From          string
 	ToText        string
+	MessageKind   string
 	Body          string
 	TxID          string
 	Publish       *publishView
@@ -133,7 +134,7 @@ ul { padding-left: 1.2rem; }
 {{if .Publish.AlreadyStored}}<p id="already-stored">Already stored.</p>{{end}}
 {{if .Publish.Stored}}<p id="stored">Stored.</p>{{end}}
 {{if .Publish.Message}}<div id="publish-message" class="message">
-<p class="meta">seq {{.Publish.Message.Seq}} from <span class="from">{{.Publish.Message.From}}</span> to {{range .Publish.Message.To}}<span class="addressee">{{.}}</span> {{end}}txid <span class="txid">{{.Publish.Message.TxID}}</span></p>
+<p class="meta">seq {{.Publish.Message.Seq}} from <span class="from">{{.Publish.Message.From}}</span> kind <span class="kind">{{.Publish.Message.Kind}}</span> to {{range .Publish.Message.To}}<span class="addressee">{{.}}</span> {{end}}txid <span class="txid">{{.Publish.Message.TxID}}</span></p>
 <pre class="body">{{.Publish.Message.Body}}</pre>
 </div>{{end}}
 </section>{{end}}
@@ -150,7 +151,7 @@ ul { padding-left: 1.2rem; }
 {{if eq .Read.Outcome "ok"}}{{if eq (len .Read.Messages) 0}}<p id="transcript-empty">No messages after this cursor.</p>
 {{else}}<ol id="transcript">
 {{range .Read.Messages}}<li class="message" data-seq="{{.Seq}}">
-<p class="meta">seq <span class="seq">{{.Seq}}</span> {{.Time}} from <span class="from">{{.From}}</span> to {{range .To}}<span class="addressee">{{.}}</span> {{end}}txid <span class="txid">{{.TxID}}</span></p>
+<p class="meta">seq <span class="seq">{{.Seq}}</span> {{.Time}} from <span class="from">{{.From}}</span> kind <span class="kind">{{.Kind}}</span> to {{range .To}}<span class="addressee">{{.}}</span> {{end}}txid <span class="txid">{{.TxID}}</span></p>
 <pre class="body">{{.Body}}</pre>
 </li>{{end}}</ol>{{end}}{{end}}
 {{if .Read.Full}}<p id="page-full">Page is full. The next cursor is <span id="next-cursor">{{.Read.NextCursor}}</span>.</p>
@@ -162,6 +163,7 @@ ul { padding-left: 1.2rem; }
 <label for="from">From <input id="from" name="from" value="{{.From}}" autocomplete="off"></label>
 <label for="to">To <textarea id="to" name="to" rows="3">{{.ToText}}</textarea></label>
 <p class="hint">One name per line. Empty sends no addressee. Order is kept.</p>
+<label for="kind">Kind <input id="kind" name="kind" value="{{.MessageKind}}" autocomplete="off"></label>
 <label for="body">Body <textarea id="body" name="body" rows="6">{{.Body}}</textarea></label>
 <label for="txid">Transaction id <input id="txid" name="txid" value="{{.TxID}}" autocomplete="off"></label>
 <button type="submit" id="publish-button" formaction="{{.PublishAction}}">Publish</button>

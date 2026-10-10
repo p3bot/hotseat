@@ -103,6 +103,10 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST "+PathWait, s.handleWait)
 	mux.HandleFunc("POST "+PathClose, s.handleClose)
 	mux.HandleFunc("POST "+PathList, s.handleList)
+	mux.HandleFunc("POST "+PathRegister, s.handleRegister)
+	mux.HandleFunc("POST "+PathMember, s.handleMember)
+	mux.HandleFunc("POST "+PathSession, s.handleSession)
+	mux.HandleFunc("POST "+PathMembers, s.handleMembers)
 	mux.HandleFunc("/", s.handleUnknown)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Before the token check, so a missing credential never sees this route.
@@ -199,6 +203,14 @@ func opName(path string) string {
 		return "close"
 	case PathList:
 		return "list"
+	case PathRegister:
+		return "register"
+	case PathMember:
+		return "member"
+	case PathSession:
+		return "session"
+	case PathMembers:
+		return "members"
 	default:
 		return path
 	}
@@ -207,7 +219,14 @@ func opName(path string) string {
 func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Name *string `json:"name"`
+		Name      *string         `json:"name"`
+		Task      string          `json:"task"`
+		Ticket    string          `json:"ticket"`
+		Seat      string          `json:"seat"`
+		Directory string          `json:"directory"`
+		Prompts   json.RawMessage `json:"prompts"`
+		Custom    string          `json:"custom"`
+		Roster    json.RawMessage `json:"roster"`
 	}
 	if !s.decode(w, r, "create", "", start, &req) {
 		return
@@ -216,7 +235,27 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		s.finish(w, "create", "", start, refused(ReasonNameRequired), nil)
 		return
 	}
-	res, err := s.svc.Create(r.Context(), *req.Name)
+	prompts, err := parsePrompts(req.Prompts)
+	if err != nil {
+		res, rerr := asRefused(err)
+		s.finish(w, "create", *req.Name, start, res, rerr)
+		return
+	}
+	roster, err := parseRoster(req.Roster)
+	if err != nil {
+		res, rerr := asRefused(err)
+		s.finish(w, "create", *req.Name, start, res, rerr)
+		return
+	}
+	res, err := s.svc.Create(r.Context(), *req.Name, store.Binding{
+		Task:      req.Task,
+		Ticket:    req.Ticket,
+		Seat:      req.Seat,
+		Directory: req.Directory,
+		Prompts:   prompts,
+		Custom:    req.Custom,
+		Roster:    roster,
+	})
 	s.finish(w, "create", *req.Name, start, res, err)
 }
 
@@ -228,6 +267,7 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		To           json.RawMessage `json:"to"`
 		Body         *string         `json:"body"`
 		TxID         *string         `json:"txid"`
+		Kind         *string         `json:"kind"`
 	}
 	if !s.decode(w, r, "publish", "", start, &req) {
 		return
@@ -245,6 +285,9 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if req.TxID != nil {
 		in.TxID = *req.TxID
 	}
+	if req.Kind != nil {
+		in.Kind = *req.Kind
+	}
 	names, err := parseTo(req.To)
 	if err != nil {
 		res, rerr := asRefused(err)
@@ -259,10 +302,11 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleRead(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string `json:"conversation"`
-		Cursor       *int64  `json:"cursor"`
-		Limit        *int64  `json:"limit"`
-		Name         *string `json:"name"`
+		Conversation *string         `json:"conversation"`
+		Cursor       *int64          `json:"cursor"`
+		Limit        *int64          `json:"limit"`
+		Name         *string         `json:"name"`
+		Kinds        json.RawMessage `json:"kinds"`
 	}
 	if !s.decode(w, r, "read", "", start, &req) {
 		return
@@ -281,7 +325,13 @@ func (s *server) handleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, hasName := optionalName(req.Name)
-	res, err := s.svc.Read(r.Context(), conv, *req.Cursor, int(*req.Limit), name, hasName)
+	kinds, hasKinds, err := parseKinds(req.Kinds)
+	if err != nil {
+		res, rerr := asRefused(err)
+		s.finish(w, "read", conv, start, res, rerr)
+		return
+	}
+	res, err := s.svc.Read(r.Context(), conv, *req.Cursor, int(*req.Limit), name, hasName, kinds, hasKinds)
 	s.finish(w, "read", conv, start, res, err)
 }
 
@@ -292,6 +342,7 @@ func (s *server) handleWait(w http.ResponseWriter, r *http.Request) {
 		Cursor       *int64          `json:"cursor"`
 		Name         *string         `json:"name"`
 		Deadline     json.RawMessage `json:"deadline"`
+		Kinds        json.RawMessage `json:"kinds"`
 	}
 	if !s.decode(w, r, "wait", "", start, &req) {
 		return
@@ -308,7 +359,13 @@ func (s *server) handleWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, hasName := optionalName(req.Name)
-	res, err := s.svc.Wait(r.Context(), conv, *req.Cursor, name, hasName, limit)
+	kinds, hasKinds, err := parseKinds(req.Kinds)
+	if err != nil {
+		res, rerr := asRefused(err)
+		s.finish(w, "wait", conv, start, res, rerr)
+		return
+	}
+	res, err := s.svc.Wait(r.Context(), conv, *req.Cursor, name, hasName, kinds, hasKinds, limit)
 	s.finish(w, "wait", conv, start, res, err)
 }
 
@@ -333,6 +390,80 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.svc.List(r.Context())
 	s.finish(w, "list", "", start, res, err)
+}
+
+func (s *server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	var req struct {
+		Conversation *string `json:"conversation"`
+		Name         *string `json:"name"`
+	}
+	if !s.decode(w, r, "register", "", start, &req) {
+		return
+	}
+	conv := deref(req.Conversation)
+	if req.Name == nil {
+		s.finish(w, "register", conv, start, refused(ReasonNameRequired), nil)
+		return
+	}
+	res, err := s.svc.Register(r.Context(), conv, *req.Name)
+	s.finish(w, "register", conv, start, res, err)
+}
+
+func (s *server) handleMember(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	var req struct {
+		Conversation *string         `json:"conversation"`
+		Name         *string         `json:"name"`
+		Status       *string         `json:"status"`
+		PID          json.RawMessage `json:"pid"`
+	}
+	if !s.decode(w, r, "member", "", start, &req) {
+		return
+	}
+	conv := deref(req.Conversation)
+	if req.Name == nil {
+		s.finish(w, "member", conv, start, refused(ReasonNameRequired), nil)
+		return
+	}
+	pid, hasPID, err := parsePID(req.PID)
+	if err != nil {
+		res, rerr := asRefused(err)
+		s.finish(w, "member", conv, start, res, rerr)
+		return
+	}
+	res, err := s.svc.Member(r.Context(), conv, *req.Name, req.Status, pid, hasPID)
+	s.finish(w, "member", conv, start, res, err)
+}
+
+func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	var req struct {
+		Conversation *string `json:"conversation"`
+		Name         *string `json:"name"`
+		Session      *string `json:"session"`
+	}
+	if !s.decode(w, r, "session", "", start, &req) {
+		return
+	}
+	conv := deref(req.Conversation)
+	name, hasName := optionalName(req.Name)
+	session, hasSession := optionalName(req.Session)
+	res, err := s.svc.Session(r.Context(), conv, name, hasName, session, hasSession)
+	s.finish(w, "session", conv, start, res, err)
+}
+
+func (s *server) handleMembers(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	var req struct {
+		Conversation *string `json:"conversation"`
+	}
+	if !s.decode(w, r, "members", "", start, &req) {
+		return
+	}
+	conv := deref(req.Conversation)
+	res, err := s.svc.Members(r.Context(), conv)
+	s.finish(w, "members", conv, start, res, err)
 }
 
 func (s *server) handleUnknown(w http.ResponseWriter, r *http.Request) {
@@ -473,6 +604,10 @@ type wire struct {
 	Messages       *[]wireMessage      `json:"messages,omitempty"`
 	Conversation   *wireConversation   `json:"conversation,omitempty"`
 	Conversations  *[]wireConversation `json:"conversations,omitempty"`
+	Member         *wireMember         `json:"member,omitempty"`
+	Members        *[]wireMemberPublic `json:"members,omitempty"`
+	Session        *wireSession        `json:"session,omitempty"`
+	Sessions       *[]wireSession      `json:"sessions,omitempty"`
 }
 
 type wireMessage struct {
@@ -482,11 +617,36 @@ type wireMessage struct {
 	To   []string `json:"to"`
 	Body string   `json:"body"`
 	TxID string   `json:"txid"`
+	Kind string   `json:"kind"`
 }
 
 type wireConversation struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name      string   `json:"name"`
+	Status    string   `json:"status"`
+	Task      string   `json:"task"`
+	Ticket    string   `json:"ticket"`
+	Seat      string   `json:"seat"`
+	Directory string   `json:"directory"`
+	Prompts   []string `json:"prompts"`
+	Custom    string   `json:"custom"`
+	Roster    []string `json:"roster"`
+}
+
+type wireMemberPublic struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Launched   string `json:"launched"`
+	Registered string `json:"registered"`
+}
+
+type wireMember struct {
+	wireMemberPublic
+	PID *int64 `json:"pid,omitempty"`
+}
+
+type wireSession struct {
+	Name    string `json:"name"`
+	Session string `json:"session"`
 }
 
 func toWire(op string, res Result) wire {
@@ -515,6 +675,20 @@ func toWire(op string, res Result) wire {
 				seq := res.MatchSeq
 				out.MatchSeq = &seq
 			}
+		case "register", "member":
+			out.Member = wireOneMember(res.Member)
+		case "members":
+			ms := wireMemberList(res.Members)
+			out.Members = &ms
+		case "session":
+			if res.Session != nil {
+				item := wireSession{Name: res.Session.Name, Session: res.Session.Session}
+				out.Session = &item
+			}
+			if res.Sessions != nil {
+				ss := wireSessionList(res.Sessions)
+				out.Sessions = &ss
+			}
 		}
 	}
 	return out
@@ -535,6 +709,7 @@ func wireMsg(m *store.Message) *wireMessage {
 		To:   to,
 		Body: m.Body,
 		TxID: m.TxID,
+		Kind: m.Kind,
 	}
 }
 
@@ -551,13 +726,68 @@ func wireConv(c *store.Conversation) *wireConversation {
 	if c == nil {
 		return nil
 	}
-	return &wireConversation{Name: c.Name, Status: c.Status}
+	prompts := c.Prompts
+	if prompts == nil {
+		prompts = []string{}
+	}
+	roster := c.Roster
+	if roster == nil {
+		roster = []string{}
+	}
+	return &wireConversation{
+		Name:      c.Name,
+		Status:    c.Status,
+		Task:      c.Task,
+		Ticket:    c.Ticket,
+		Seat:      c.Seat,
+		Directory: c.Directory,
+		Prompts:   prompts,
+		Custom:    c.Custom,
+		Roster:    roster,
+	}
 }
 
 func wireConvs(in []store.Conversation) []wireConversation {
 	out := make([]wireConversation, 0, len(in))
-	for _, c := range in {
-		out = append(out, wireConversation{Name: c.Name, Status: c.Status})
+	for i := range in {
+		out = append(out, *wireConv(&in[i]))
+	}
+	return out
+}
+
+func wireOneMember(m *store.Member) *wireMember {
+	if m == nil {
+		return nil
+	}
+	out := &wireMember{wireMemberPublic: publicMember(*m)}
+	if m.HasPID {
+		pid := m.PID
+		out.PID = &pid
+	}
+	return out
+}
+
+func publicMember(m store.Member) wireMemberPublic {
+	return wireMemberPublic{
+		Name:       m.Name,
+		Status:     m.Status,
+		Launched:   m.Launched,
+		Registered: m.Registered,
+	}
+}
+
+func wireMemberList(in []store.Member) []wireMemberPublic {
+	out := make([]wireMemberPublic, 0, len(in))
+	for _, m := range in {
+		out = append(out, publicMember(m))
+	}
+	return out
+}
+
+func wireSessionList(in []store.MemberSession) []wireSession {
+	out := make([]wireSession, 0, len(in))
+	for _, item := range in {
+		out = append(out, wireSession{Name: item.Name, Session: item.Session})
 	}
 	return out
 }

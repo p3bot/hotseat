@@ -111,6 +111,7 @@ func TestWebCommandUsesTokenFile(t *testing.T) {
 	form.Set("conversation", "job")
 	form.Set("from", "alice")
 	form.Set("to", "bob")
+	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "idem-web")
 	_, stored := httpPost(t, "http://"+webAddr+"/publish", form)

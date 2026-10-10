@@ -169,7 +169,7 @@ func newBusStartCmd() *cobra.Command {
   hotseat bus start --store /var/lib/hotseat
   hotseat bus start --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
   hotseat bus start --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token`,
-		Long: `Listen for create, publish, read, wait, close, and list. The process runs
+		Long: `Listen for create, publish, read, wait, close, list, register, member, session, and members. The process runs
 in a new session with no controlling terminal. Stdin is discarded. Stdout and
 stderr append to ` + logName + ` in the store directory. start returns after the
 listener is bound and the database is open, and prints the pid, the listen

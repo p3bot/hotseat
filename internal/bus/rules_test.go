@@ -25,7 +25,7 @@ func TestDecideWait(t *testing.T) {
 		msg(5, "alice", []string{"all"}, "broadcast"),
 	}
 
-	ok, pending := decideWait(msgs, "bob", true)
+	ok, pending := decideWait(msgs, "bob", true, nil, false)
 	if pending || ok.Outcome != OutcomeOK || ok.MatchSeq != 3 || len(ok.Messages) != 3 {
 		t.Fatalf("named span: pending=%v outcome=%s match=%d len=%d", pending, ok.Outcome, ok.MatchSeq, len(ok.Messages))
 	}
@@ -33,35 +33,44 @@ func TestDecideWait(t *testing.T) {
 		t.Fatalf("span = %+v", ok.Messages)
 	}
 
-	rest, pending := decideWait(msgs[3:], "bob", true)
+	rest, pending := decideWait(msgs[3:], "bob", true, nil, false)
 	if pending || rest.MatchSeq != 5 || len(rest.Messages) != 2 {
 		t.Fatalf("later named: pending=%v match=%d len=%d", pending, rest.MatchSeq, len(rest.Messages))
 	}
 
-	one, pending := decideWait(msgs, "", false)
+	one, pending := decideWait(msgs, "", false, nil, false)
 	if pending || one.MatchSeq != 1 || len(one.Messages) != 1 {
 		t.Fatalf("unnamed: pending=%v match=%d len=%d", pending, one.MatchSeq, len(one.Messages))
 	}
 
-	none, pending := decideWait(nil, "bob", true)
+	none, pending := decideWait(nil, "bob", true, nil, false)
 	if !pending {
 		t.Fatal("open named with no match should block")
 	}
 	_ = none
 
-	staying, pending := decideWait(msgs[:2], "bob", true)
+	staying, pending := decideWait(msgs[:2], "bob", true, nil, false)
 	if !pending || staying.Outcome != "" {
 		t.Fatalf("no match stays pending: %+v pending=%v", staying, pending)
 	}
 
-	nothing, pending := decideWait(nil, "", false)
+	nothing, pending := decideWait(nil, "", false, nil, false)
 	if !pending || nothing.Outcome != "" {
 		t.Fatalf("unnamed with nothing stored stays pending: %+v", nothing)
 	}
 
-	matched, pending := decideWait(msgs[:3], "bob", true)
+	matched, pending := decideWait(msgs[:3], "bob", true, nil, false)
 	if pending || matched.Outcome != OutcomeOK || matched.MatchSeq != 3 {
 		t.Fatalf("stored match: %+v", matched)
+	}
+
+	say := msg(1, "alice", []string{"bob"}, "earlier")
+	say.Kind = "say"
+	turn := msg(2, "alice", []string{"bob"}, "phase")
+	turn.Kind = "turn"
+	filtered, pending := decideWait([]store.Message{say, turn}, "", false, []string{"turn"}, true)
+	if pending || filtered.Outcome != OutcomeOK || filtered.MatchSeq != 2 || len(filtered.Messages) != 1 || filtered.Messages[0].Kind != "turn" {
+		t.Fatalf("unnamed kinds: pending=%v %+v", pending, filtered)
 	}
 }
 
@@ -92,11 +101,11 @@ func TestSelectRead(t *testing.T) {
 		msg(3, "bob", []string{"bob"}, "self"),
 		msg(4, "alice", []string{"all"}, "broadcast"),
 	}
-	got := selectRead(msgs, "bob", true, 10)
+	got := selectRead(msgs, "bob", true, nil, false, 10)
 	if len(got) != 2 || got[0].Seq != 2 || got[1].Seq != 4 {
 		t.Fatalf("named read = %+v", got)
 	}
-	limited := selectRead(msgs, "", false, 2)
+	limited := selectRead(msgs, "", false, nil, false, 2)
 	if len(limited) != 2 || limited[0].Seq != 1 || limited[1].Seq != 2 {
 		t.Fatalf("limited read = %+v", limited)
 	}

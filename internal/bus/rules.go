@@ -134,10 +134,12 @@ func parseDeadline(raw json.RawMessage) (waitLimit, error) {
 // decideWait reports the wait result. pending is true when the caller must block.
 // msgs are the messages with seq greater than the cursor, oldest first.
 // Conversation status is not an end. A wait ends on a match.
-func decideWait(msgs []store.Message, name string, hasName bool) (Result, bool) {
+func decideWait(msgs []store.Message, name string, hasName bool, kinds []string, hasKinds bool) (Result, bool) {
 	if !hasName {
-		if len(msgs) > 0 {
-			m := msgs[0]
+		for _, m := range msgs {
+			if !kindListed(m.Kind, kinds, hasKinds) {
+				continue
+			}
 			return Result{
 				Outcome:  OutcomeOK,
 				Messages: []store.Message{m},
@@ -149,7 +151,7 @@ func decideWait(msgs []store.Message, name string, hasName bool) (Result, bool) 
 	var span []store.Message
 	for _, m := range msgs {
 		span = append(span, m)
-		if addressed(m, name) {
+		if addressed(m, name) && kindListed(m.Kind, kinds, hasKinds) {
 			return Result{Outcome: OutcomeOK, Messages: span, MatchSeq: m.Seq}, false
 		}
 	}
@@ -158,17 +160,21 @@ func decideWait(msgs []store.Message, name string, hasName bool) (Result, bool) 
 
 // nextRead reports whether m belongs in a read result and whether a later message is required.
 // kept is how many messages are already chosen. A named read skips a message that is not addressed to name.
-func nextRead(m store.Message, name string, hasName bool, kept, limit int) (keep, more bool) {
+// A kinds list skips a message whose kind is not listed. Skipped messages do not count toward limit.
+func nextRead(m store.Message, name string, hasName bool, kinds []string, hasKinds bool, kept, limit int) (keep, more bool) {
 	if hasName && !addressed(m, name) {
+		return false, true
+	}
+	if !kindListed(m.Kind, kinds, hasKinds) {
 		return false, true
 	}
 	return true, kept+1 < limit
 }
 
-func selectRead(msgs []store.Message, name string, hasName bool, limit int) []store.Message {
+func selectRead(msgs []store.Message, name string, hasName bool, kinds []string, hasKinds bool, limit int) []store.Message {
 	out := make([]store.Message, 0)
 	for _, m := range msgs {
-		keep, more := nextRead(m, name, hasName, len(out), limit)
+		keep, more := nextRead(m, name, hasName, kinds, hasKinds, len(out), limit)
 		if keep {
 			out = append(out, m)
 		}
@@ -177,6 +183,18 @@ func selectRead(msgs []store.Message, name string, hasName bool, limit int) []st
 		}
 	}
 	return out
+}
+
+func kindListed(kind string, kinds []string, hasKinds bool) bool {
+	if !hasKinds {
+		return true
+	}
+	for _, k := range kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // addressed reports whether a named waiter or a named read includes m.
@@ -227,5 +245,131 @@ func validatePublish(in PublishInput, maxBody int) error {
 	if !utf8.ValidString(in.TxID) {
 		return rule(ReasonKeyUTF8)
 	}
+	if in.Kind == "" {
+		return rule(ReasonKindRequired)
+	}
+	if !validName(in.Kind) {
+		return rule(ReasonKindBad)
+	}
 	return nil
+}
+
+func validateBinding(b store.Binding) error {
+	seen := make(map[string]struct{}, len(b.Roster))
+	for _, n := range b.Roster {
+		if !validName(n) {
+			return rule(ReasonRosterBadName)
+		}
+		if _, ok := seen[n]; ok {
+			return rule(ReasonRosterDuplicate)
+		}
+		seen[n] = struct{}{}
+	}
+	for _, p := range b.Prompts {
+		if p == "" {
+			return rule(ReasonPromptEmpty)
+		}
+	}
+	if len(b.Roster) == 0 {
+		if b.Seat != "" {
+			return rule(ReasonSeatNeedsRoster)
+		}
+		return nil
+	}
+	if _, ok := seen[b.Seat]; !ok {
+		return rule(ReasonSeatNotInRoster)
+	}
+	return nil
+}
+
+func validateKinds(kinds []string, has bool) error {
+	if !has {
+		return nil
+	}
+	if len(kinds) == 0 {
+		return rule(ReasonKindsEmpty)
+	}
+	for _, k := range kinds {
+		if !validName(k) {
+			return rule(ReasonKindsBadName)
+		}
+	}
+	return nil
+}
+
+// parseKinds reports the kinds filter. An absent field is not a filter.
+// null, a non-array, an empty array, and a name outside the grammar are refused.
+func parseKinds(raw json.RawMessage) (kinds []string, has bool, err error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, false, nil
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, true, rule(ReasonKindsShape)
+	}
+	names, err := decodeStringList(trimmed, ReasonKindsShape)
+	if err != nil {
+		return nil, true, err
+	}
+	if err := validateKinds(names, true); err != nil {
+		return nil, true, err
+	}
+	return names, true, nil
+}
+
+func parseRoster(raw json.RawMessage) ([]string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		if bytes.Equal(trimmed, []byte("null")) {
+			return nil, rule(ReasonRosterShape)
+		}
+		return []string{}, nil
+	}
+	return decodeStringList(trimmed, ReasonRosterShape)
+}
+
+func parsePrompts(raw json.RawMessage) ([]string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return []string{}, nil
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, rule(ReasonPromptsShape)
+	}
+	return decodeStringList(trimmed, ReasonPromptsShape)
+}
+
+func decodeStringList(raw []byte, shape string) ([]string, error) {
+	var names []string
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := dec.Decode(&names); err != nil || dec.More() {
+		return nil, rule(shape)
+	}
+	if names == nil {
+		names = []string{}
+	}
+	return names, nil
+}
+
+// parsePID reports an optional pid. Absent and null are unset.
+// Any other value that is not an integer greater than zero is refused.
+func parsePID(raw json.RawMessage) (pid int64, has bool, err error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return 0, false, nil
+	}
+	if trimmed[0] == '"' { // json.Number accepts a JSON string.
+		return 0, true, rule(ReasonPID)
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var n json.Number
+	if err := dec.Decode(&n); err != nil || dec.More() {
+		return 0, true, rule(ReasonPID)
+	}
+	i, err := n.Int64()
+	if err != nil || i <= 0 {
+		return 0, true, rule(ReasonPID)
+	}
+	return i, true, nil
 }

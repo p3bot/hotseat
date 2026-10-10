@@ -167,6 +167,7 @@ func publish(t *testing.T, base, conv, from string, to []string, body, key strin
 		"to":           to,
 		"body":         body,
 		"txid":         key,
+		"kind":         "say",
 	})
 	return res
 }
@@ -277,16 +278,16 @@ func TestPublishRejectsBrokenRules(t *testing.T) {
 	}{
 		{"non utf8", badUTF, ReasonRequestUTF8},
 		{"non utf8 outside body", badFrom, ReasonRequestUTF8},
-		{"oversize", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "hello", "txid": "big"}, ReasonBodySize},
-		{"missing key", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x"}, ReasonKeyRequired},
-		{"empty key", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x", "txid": ""}, ReasonKeyRequired},
-		{"from all", map[string]any{"conversation": "job", "from": "all", "to": []string{"bob"}, "body": "x", "txid": "a"}, ReasonFromAll},
-		{"all mixed", map[string]any{"conversation": "job", "from": "alice", "to": []string{"all", "bob"}, "body": "x", "txid": "b"}, ReasonToAllMixed},
-		{"missing to", map[string]any{"conversation": "job", "from": "alice", "body": "x", "txid": "c"}, ReasonToRequired},
-		{"string all", map[string]any{"conversation": "job", "from": "alice", "to": "all", "body": "x", "txid": "d"}, ReasonToShape},
-		{"missing conversation", map[string]any{"from": "alice", "to": []string{}, "body": "x", "txid": "e"}, ReasonConversationRequired},
-		{"bad conversation", map[string]any{"conversation": "bad name", "from": "alice", "to": []string{}, "body": "x", "txid": "f"}, ReasonBadConversation},
-		{"bad from", map[string]any{"conversation": "job", "from": "bad from", "to": []string{}, "body": "x", "txid": "g"}, ReasonFromBad},
+		{"oversize", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "hello", "txid": "big", "kind": "say"}, ReasonBodySize},
+		{"missing key", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x", "kind": "say"}, ReasonKeyRequired},
+		{"empty key", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x", "txid": "", "kind": "say"}, ReasonKeyRequired},
+		{"from all", map[string]any{"conversation": "job", "from": "all", "to": []string{"bob"}, "body": "x", "txid": "a", "kind": "say"}, ReasonFromAll},
+		{"all mixed", map[string]any{"conversation": "job", "from": "alice", "to": []string{"all", "bob"}, "body": "x", "txid": "b", "kind": "say"}, ReasonToAllMixed},
+		{"missing to", map[string]any{"conversation": "job", "from": "alice", "body": "x", "txid": "c", "kind": "say"}, ReasonToRequired},
+		{"string all", map[string]any{"conversation": "job", "from": "alice", "to": "all", "body": "x", "txid": "d", "kind": "say"}, ReasonToShape},
+		{"missing conversation", map[string]any{"from": "alice", "to": []string{}, "body": "x", "txid": "e", "kind": "say"}, ReasonConversationRequired},
+		{"bad conversation", map[string]any{"conversation": "bad name", "from": "alice", "to": []string{}, "body": "x", "txid": "f", "kind": "say"}, ReasonBadConversation},
+		{"bad from", map[string]any{"conversation": "job", "from": "bad from", "to": []string{}, "body": "x", "txid": "g", "kind": "say"}, ReasonFromBad},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -749,7 +750,7 @@ func TestUnavailableWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := mustPost(t, base, PathPublish, map[string]any{
-		"conversation": "job", "from": "alice", "to": []string{"bob"}, "body": "next", "txid": "n",
+		"conversation": "job", "from": "alice", "to": []string{"bob"}, "body": "next", "txid": "n", "kind": "say",
 	})
 	if res.Outcome != OutcomeUnavailable || res.Reason != ReasonUnavailable || res.Message != nil {
 		t.Fatalf("unavailable = %+v", res)

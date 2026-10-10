@@ -82,6 +82,10 @@ type Result struct {
 	Messages       *[]Message      `json:"messages,omitempty"`
 	Conversation   *Conversation   `json:"conversation,omitempty"`
 	Conversations  *[]Conversation `json:"conversations,omitempty"`
+	Member         *Member         `json:"member,omitempty"`
+	Members        *[]Member       `json:"members,omitempty"`
+	Session        *Session        `json:"session,omitempty"`
+	Sessions       *[]Session      `json:"sessions,omitempty"`
 }
 
 // Message is one transcript entry as the bus returned it.
@@ -92,44 +96,109 @@ type Message struct {
 	To   []string `json:"to"`
 	Body string   `json:"body"`
 	TxID string   `json:"txid"`
+	Kind string   `json:"kind"`
 }
 
-// Conversation is a name and its open or closed status.
+// Conversation is a name, its status, and its binding.
+// JSON from the bus always includes the binding keys.
 type Conversation struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name      string   `json:"name"`
+	Status    string   `json:"status"`
+	Task      string   `json:"task"`
+	Ticket    string   `json:"ticket"`
+	Seat      string   `json:"seat"`
+	Directory string   `json:"directory"`
+	Prompts   []string `json:"prompts"`
+	Custom    string   `json:"custom"`
+	Roster    []string `json:"roster"`
+}
+
+// Member is one roster row as a member route returned it.
+// Session is not a field. PID is absent until a call sets it.
+type Member struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Launched   string `json:"launched"`
+	Registered string `json:"registered"`
+	PID        *int64 `json:"pid,omitempty"`
+}
+
+// Session is a member name and the session id stored for it.
+type Session struct {
+	Name    string `json:"name"`
+	Session string `json:"session"`
 }
 
 // CreateRequest is the create body.
+// Omitted binding fields are stored empty. Prompts and Roster keep their order.
 type CreateRequest struct {
-	Name string `json:"name"`
+	Name      string   `json:"name"`
+	Task      string   `json:"task,omitempty"`
+	Ticket    string   `json:"ticket,omitempty"`
+	Seat      string   `json:"seat,omitempty"`
+	Directory string   `json:"directory,omitempty"`
+	Prompts   []string `json:"prompts,omitempty"`
+	Custom    string   `json:"custom,omitempty"`
+	Roster    []string `json:"roster,omitempty"`
 }
 
 // PublishRequest is the publish body. To keeps the caller's order.
-// A nil To is sent as an empty array.
+// A nil To is sent as an empty array. Kind is required by the bus.
 type PublishRequest struct {
 	Conversation string   `json:"conversation"`
 	From         string   `json:"from"`
 	To           []string `json:"to"`
 	Body         string   `json:"body"`
 	TxID         string   `json:"txid"`
+	Kind         string   `json:"kind"`
 }
 
 // ReadRequest is the read body. A nil Name omits the field.
 // A pointer to an empty string sends that empty name.
+// A nil Kinds omits the field. A pointer to an empty slice sends an empty array.
 type ReadRequest struct {
-	Conversation string  `json:"conversation"`
-	Cursor       int64   `json:"cursor"`
-	Limit        int64   `json:"limit"`
-	Name         *string `json:"name,omitempty"`
+	Conversation string    `json:"conversation"`
+	Cursor       int64     `json:"cursor"`
+	Limit        int64     `json:"limit"`
+	Name         *string   `json:"name,omitempty"`
+	Kinds        *[]string `json:"kinds,omitempty"`
 }
 
-// WaitRequest is the wait body. A nil Name or Deadline omits that field.
+// WaitRequest is the wait body. A nil Name, Deadline, or Kinds omits that field.
 type WaitRequest struct {
+	Conversation string    `json:"conversation"`
+	Cursor       int64     `json:"cursor"`
+	Name         *string   `json:"name,omitempty"`
+	Deadline     *string   `json:"deadline,omitempty"`
+	Kinds        *[]string `json:"kinds,omitempty"`
+}
+
+// RegisterRequest is the register body.
+type RegisterRequest struct {
+	Conversation string `json:"conversation"`
+	Name         string `json:"name"`
+}
+
+// MemberRequest is the member body.
+// A nil Status and a nil PID reads the row. A PID without a Status is refused.
+type MemberRequest struct {
 	Conversation string  `json:"conversation"`
-	Cursor       int64   `json:"cursor"`
+	Name         string  `json:"name"`
+	Status       *string `json:"status,omitempty"`
+	PID          *int64  `json:"pid,omitempty"`
+}
+
+// SessionRequest is the session body.
+// A nil Name lists every member. A nil Session reads one id.
+type SessionRequest struct {
+	Conversation string  `json:"conversation"`
 	Name         *string `json:"name,omitempty"`
-	Deadline     *string `json:"deadline,omitempty"`
+	Session      *string `json:"session,omitempty"`
+}
+
+// MembersRequest is the members body.
+type MembersRequest struct {
+	Conversation string `json:"conversation"`
 }
 
 // CloseRequest is the close body. Close sends no message.
@@ -157,6 +226,7 @@ var httpClient = &http.Client{
 // token is the capability secret. Empty omits the header. A token that
 // cannot be a header is an error and is not posted.
 // A dropped call is retried once with the same body and the same token.
+// A dropped launch whose retry is refused as already launched returns the stored row.
 // A failure to connect is not retried. Neither result is a timeout.
 // A publish body or transaction id that is not valid UTF-8 is refused and not posted.
 func Do(ctx context.Context, address, op, token string, body any) (Result, error) {
@@ -173,6 +243,8 @@ func Do(ctx context.Context, address, op, token string, body any) (Result, error
 				return Result{Outcome: bus.OutcomeRefused, Reason: bus.ReasonBodyUTF8}, nil
 			case !utf8.ValidString(req.TxID):
 				return Result{Outcome: bus.OutcomeRefused, Reason: bus.ReasonKeyUTF8}, nil
+			case !utf8.ValidString(req.Kind):
+				return Result{Outcome: bus.OutcomeRefused, Reason: bus.ReasonKindBad}, nil
 			}
 		}
 	}
@@ -196,7 +268,7 @@ func Do(ctx context.Context, address, op, token string, body any) (Result, error
 	}
 	res, err = post(ctx, url, token, raw)
 	if err == nil {
-		return res, nil
+		return committedLaunch(ctx, address, token, body, res)
 	}
 	if ctx.Err() != nil {
 		return Result{}, ctx.Err()
@@ -205,6 +277,21 @@ func Do(ctx context.Context, address, op, token string, body any) (Result, error
 		return failureFrom(address, err), nil
 	}
 	return failure(reasonDropped + ": " + address + ": " + causeText(err)), nil
+}
+
+// committedLaunch returns the stored row when a retried launch is refused as already launched.
+// A deliberate second launch completes on its first post and does not reach this.
+func committedLaunch(ctx context.Context, address, token string, body any, res Result) (Result, error) {
+	req, ok := body.(MemberRequest)
+	if !ok || req.Status == nil || *req.Status != "launched" {
+		return res, nil
+	}
+	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonAlreadyLaunched {
+		return res, nil
+	}
+	req.Status = nil
+	req.PID = nil
+	return Do(ctx, address, "member", token, req)
 }
 
 func isDrop(err error) bool {
@@ -290,6 +377,14 @@ func operationPath(op string) (string, error) {
 		return bus.PathClose, nil
 	case "list":
 		return bus.PathList, nil
+	case "register":
+		return bus.PathRegister, nil
+	case "member":
+		return bus.PathMember, nil
+	case "session":
+		return bus.PathSession, nil
+	case "members":
+		return bus.PathMembers, nil
 	default:
 		return "", fmt.Errorf("unknown operation %s", op)
 	}

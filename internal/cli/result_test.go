@@ -29,6 +29,7 @@ func TestWriteResultLayout(t *testing.T) {
 			Seq:  1,
 			Time: "2026-10-08T07:00:00Z",
 			From: "alice",
+			Kind: "say",
 			To:   []string{"bob", "carol"},
 			Body: "hello",
 			TxID: "1",
@@ -47,6 +48,7 @@ message:
 seq: 1
 time: 2026-10-08T07:00:00Z
 from: alice
+kind: say
 to: bob
 to: carol
 txid: 1
@@ -279,6 +281,38 @@ func parseResult(raw []byte) (client.Result, error) {
 		}
 		res.Messages = &list
 	}
+	if ok, err := c.ifHeader("member"); err != nil {
+		return res, err
+	} else if ok {
+		member, err := c.memberFields(true)
+		if err != nil {
+			return res, err
+		}
+		res.Member = &member
+	}
+	if ok, err := c.ifHeader("members"); err != nil {
+		return res, err
+	} else if ok {
+		list := []client.Member{}
+		for c.i < len(c.raw) {
+			f, err := c.peek()
+			if err != nil {
+				return res, err
+			}
+			if f.key != "member" {
+				break
+			}
+			if _, err := c.next(); err != nil {
+				return res, err
+			}
+			member, err := c.memberFields(false)
+			if err != nil {
+				return res, err
+			}
+			list = append(list, member)
+		}
+		res.Members = &list
+	}
 	if c.i != len(c.raw) {
 		return res, errors.New("result text has trailing bytes")
 	}
@@ -305,7 +339,72 @@ func (c *textCursor) conversation() (client.Conversation, error) {
 	if err != nil {
 		return client.Conversation{}, err
 	}
-	return client.Conversation{Name: name, Status: status}, nil
+	conv := client.Conversation{Name: name, Status: status}
+	for c.i < len(c.raw) {
+		f, err := c.peek()
+		if err != nil {
+			return conv, err
+		}
+		switch f.key {
+		case "task", "ticket", "seat", "directory", "custom", "prompts", "roster":
+			if _, err := c.next(); err != nil {
+				return conv, err
+			}
+			switch f.key {
+			case "task":
+				conv.Task = f.value
+			case "ticket":
+				conv.Ticket = f.value
+			case "seat":
+				conv.Seat = f.value
+			case "directory":
+				conv.Directory = f.value
+			case "custom":
+				conv.Custom = f.value
+			case "prompts":
+				conv.Prompts = append(conv.Prompts, f.value)
+			case "roster":
+				conv.Roster = append(conv.Roster, f.value)
+			}
+		default:
+			return conv, nil
+		}
+	}
+	return conv, nil
+}
+
+func (c *textCursor) memberFields(pid bool) (client.Member, error) {
+	var m client.Member
+	var err error
+	m.Name, err = c.value("name")
+	if err != nil {
+		return m, err
+	}
+	m.Status, err = c.value("status")
+	if err != nil {
+		return m, err
+	}
+	m.Launched, err = c.value("launched")
+	if err != nil {
+		return m, err
+	}
+	m.Registered, err = c.value("registered")
+	if err != nil {
+		return m, err
+	}
+	if !pid || c.i >= len(c.raw) {
+		return m, nil
+	}
+	f, err := c.peek()
+	if err != nil || f.key != "pid" {
+		return m, err
+	}
+	n, err := c.integer("pid")
+	if err != nil {
+		return m, err
+	}
+	m.PID = &n
+	return m, nil
 }
 
 func (c *textCursor) messageFields() (client.Message, error) {
@@ -320,6 +419,10 @@ func (c *textCursor) messageFields() (client.Message, error) {
 		return msg, err
 	}
 	msg.From, err = c.value("from")
+	if err != nil {
+		return msg, err
+	}
+	msg.Kind, err = c.value("kind")
 	if err != nil {
 		return msg, err
 	}

@@ -41,6 +41,25 @@ const (
 	ReasonKeyRequired          = "transaction id is required"
 	ReasonKeyUTF8              = "transaction id is not valid UTF-8"
 	ReasonKeyConflict          = "transaction id reused with different content"
+	ReasonKindRequired         = "kind is required"
+	ReasonKindBad              = "kind must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
+	ReasonKindsShape           = "kinds must be an array of names"
+	ReasonKindsEmpty           = "kinds must not be empty"
+	ReasonKindsBadName         = "kinds contains a name that is not 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
+	ReasonRosterShape          = "roster must be an array of names"
+	ReasonRosterBadName        = "roster contains a name that is not 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
+	ReasonRosterDuplicate      = "roster contains a duplicate name"
+	ReasonSeatNotInRoster      = "seat must be one of the roster names"
+	ReasonSeatNeedsRoster      = "a seat requires a roster"
+	ReasonPromptsShape         = "prompts must be an array of strings"
+	ReasonPromptEmpty          = "prompts contains an empty string"
+	ReasonNotInRoster          = "name is not in the roster"
+	ReasonMemberMissing        = "member has not been launched"
+	ReasonStatusBad            = "status must be launched, running, exited, or timed-out"
+	ReasonAlreadyLaunched      = "member is already launched"
+	ReasonPID                  = "pid must be an integer greater than zero"
+	ReasonPIDNeedsStatus       = "a pid requires a status"
+	ReasonSessionEmpty         = "session must not be empty"
 	ReasonCursorRequired       = "cursor is required"
 	ReasonCursorRange          = "cursor must be an integer greater than or equal to zero"
 	ReasonLimitRequired        = "limit is required"
@@ -53,7 +72,7 @@ const (
 	ReasonUnavailable          = "could not make the change durable"
 )
 
-// MaxNameLen is the conversation, from, and to name limit.
+// MaxNameLen is the length limit for a conversation, a participant, a kind, a kinds entry, and a roster name.
 const MaxNameLen = 64
 
 const valueAll = "all"
@@ -61,13 +80,17 @@ const valueAll = "all"
 // PathCreate and the routes beside it are the listener operations.
 // PathHealth is the unauthenticated pass or fail check. It is not an operation.
 const (
-	PathCreate  = "/create"
-	PathPublish = "/publish"
-	PathRead    = "/read"
-	PathWait    = "/wait"
-	PathClose   = "/close"
-	PathList    = "/list"
-	PathHealth  = "/health"
+	PathCreate   = "/create"
+	PathPublish  = "/publish"
+	PathRead     = "/read"
+	PathWait     = "/wait"
+	PathClose    = "/close"
+	PathList     = "/list"
+	PathRegister = "/register"
+	PathMember   = "/member"
+	PathSession  = "/session"
+	PathMembers  = "/members"
+	PathHealth   = "/health"
 )
 
 type ruleError struct {
