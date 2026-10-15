@@ -2,7 +2,7 @@
 
 One process hosts named conversations in SQLite. Callers publish into a transcript and block until a matching message exists or a deadline passes. Module `github.com/p3bot/hotseat`. The bus does not launch agents.
 
-`hotseat run` and `hotseat attend` are the runner in design `hotseat-r7gj`. They are not in this tree until `hotseat-y7t5` and `hotseat-q8us`. See Runner before adding them.
+`hotseat run` drives one conversation on a bus that is already up. `hotseat attend` is not in this tree until `hotseat-q8us`. See Runner before adding it.
 
 Operator contract: `README.md` and the package doc comments. A behaviour those texts state changes in the same edit as the code.
 
@@ -15,6 +15,7 @@ Operator contract: `README.md` and the package doc comments. A behaviour those t
 | `internal/store` | `hotseat.db`, schema, `hotseat.db.lock`. The only writer |
 | `internal/client` | One HTTP call to a bus that is already running. Does not open the store |
 | `internal/cli` | Cobra tree, detached bus, text results |
+| `internal/run` | `hotseat run`. Client of a running bus. Shells out to `start` and `tk` |
 | `internal/web` | Loopback page. Client of a running bus. Does not open the store |
 
 `.agents/roles/default.md` is the start role for this module and carries the same constraints.
@@ -156,7 +157,7 @@ Name the test for the rule (`TestNonLoopbackDoesNotListenOrCreateStore`). Do not
 
 ## Runner
 
-Design `hotseat-r7gj` (Hotseat conversation runner). Read it with `tk design get hotseat-r7gj --content`. The bus design `hotseat-ppyt` is decomposed and its tickets are done. This tree stores `kind`, the conversation binding, and member rows. `hotseat run` and `hotseat attend` are not in this tree until `hotseat-y7t5` and `hotseat-q8us`.
+Design `hotseat-r7gj` (Hotseat conversation runner). Read it with `tk design get hotseat-r7gj --content`. The bus design `hotseat-ppyt` is decomposed and its tickets are done. This tree stores `kind`, the conversation binding, and member rows. `hotseat run` is in this tree. `hotseat attend` is not, until `hotseat-q8us`.
 
 Settled, and in this tree:
 
@@ -165,14 +166,15 @@ Settled, and in this tree:
 - Session ids stay out of the transcript, `member list`, logs, status lines, and prompts. An id works on the machine that stored it.
 - Schema version stays `1`. Delete a database this binary already created. Do not add a migration.
 - The bus process still does not launch agents. The web page shows message `kind` and does not manage members.
+- `hotseat run` is a client. It does not start the bus and does not open the database. It shells out to `start` and `tk`. A missing task resolver, prompt, session-id locator, or ticket code-root is a change in that program. Hotseat does not grow its own.
+- Roster is `--agents` / `HOTSEAT_AGENTS` as `name=module:model`. There is no `HOTSEAT_MEMBERS`. The flag wins over the matching `HOTSEAT_*` variable. A resume launches only when that roster is passed again. Without it, the resume continues and does not launch. The turn cap defaults to 500 `turn` messages. The member process limit defaults to 8 hours. Interactive mode disables that process limit and keeps the cap.
+- Instruction bodies over the 512 KiB maximum are refused before create. Naming, seat backup, and the turn loop are in the design. Follow that text.
+- agy (Antigravity CLI) has no hotseat module. `herdr` is not a dependency.
 
 Settled for the runner, and absent here:
 
-- `hotseat run` and `hotseat attend` are clients. They do not start the bus and do not open the database.
-- Shell out to `start` and `tk`. A missing task resolver, prompt, session-id locator, or ticket code-root is a change in that program. Hotseat does not grow its own.
-- Roster is `--agents` / `HOTSEAT_AGENTS` as `name=module:model`. There is no `HOTSEAT_MEMBERS`. The flag wins over the matching `HOTSEAT_*` variable. The turn cap defaults to 500 `turn` messages. The member process limit defaults to 8 hours. Interactive mode disables that process timeout and keeps the cap.
-- Instruction bodies over the 512 KiB maximum are refused before create. Naming, seat backup, and the turn loop are in the design. Follow that text.
-- Copilot is out. agy (Antigravity CLI) has no hotseat module in this work. `herdr` is not a dependency.
+- `hotseat attend` is a client. It does not start the bus and does not open the database.
+- The chief task, the ticket-review task, and the design task. `run` publishes the module text and executes `turn`s.
 
 `internal/web` uses `kindList` and `kindConversation` for page modes. Those names are not the message field.
 

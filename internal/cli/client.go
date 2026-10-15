@@ -35,6 +35,7 @@ func addClientCommands(root *cobra.Command) {
 		newCloseCmd(),
 		newListCmd(),
 		newMemberCmd(),
+		newRunCmd(),
 	)
 }
 

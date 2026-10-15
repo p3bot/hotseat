@@ -7,7 +7,8 @@
 // Package cli is the hotseat command line.
 // The bus runs detached: start and stop manage that process.
 // status asks a listen address whether it can serve.
-// It does not launch agents and it does not open connections to clients.
+// run shells out to start for one conversation. The bus process does not
+// launch agents and it does not open connections to clients.
 package cli
 
 import (

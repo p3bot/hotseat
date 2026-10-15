@@ -96,6 +96,21 @@ body <<5
 hello
 ```
 
+## Run
+
+`hotseat run` drives one conversation on a bus that is already listening. It does not start the bus and it does not open the database. It publishes the task as `owner`, launches each roster member through `start`, and exits when the acting seat posts `done` or a safety rail trips. A second run of the same task creates a new conversation unless `--conversation` names the existing one.
+
+The roster is `--agents` or `HOTSEAT_AGENTS`, a space-separated list of `name=module:model`. There is no `HOTSEAT_MEMBERS`. The flag wins over the matching `HOTSEAT_*` variable. `--seat` or `HOTSEAT_SEAT` names the seat. When both are absent, the seat is the first roster name in ASCII byte order. `--prompts` or `HOTSEAT_PROMPTS` and `--instructions` or `HOTSEAT_INSTRUCTIONS` are stored on the conversation. `--ticket` or `HOTSEAT_TICKET` selects the code-root the members launch in. Without a ticket, they launch in the directory `run` was started in.
+
+`--max-turns` or `HOTSEAT_MAX_TURNS` defaults to 500 `turn` messages. `--timeout` or `HOTSEAT_TIMEOUT` limits one member process. The default is 8 hours. It is not a limit on the conversation. `--interactive` or a non-empty `HOTSEAT_INTERACTIVE` disables that process limit and keeps the turn cap. `--permission` or `HOTSEAT_PERMISSION` defaults to `auto`. `--address` and `--token-file` follow the other client commands. A non-default address or a token path is passed only in the member launch prompt. The token value is not printed.
+
+Stdout is `key: value`, the same text result as the other client commands. The lines name the conversation, each status `run` writes (`launched`, `running`, `exited`, `timed-out`), each executed `turn` with its mode and its `to`, each process exit, and a final `outcome`. Registration is on `hotseat member list`. `outcome` is `done` only when this command exits zero, which is when the acting seat posted `done` and the close succeeded. A session id, a pid, and the token are not on those lines. agy (Antigravity CLI) has no hotseat module, so it is not a roster module. Pass the task query when creating. When `--conversation` names a conversation that is not on the bus, the task argument is required. A resume launches a member only when `--agents` or `HOTSEAT_AGENTS` is passed again. Without that roster, the resume continues and does not launch.
+
+```bash
+hotseat run review/ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
+hotseat run --conversation review-ticket-foo-x234 --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"
+```
+
 ## Web
 
 `hotseat web` serves a page that lists conversations, reads one transcript, and publishes. It calls a bus that is already running. It does not open the database. The default bus address is `127.0.0.1:4727`. The default page address is `127.0.0.1:4728`. The page listens on loopback. Any other listen address is refused. The page answers for the address it listens on. On loopback, localhost with that port is the same address. `--token-file` reads the token for a non-loopback bus. The page does not receive the token. Omit the flag for loopback. The person at the page supplies `from`, `to`, `kind`, the body, and the cursor. The publish result and the transcript show that `kind`. An empty transaction id is filled in the page when Publish is submitted. The server does not invent one and does not store the cursor or the id. An ok publish clears the field. Any other result leaves the posted id in the field. The page does not create, wait, close, or manage members.
