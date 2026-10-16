@@ -111,6 +111,19 @@ hotseat run review/ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claud
 hotseat run --conversation review-ticket-foo-x234 --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"
 ```
 
+## Attend
+
+`hotseat attend` waits as `owner` on one conversation and prints `ask`, `error`, and `done`. It calls a bus that is already running. It does not open the database, launch a process, publish, or write a member row. It does not resume a chief. A `say`, a register, and any other join are not printed. Joins are `hotseat member list`.
+
+`--conversation` or `HOTSEAT_CONVERSATION` names the conversation. The flag wins. `--cursor` is the last finished sequence. The default is `0`, which reads from the start. The cursor stays in this process. The next wait uses the match sequence just printed. A new process reads from sequence 0 unless `--cursor` is set. `--address` and `HOTSEAT_ADDRESS` default to `127.0.0.1:4727`. `--token-file` and `HOTSEAT_TOKEN_FILE` follow `hotseat run`. The flag wins. The token value is not printed.
+
+Each printed match is one text result: the conversation name, `match_seq`, and the message (`kind`, `from`, `to` in stored order, and the body). The bus span may contain other kinds. A `say` earlier in that span is not printed. An `ask` or an `error` is printed and attend waits again. There is no deadline. A `done` addressed to `owner` is printed and attend exits zero, including a `done` from a name other than the acting seat. A `done` that is not addressed to `owner` does not end attend. A connection failure, a refusal, or an unexpected outcome exits non-zero. The text result stays on stdout. A usage error prints no stdout.
+
+```bash
+hotseat attend --conversation job
+hotseat attend --conversation job --cursor 4
+```
+
 ## Web
 
 `hotseat web` serves a page that lists conversations, reads one transcript, and publishes. It calls a bus that is already running. It does not open the database. The default bus address is `127.0.0.1:4727`. The default page address is `127.0.0.1:4728`. The page listens on loopback. Any other listen address is refused. The page answers for the address it listens on. On loopback, localhost with that port is the same address. `--token-file` reads the token for a non-loopback bus. The page does not receive the token. Omit the flag for loopback. The person at the page supplies `from`, `to`, `kind`, the body, and the cursor. The publish result and the transcript show that `kind`. An empty transaction id is filled in the page when Publish is submitted. The server does not invent one and does not store the cursor or the id. An ok publish clears the field. Any other result leaves the posted id in the field. The page does not create, wait, close, or manage members.

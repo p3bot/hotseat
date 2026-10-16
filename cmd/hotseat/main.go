@@ -20,7 +20,7 @@ func main() {
 	if code := cli.SignalExitCode(); code != 0 {
 		os.Exit(code)
 	}
-	if cli.StatusFailure(err) {
+	if cli.ReportedFailure(err) {
 		os.Exit(cli.ExitFailure)
 	}
 	if err != nil {

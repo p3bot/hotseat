@@ -38,16 +38,16 @@ const (
 	recordName = "hotseat.pid"
 )
 
-// statusFailure is a finished status report that exits 1.
-// The report is already on stdout. The error text stays empty so the process
-// does not add a second line.
-type statusFailure struct{}
+// reportedFailure is a finished report already written to stdout.
+// Error is empty so main exits 1 without a second line.
+type reportedFailure struct{}
 
-func (statusFailure) Error() string { return "" }
+func (reportedFailure) Error() string { return "" }
 
-// StatusFailure reports a finished status check that exits 1.
-func StatusFailure(err error) bool {
-	var failed statusFailure
+// ReportedFailure reports an error that exits 1 with no stderr line.
+// The report is already on stdout.
+func ReportedFailure(err error) bool {
+	var failed reportedFailure
 	return errors.As(err, &failed)
 }
 
@@ -559,7 +559,7 @@ func statusBus(ctx context.Context, w io.Writer, address string) error {
 		return err
 	}
 	if rep.health != "pass" {
-		return statusFailure{}
+		return reportedFailure{}
 	}
 	return nil
 }

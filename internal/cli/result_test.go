@@ -147,6 +147,32 @@ func TestWriteResultOmitsAbsentFields(t *testing.T) {
 	}
 }
 
+func TestWriteResultOmitsEmptyStatus(t *testing.T) {
+	seq := int64(2)
+	res := client.Result{
+		Outcome:      "ok",
+		MatchSeq:     &seq,
+		Conversation: &client.Conversation{Name: "job"},
+		Message: &client.Message{
+			Seq: 2, Time: "t", From: "alpha", Kind: "ask", To: []string{"owner"}, Body: "help", TxID: "1",
+		},
+	}
+	var buf bytes.Buffer
+	if err := writeResult(&buf, res); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "status:") {
+		t.Fatalf("blank status\n%s", buf.String())
+	}
+	got := parseStdout(t, buf.Bytes())
+	if got.Conversation == nil || got.Conversation.Name != "job" || got.Conversation.Status != "" || got.MatchSeq == nil || *got.MatchSeq != 2 {
+		t.Fatalf("parsed %+v", got)
+	}
+	if got.Message == nil || got.Message.Kind != "ask" || got.Message.Body != "help" || len(got.Message.To) != 1 || got.Message.To[0] != "owner" {
+		t.Fatalf("message %+v", got.Message)
+	}
+}
+
 func TestWriteResultOneLineFrameMarkerStaysValue(t *testing.T) {
 	res := client.Result{
 		Outcome: "refused",
@@ -335,11 +361,20 @@ func (c *textCursor) conversation() (client.Conversation, error) {
 	if err != nil {
 		return client.Conversation{}, err
 	}
-	status, err := c.value("status")
-	if err != nil {
-		return client.Conversation{}, err
+	conv := client.Conversation{Name: name}
+	if c.i < len(c.raw) {
+		f, err := c.peek()
+		if err != nil {
+			return conv, err
+		}
+		if f.key == "status" {
+			status, err := c.value("status")
+			if err != nil {
+				return conv, err
+			}
+			conv.Status = status
+		}
 	}
-	conv := client.Conversation{Name: name, Status: status}
 	for c.i < len(c.raw) {
 		f, err := c.peek()
 		if err != nil {

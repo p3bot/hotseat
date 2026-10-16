@@ -122,7 +122,10 @@ func (lw *lineWriter) integer(key string, n int64) {
 
 func (lw *lineWriter) conversation(conv client.Conversation) {
 	lw.plain("name", conv.Name)
-	lw.plain("status", conv.Status)
+	// A caller that only has the name must not print a blank status.
+	if conv.Status != "" {
+		lw.plain("status", conv.Status)
+	}
 	if conv.Task != "" {
 		lw.plain("task", conv.Task)
 	}

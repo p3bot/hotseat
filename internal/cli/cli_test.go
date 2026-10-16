@@ -1310,7 +1310,7 @@ func TestStatusReport(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	err = execute(context.Background(), []string{"bus", "status", "--address", "127.0.0.1:1"}, &stdout, &stderr)
-	if !StatusFailure(err) || stderr.Len() != 0 || !strings.Contains(stdout.String(), "health: connection_failure") {
+	if !ReportedFailure(err) || stderr.Len() != 0 || !strings.Contains(stdout.String(), "health: connection_failure") {
 		t.Fatalf("err %v\n%s%s", err, stdout.String(), stderr.String())
 	}
 }
