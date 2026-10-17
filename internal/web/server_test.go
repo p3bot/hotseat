@@ -55,7 +55,7 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, logs := newPage(t, addr, "")
 	status, body, hdr := getPage(t, page.URL+"/")
-	if status != http.StatusOK || !strings.Contains(body, `id="empty"`) {
+	if status != http.StatusOK || !strings.Contains(body, `id="empty"`) || !strings.Contains(body, "<title>Hotseat</title>") {
 		t.Fatalf("empty %d %s", status, body)
 	}
 	assertNoCookie(t, hdr)
@@ -77,7 +77,7 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 		t.Fatalf("status\n%s", body)
 	}
 	_, body, _ = getPage(t, page.URL+"/c?conversation=beta")
-	if !strings.Contains(body, `id="conversation-status"`) || !strings.Contains(body, `class="status">closed<`) {
+	if !strings.Contains(body, `id="conversation-status"`) || !strings.Contains(body, `class="status">closed<`) || !strings.Contains(body, "<title>Hotseat - beta</title>") {
 		t.Fatalf("beta\n%s", body)
 	}
 	if strings.Contains(logs.String(), "cursor=") {
@@ -85,7 +85,11 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	}
 }
 
-func TestReadRepeatsAndPagesWithoutStoringCursor(t *testing.T) {
+func TestReadShowsNewestThenOlderGroup(t *testing.T) {
+	prev := transcriptLimit
+	transcriptLimit = 2
+	t.Cleanup(func() { transcriptLimit = prev })
+
 	addr := newBus(t, "", false)
 	page, logs := newPage(t, addr, "")
 	createConv(t, addr, "", "job")
@@ -93,7 +97,7 @@ func TestReadRepeatsAndPagesWithoutStoringCursor(t *testing.T) {
 	publishMsg(t, addr, "", "job", "alice", []string{"carol"}, "two", "k2")
 	publishMsg(t, addr, "", "job", "alice", []string{}, "three", "k3")
 
-	firstURL := page.URL + "/c?conversation=job&cursor=0&limit=2"
+	firstURL := page.URL + "/c?conversation=job"
 	_, first, hdr := getPage(t, firstURL)
 	_, second, _ := getPage(t, firstURL)
 	if first != second {
@@ -103,44 +107,34 @@ func TestReadRepeatsAndPagesWithoutStoringCursor(t *testing.T) {
 	if !strings.Contains(first, `id="read-outcome">ok<`) {
 		t.Fatalf("outcome\n%s", first)
 	}
-	one := strings.Index(first, ">one<")
-	two := strings.Index(first, ">two<")
+	if strings.Contains(first, `name="cursor"`) || strings.Contains(first, `name="limit"`) {
+		t.Fatalf("cursor form\n%s", first)
+	}
 	three := strings.Index(first, ">three<")
-	if one < 0 || two < one || three >= 0 {
-		t.Fatalf("page one %d two %d three %d\n%s", one, two, three, first)
+	two := strings.Index(first, ">two<")
+	one := strings.Index(first, ">one<")
+	if three < 0 || two < three || one >= 0 {
+		t.Fatalf("page three %d two %d one %d\n%s", three, two, one, first)
 	}
-	if !strings.Contains(first, `id="page-full"`) || !strings.Contains(first, `id="next-cursor">2<`) {
-		t.Fatalf("next\n%s", first)
-	}
-	if !strings.Contains(first, `id="cursor" name="cursor" value="0"`) {
-		t.Fatalf("form cursor\n%s", first)
-	}
-	href := attr(t, first, `id="next-page" href="`)
-	if !strings.Contains(href, "cursor=2") || !strings.Contains(href, "limit=2") {
+	href := attr(t, first, `id="more" data-next="`)
+	if !strings.Contains(href, "before=2") || strings.Contains(href, "limit=") {
 		t.Fatalf("href %s", href)
 	}
 	_, next, _ := getPage(t, page.URL+href)
-	if strings.Contains(next, ">one<") || strings.Contains(next, ">two<") || !strings.Contains(next, ">three<") {
-		t.Fatalf("next page\n%s", next)
+	if strings.Contains(next, ">three<") || strings.Contains(next, ">two<") || !strings.Contains(next, ">one<") {
+		t.Fatalf("older group\n%s", next)
 	}
-	if strings.Contains(next, `id="page-full"`) {
-		t.Fatalf("short page marked full\n%s", next)
+	if strings.Contains(next, `id="more"`) {
+		t.Fatalf("oldest group offered another\n%s", next)
 	}
 	_, again, _ := getPage(t, firstURL)
 	if again != first {
-		t.Fatal("cursor advanced on the server")
+		t.Fatal("group changed on the server")
 	}
 
-	_, bad, _ := getPage(t, page.URL+"/c?conversation=job&cursor=abc&limit=2")
-	if !strings.Contains(bad, `id="notice">cursor and limit must be integers<`) || strings.Contains(bad, `id="transcript"`) {
-		t.Fatalf("bad cursor\n%s", bad)
-	}
-	if !strings.Contains(bad, `value="abc"`) {
-		t.Fatalf("replaced cursor\n%s", bad)
-	}
-	_, onlyCursor, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0")
-	if !strings.Contains(onlyCursor, "cursor and limit are both required") || strings.Contains(onlyCursor, `id="transcript"`) {
-		t.Fatalf("missing limit\n%s", onlyCursor)
+	_, bad, _ := getPage(t, page.URL+"/c?conversation=job&before=abc")
+	if !strings.Contains(bad, `id="notice">before must be an integer<`) || strings.Contains(bad, `id="transcript"`) {
+		t.Fatalf("bad before\n%s", bad)
 	}
 	if strings.Contains(logs.String(), "cursor=") || strings.Contains(logs.String(), "k1") || strings.Contains(logs.String(), "txid") {
 		t.Fatalf("log %s", logs.String())
@@ -288,7 +282,7 @@ func TestFailedPublishKeepsThePostedID(t *testing.T) {
 	}
 }
 
-func TestPublishEchoesTheRequestCursor(t *testing.T) {
+func TestOpenConversationShowsNewestFirst(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, logs := newPage(t, addr, "")
 	createConv(t, addr, "", "job")
@@ -296,43 +290,37 @@ func TestPublishEchoesTheRequestCursor(t *testing.T) {
 	publishMsg(t, addr, "", "job", "alice", []string{"carol"}, "two", "k2")
 
 	_, blank, _ := getPage(t, page.URL+"/c?conversation=job")
-	if strings.Contains(blank, `value="0"`) || strings.Contains(blank, `value="50"`) {
-		t.Fatalf("server supplied a cursor\n%s", blank)
+	if strings.Contains(blank, `name="cursor"`) || strings.Contains(blank, `name="limit"`) {
+		t.Fatalf("cursor form\n%s", blank)
 	}
-	if !strings.Contains(blank, `placeholder="0"`) || !strings.Contains(blank, `placeholder="50"`) {
-		t.Fatalf("placeholders\n%s", blank)
-	}
-	if strings.Contains(blank, `id="transcript"`) {
-		t.Fatalf("read with no cursor\n%s", blank)
+	two := strings.Index(blank, ">two<")
+	one := strings.Index(blank, ">one<")
+	if two < 0 || one < two {
+		t.Fatalf("order two %d one %d\n%s", two, one, blank)
 	}
 
 	form := url.Values{}
 	form.Set("conversation", "job")
-	form.Set("cursor", "1")
-	form.Set("limit", "1")
 	form.Set("from", "alice")
 	form.Set("to", "bob")
 	form.Set("kind", "say")
 	form.Set("body", "via-page")
 	form.Set("txid", "page-key")
 	_, published, _ := postPage(t, page.URL+"/publish", form)
-	if !strings.Contains(published, `id="stored"`) || !strings.Contains(published, `id="cursor" name="cursor" value="1"`) {
+	if !strings.Contains(published, `id="stored"`) || strings.Contains(published, `name="cursor"`) {
 		t.Fatalf("publish\n%s", published)
 	}
-	if strings.Contains(published, `value="0"`) || strings.Contains(published, `value="50"`) {
-		t.Fatalf("replaced cursor\n%s", published)
-	}
-	if !strings.Contains(published, `id="transcript"`) || !strings.Contains(published, ">two<") || strings.Contains(published, ">one<") {
+	transcript := published[strings.Index(published, `id="transcript"`):]
+	via := strings.Index(transcript, ">via-page<")
+	if via < 0 || strings.Index(transcript, ">two<") < via {
 		t.Fatalf("transcript\n%s", published)
 	}
 
 	read := url.Values{}
 	read.Set("conversation", "job")
-	read.Set("cursor", "1")
-	read.Set("limit", "1")
 	read.Set("txid", "page-key")
 	status, body, _ := postPage(t, page.URL+"/c", read)
-	if status != http.StatusOK || !strings.Contains(body, `value="page-key"`) || !strings.Contains(body, `id="cursor" name="cursor" value="1"`) {
+	if status != http.StatusOK || !strings.Contains(body, `value="page-key"`) || strings.Contains(body, `name="cursor"`) {
 		t.Fatalf("read post %d %s", status, body)
 	}
 	if strings.Contains(body, "page-key=") || !strings.Contains(body, `action="/c"`) {
@@ -628,8 +616,8 @@ func TestUnfilteredReadHasNoRoster(t *testing.T) {
 	bob := strings.Index(body, ">for-bob<")
 	none := strings.Index(body, ">for-none<")
 	carol := strings.Index(body, ">for-carol<")
-	if bob < 0 || none < bob || carol < none {
-		t.Fatalf("order bob %d none %d carol %d\n%s", bob, none, carol, body)
+	if carol < 0 || none < carol || bob < none {
+		t.Fatalf("order carol %d none %d bob %d\n%s", carol, none, bob, body)
 	}
 	if strings.Contains(body, `name="name"`) {
 		t.Fatal("name filter")
@@ -797,11 +785,10 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 	}
 	assertOmits(t, "list page", body, token)
 
-	_, body, _ = getPage(t, page.URL+"/c?conversation=job&cursor=4&limit=2")
+	_, body, _ = getPage(t, page.URL+"/c?conversation=job&before=4")
 	got = take()
-	if len(got) != 2 ||
-		got[0] != bus.PathList+" "+auth+" {}" ||
-		got[1] != bus.PathRead+" "+auth+` {"conversation":"job","cursor":4,"limit":2}` {
+	readBody := bus.PathRead + " " + auth + ` {"conversation":"job","cursor":0,"limit":` + strconv.FormatInt(transcriptLimit, 10) + `}`
+	if len(got) != 2 || got[0] != bus.PathList+" "+auth+" {}" || got[1] != readBody {
 		t.Fatalf("read %#v", got)
 	}
 	if strings.Contains(got[1], `"name"`) {
@@ -809,15 +796,10 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 	}
 	assertOmits(t, "read page", body, token)
 
-	_, _, _ = getPage(t, page.URL+"/c?conversation=job&cursor=abc&limit=2")
+	_, _, _ = getPage(t, page.URL+"/c?conversation=job&before=abc")
 	got = take()
 	if len(got) != 1 || !strings.HasPrefix(got[0], bus.PathList+" ") {
-		t.Fatalf("bad cursor called %#v", got)
-	}
-	_, _, _ = getPage(t, page.URL+"/c?conversation=job&cursor=4")
-	got = take()
-	if len(got) != 1 || !strings.HasPrefix(got[0], bus.PathList+" ") {
-		t.Fatalf("missing limit called %#v", got)
+		t.Fatalf("bad before called %#v", got)
 	}
 	_, _, _ = getPage(t, page.URL+"/c")
 	if got = take(); len(got) != 0 {
@@ -834,7 +816,7 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 	_, body, _ = postPage(t, page.URL+"/publish", form)
 	got = take()
 	wantPub := bus.PathPublish + " " + auth + ` {"conversation":"job","from":"alice","to":["carol","bob"],"body":"hello","txid":"k1","kind":"say"}`
-	if len(got) != 2 || got[0] != bus.PathList+" "+auth+" {}" || got[1] != wantPub {
+	if len(got) != 3 || got[0] != bus.PathList+" "+auth+" {}" || got[1] != wantPub || got[2] != readBody {
 		t.Fatalf("publish %#v", got)
 	}
 	assertOmits(t, "publish page", body, token)

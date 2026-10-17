@@ -284,8 +284,8 @@ func TestBusHelpNamesDataHome(t *testing.T) {
 		t.Fatalf("start help: %v\n%s", err, stderr.String())
 	}
 	startHelp := stdout.String()
-	if !strings.Contains(startHelp, "$XDG_DATA_HOME/hotseat") || !strings.Contains(startHelp, logName) {
-		t.Fatalf("start help missing store or log:\n%s", startHelp)
+	if !strings.Contains(startHelp, "$XDG_DATA_HOME/hotseat") || !strings.Contains(startHelp, logName) || !strings.Contains(startHelp, web.URL(web.DefaultListen)) {
+		t.Fatalf("start help missing store, log, or page:\n%s", startHelp)
 	}
 	stopOut := bytes.Buffer{}
 	err = execute(context.Background(), []string{"bus", "stop", "--help"}, &stopOut, &stderr)
@@ -752,6 +752,52 @@ func parseBusReport(t *testing.T, text string) (pid int, listen, storeDir string
 	return pid, listen, storeDir
 }
 
+func pageFor(t *testing.T, busAddr string) string {
+	t.Helper()
+	return web.URL(pageHost(t, busAddr))
+}
+
+func pageHost(t *testing.T, busAddr string) string {
+	t.Helper()
+	addr, err := pageListen(busAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+func reportField(text, key string) string {
+	prefix := key + ": "
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
+}
+
+func getPage(t *testing.T, page string) string {
+	t.Helper()
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d %s", resp.StatusCode, body)
+	}
+	return string(body)
+}
+
 func TestBusWithoutSubcommandDoesNothing(t *testing.T) {
 	wd := t.TempDir()
 	t.Chdir(wd)
@@ -790,6 +836,65 @@ func TestStartRefusesTakenAddressWithoutStore(t *testing.T) {
 	}
 }
 
+func TestStartRefusesPagePortThatDoesNotFit(t *testing.T) {
+	storeDir := filepath.Join(t.TempDir(), "store")
+	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--store", storeDir, "--listen", "127.0.0.1:65535"})
+	if err == nil || !strings.Contains(err.Error(), "does not fit") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, statErr := os.Stat(storeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("store directory was created: %v", statErr)
+	}
+}
+
+func TestStartRefusesTakenPageWithoutStore(t *testing.T) {
+	busAddr, pageLn := holdNextPort(t)
+	defer func() {
+		if err := pageLn.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	storeDir := filepath.Join(t.TempDir(), "store")
+	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--store", storeDir, "--listen", busAddr})
+	if err == nil || !strings.Contains(err.Error(), "page listen on "+pageLn.Addr().String()) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, statErr := os.Stat(storeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("store directory was created: %v", statErr)
+	}
+}
+
+func holdNextPort(t *testing.T) (string, net.Listener) {
+	t.Helper()
+	for range 20 {
+		page, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tcp, ok := page.Addr().(*net.TCPAddr)
+		if !ok || tcp.Port < 2 {
+			if err := page.Close(); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		busAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(tcp.Port-1))
+		probe, err := net.Listen("tcp", busAddr)
+		if err != nil {
+			if err := page.Close(); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := probe.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return busAddr, page
+	}
+	t.Fatal("no consecutive ports")
+	return "", nil
+}
+
 func TestReadmeDescribesDetachedBus(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -800,7 +905,7 @@ func TestReadmeDescribesDetachedBus(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(text)
-	for _, name := range []string{"hotseat bus start", "hotseat bus stop", "hotseat bus status", "hotseat.log", "$XDG_DATA_HOME/hotseat", "text result", "body <<5", "GET /health", "does not take `--store`"} {
+	for _, name := range []string{"hotseat bus start", "hotseat bus stop", "hotseat bus status", "hotseat.log", "$XDG_DATA_HOME/hotseat", "text result", "body <<5", "GET /health", "does not take `--store`", "http://127.0.0.1:4728"} {
 		if !strings.Contains(body, name) {
 			t.Fatalf("readme missing %s", name)
 		}
@@ -887,6 +992,9 @@ func TestDetachedBus(t *testing.T) {
 		if listen != addr || gotStore != storeDir {
 			t.Fatalf("listen %s store %s", listen, gotStore)
 		}
+		if reportField(started.stdout, "page") != pageFor(t, addr) {
+			t.Fatalf("page %q", started.stdout)
+		}
 		if !pidAlive(pid) {
 			t.Fatal("daemon exited")
 		}
@@ -940,6 +1048,9 @@ func TestDetachedBus(t *testing.T) {
 		if created.Outcome != bus.OutcomeOK {
 			t.Fatalf("create %+v", created)
 		}
+		if body := getPage(t, pageFor(t, addr)); !strings.Contains(body, "job") {
+			t.Fatalf("page %s", body)
+		}
 
 		again := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", other, "--debug", "--token-file", tokenPath)
 		if again.code != 0 {
@@ -949,8 +1060,8 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatal("second start output contains the token")
 		}
 		againPID, againListen, _ := parseBusReport(t, again.stdout)
-		if againPID != pid || againListen != addr {
-			t.Fatalf("second start pid %d listen %s", againPID, againListen)
+		if againPID != pid || againListen != addr || reportField(again.stdout, "page") != pageFor(t, addr) {
+			t.Fatalf("second start pid %d listen %s\n%s", againPID, againListen, again.stdout)
 		}
 		if countBuses(storeDir) != 1 || !pidAlive(pid) {
 			t.Fatal("second start changed the process")
@@ -971,6 +1082,9 @@ func TestDetachedBus(t *testing.T) {
 		if bytes.Contains(record, []byte(secret)) {
 			t.Fatal("process record contains the token")
 		}
+		if !bytes.Contains(record, []byte("page="+pageFor(t, addr)+"\n")) {
+			t.Fatalf("record %s", record)
+		}
 
 		stopped := runBinCmd(t, bin, "bus", "stop", "--store", storeDir)
 		if stopped.code != 0 {
@@ -978,6 +1092,13 @@ func TestDetachedBus(t *testing.T) {
 		}
 		if pidAlive(pid) {
 			t.Fatal("process still alive")
+		}
+		pageConn, pageErr := net.DialTimeout("tcp", pageHost(t, addr), 200*time.Millisecond)
+		if pageErr == nil {
+			if err := pageConn.Close(); err != nil {
+				t.Errorf("close: %v", err)
+			}
+			t.Fatal("page still listening")
 		}
 		held, err := lockHeld(storeDir)
 		if err != nil || held {
@@ -1116,7 +1237,7 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer st.Close()
-		if err := writeRecord(storeDir, os.Getpid(), "127.0.0.1:1"); err != nil {
+		if err := writeRecord(storeDir, os.Getpid(), "127.0.0.1:1", ""); err != nil {
 			t.Fatal(err)
 		}
 		addr := freeLoopbackAddr(t)
@@ -1198,8 +1319,8 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatalf("second start %d\n%s%s", again.code, again.stdout, again.stderr)
 		}
 		againPID, againListen, _ := parseBusReport(t, again.stdout)
-		if againPID != pid || againListen != listen || countBuses(storeDir) != 1 {
-			t.Fatalf("second start pid %d listen %s buses %d", againPID, againListen, countBuses(storeDir))
+		if againPID != pid || againListen != listen || countBuses(storeDir) != 1 || reportField(again.stdout, "page") != pageFor(t, listen) {
+			t.Fatalf("second start pid %d listen %s buses %d\n%s", againPID, againListen, countBuses(storeDir), again.stdout)
 		}
 		stopped := runBinCmd(t, bin, "bus", "stop", "--store", storeDir)
 		if stopped.code != 0 {
@@ -1237,8 +1358,8 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 		}
 		pid, listen, gotStore := parseBusReport(t, started.stdout)
-		if listen != bus.DefaultListen || gotStore != storeDir {
-			t.Fatalf("listen %s store %s", listen, gotStore)
+		if listen != bus.DefaultListen || gotStore != storeDir || reportField(started.stdout, "page") != web.URL(web.DefaultListen) {
+			t.Fatalf("listen %s store %s\n%s", listen, gotStore, started.stdout)
 		}
 		status := runBinCmd(t, bin, "bus", "status")
 		if status.code != 0 {

@@ -39,7 +39,7 @@ NOTE: `golangci-lint run` is not a clean gate on this tree. Existing findings ar
 
 ## Process
 
-`hotseat bus start` detaches and returns after the listener is bound and the database is open. It prints `pid`, `listen`, and `store`. The child is hidden `bus serve`. That command runs when it is a session leader and fd 3 is the readiness pipe. Without that session and pipe, it returns `bus serve is internal`.
+`hotseat bus start` detaches and returns after the listener is bound, the database is open, and the page is listening. It prints `pid`, `listen`, `store`, and `page`. `page` is the URL on `127.0.0.1` at the next port. The default bus prints `http://127.0.0.1:4728`. The page is a client of that bus and does not open the store. The child is hidden `bus serve`. That command runs when it is a session leader and fd 3 is the readiness pipe. Without that session and pipe, it returns `bus serve is internal`.
 
 | File | Role |
 | --- | --- |
@@ -99,6 +99,7 @@ text result
 body <<5
 GET /health
 does not take `--store`
+http://127.0.0.1:4728
 ```
 
 The test fails when the README contains `prints one JSON object`, or a line whose trimmed text is `hotseat bus`.
@@ -127,7 +128,7 @@ Loopback accepts every operation with no token. Passing `--token-file` on loopba
 
 The header is `Authorization: Bearer` plus the token. `bus.WriteToken` sets it. A missing token is `token is required`. A wrong token is `token does not match`. Nothing is written. The token is not a flag, not a sender, and not stored. Logs, the page, and prompts do not contain it.
 
-The page default is `127.0.0.1:4728`. It listens on loopback only. Any other socket is closed. The page holds the bus token, so a public socket would hand that token to the network. The request host is checked before a bus call. On loopback, `localhost` with the same port is that host. An empty listen host refuses every request. The page lists, reads, and publishes. The publish form sends `kind`, and the publish result and the transcript show it. The page does not create, wait, close, or manage members. An empty transaction id is filled in the page script on submit. The server forwards the posted id. The script does not invent `kind`.
+`hotseat bus start` serves the page on `127.0.0.1` at the bus port plus one. The default is `127.0.0.1:4728`. `hotseat web` serves the same page for a bus that is already running. The page default is `127.0.0.1:4728`, the address `bus start` already binds, so a further page passes another loopback listen address. It listens on loopback only. Any other socket is closed. The page holds the bus token, so a public socket would hand that token to the network. The request host is checked before a bus call. On loopback, `localhost` with the same port is that host. An empty listen host refuses every request. The page lists, reads, and publishes. Opening a conversation shows the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit, and it does not keep that place. The publish form sends `kind`, and the publish result and the transcript show it. The page does not create, wait, close, or manage members. An empty transaction id is filled in the page script on submit. The server forwards the posted id. The script does not invent `kind`.
 
 `from` is caller-supplied. The token does not authenticate the sender.
 

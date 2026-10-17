@@ -26,20 +26,23 @@ func newWebCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
-		Example: `  hotseat web
-  hotseat web --address 127.0.0.1:4727 --listen 127.0.0.1:4728
-  hotseat web --address 192.0.2.10:4727 --token-file /run/hotseat/token`,
+		Example: `  hotseat web --listen 127.0.0.1:4808
+  hotseat web --address 127.0.0.1:4727 --listen 127.0.0.1:4808
+  hotseat web --address 192.0.2.10:4727 --listen 127.0.0.1:4808 --token-file /run/hotseat/token`,
 		Long: `Serve a page that lists conversations, reads a transcript, and publishes.
 
-The page calls a bus that is already running. It does not open the database.
-The default bus address is ` + bus.DefaultListen + `. The default page address is ` + web.DefaultListen + `.
+bus start serves this page on 127.0.0.1 at the next port. The default is ` + web.URL(web.DefaultListen) + `.
+This command serves the same page for a bus that is already running, on a listen address you choose.
+The page calls that bus. It does not open the database.
+The default bus address is ` + bus.DefaultListen + `. The default page address is ` + web.DefaultListen + `, which is the page bus start already serves. A further page passes another --listen.
 --token-file reads the capability token for a bus that is not on loopback.
 The token is not a flag and the page does not receive it. Omit the flag for a loopback bus.
 The page listens on loopback. Any other listen address is refused.
 The page answers for the address it listens on. On loopback, localhost with that port is the same address.
-The person at the page supplies from, to, the body, and the cursor.
+Opening a conversation shows the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit.
+The person at the page supplies from, to, and the body.
 An empty transaction id is filled in the page when Publish is submitted.
-The server does not store the cursor or the transaction id and does not invent one.
+The server does not keep the place in the transcript or the transaction id, and it does not invent one.
 An ok publish clears the field. Any other result leaves the posted id there.
 The process runs until it is signalled.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {

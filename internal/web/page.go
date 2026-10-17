@@ -20,7 +20,6 @@ const (
 
 type page struct {
 	Kind          string
-	Title         string
 	Notice        string
 	Conversations []conversationRow
 	ListOutcome   string
@@ -30,8 +29,6 @@ type page struct {
 	StatusKnown   bool
 	ReadAction    string
 	PublishAction string
-	Cursor        string
-	Limit         string
 	Read          *readView
 	From          string
 	ToText        string
@@ -49,12 +46,11 @@ type conversationRow struct {
 }
 
 type readView struct {
-	Outcome    string
-	Reason     string
-	Messages   []client.Message
-	Full       bool
-	NextCursor int64
-	NextPage   string
+	Outcome  string
+	Reason   string
+	Messages []client.Message
+	Full     bool
+	NextPage string
 }
 
 type publishView struct {
@@ -63,6 +59,15 @@ type publishView struct {
 	AlreadyStored bool
 	Stored        bool
 	Message       *client.Message
+}
+
+// TabTitle is the browser tab label. The list is the product name.
+// A conversation adds its name so two transcripts stay distinct.
+func (p page) TabTitle() string {
+	if p.Name != "" {
+		return "Hotseat - " + p.Name
+	}
+	return "Hotseat"
 }
 
 func (s Server) render(w http.ResponseWriter, p page) {
@@ -82,7 +87,7 @@ func setPageHeaders(w http.ResponseWriter) {
 	// The body holds the transcript and, after a failed publish, the posted id.
 	w.Header().Set("Cache-Control", "no-store")
 	// Inline script fills an empty txid on Publish. default-src none would block it.
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// same-origin keeps a cross-site request from carrying the cursor in Referer.
 	// no-referrer would send Origin: null for this page's own POST.
@@ -97,7 +102,7 @@ const pageSource = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}}</title>
+<title>{{.TabTitle}}</title>
 <style>
 :root { color-scheme: light dark; }
 body { font-family: sans-serif; line-height: 1.45; max-width: 42rem; margin: 1.5rem auto; padding: 0 1rem; background: Canvas; color: CanvasText; }
@@ -108,6 +113,8 @@ input, textarea { width: 100%; box-sizing: border-box; padding: 0.35rem 0.5rem; 
 button { padding: 0.35rem 0.8rem; }
 section, form { margin: 1.25rem 0; }
 .message { border-top: 1px solid ButtonBorder; padding: 0.6rem 0; }
+#more { height: 1px; }
+#older-error:empty { display: none; }
 pre.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0.25rem 0 0; font-family: ui-monospace, monospace; }
 .hint, .meta { font-size: 0.9rem; }
 ul { padding-left: 1.2rem; }
@@ -142,21 +149,17 @@ ul { padding-left: 1.2rem; }
 <input type="hidden" name="conversation" value="{{.Name}}">
 <section id="transcript-section">
 <h2>Transcript</h2>
-<label for="cursor">Cursor <input id="cursor" name="cursor" value="{{.Cursor}}" placeholder="0" inputmode="numeric" autocomplete="off"></label>
-<label for="limit">Limit <input id="limit" name="limit" value="{{.Limit}}" placeholder="50" inputmode="numeric"></label>
-<button type="submit">Read</button>
-<p class="hint">The server forgets this cursor when the response is sent. It is shown here so you can send it again.</p>
 {{if .Read}}<p id="read-outcome">{{.Read.Outcome}}</p>
 {{if .Read.Reason}}<p id="read-reason">{{.Read.Reason}}</p>{{end}}
-{{if eq .Read.Outcome "ok"}}{{if eq (len .Read.Messages) 0}}<p id="transcript-empty">No messages after this cursor.</p>
+{{if eq .Read.Outcome "ok"}}{{if eq (len .Read.Messages) 0}}<p id="transcript-empty">No messages.</p>
 {{else}}<ol id="transcript">
 {{range .Read.Messages}}<li class="message" data-seq="{{.Seq}}">
 <p class="meta">seq <span class="seq">{{.Seq}}</span> {{.Time}} from <span class="from">{{.From}}</span> kind <span class="kind">{{.Kind}}</span> to {{range .To}}<span class="addressee">{{.}}</span> {{end}}txid <span class="txid">{{.TxID}}</span></p>
 <pre class="body">{{.Body}}</pre>
-</li>{{end}}</ol>{{end}}{{end}}
-{{if .Read.Full}}<p id="page-full">Page is full. The next cursor is <span id="next-cursor">{{.Read.NextCursor}}</span>.</p>
-<p><a id="next-page" href="{{.Read.NextPage}}">Read from cursor {{.Read.NextCursor}}</a></p>{{end}}
-{{end}}
+</li>{{end}}</ol>
+{{if .Read.Full}}<p id="older-error"></p>
+<div id="more" data-next="{{.Read.NextPage}}"></div>{{end}}
+{{end}}{{end}}{{end}}
 </section>
 <section id="publish-section">
 <h2>Publish</h2>
@@ -189,6 +192,67 @@ ul { padding-left: 1.2rem; }
     }
     field.value = hex;
   });
+  var more = document.getElementById("more");
+  var list = document.getElementById("transcript");
+  if (!more || !list || !more.getAttribute("data-next")) return;
+  var busy = false;
+  function visible(el) {
+    var r = el.getBoundingClientRect();
+    return r.top < window.innerHeight && r.bottom > 0;
+  }
+  function showOlderError(text) {
+    var el = document.getElementById("older-error");
+    if (el) el.textContent = text;
+  }
+  function olderFailure(doc) {
+    var notice = doc.getElementById("notice");
+    if (notice && notice.textContent) return notice.textContent;
+    var outcome = doc.getElementById("read-outcome");
+    if (outcome && outcome.textContent && outcome.textContent !== "ok") {
+      var reason = doc.getElementById("read-reason");
+      if (reason && reason.textContent) return outcome.textContent + " " + reason.textContent;
+      return outcome.textContent;
+    }
+    return "older messages did not load";
+  }
+  function applyOlder(doc) {
+    var nextList = doc.getElementById("transcript");
+    if (nextList) {
+      var items = nextList.querySelectorAll("li.message");
+      for (var i = 0; i < items.length; i++) list.appendChild(document.importNode(items[i], true));
+    }
+    var nextMore = doc.getElementById("more");
+    if (nextMore && nextMore.getAttribute("data-next")) more.setAttribute("data-next", nextMore.getAttribute("data-next"));
+    else more.removeAttribute("data-next");
+  }
+  function load() {
+    if (busy) return;
+    var url = more.getAttribute("data-next");
+    if (!url) return;
+    busy = true;
+    fetch(url).then(function (res) {
+      return res.text().then(function (html) { return { ok: res.ok, html: html }; });
+    }).then(function (got) {
+      var doc = new DOMParser().parseFromString(got.html, "text/html");
+      var outcome = doc.getElementById("read-outcome");
+      if (!got.ok || !outcome || outcome.textContent !== "ok") {
+        showOlderError(olderFailure(doc));
+        busy = false;
+        return;
+      }
+      showOlderError("");
+      applyOlder(doc);
+      busy = false;
+      if (more.getAttribute("data-next") && visible(more)) load();
+    }).catch(function () {
+      showOlderError("older messages did not load");
+      busy = false;
+    });
+  }
+  var obs = new IntersectionObserver(function (entries) {
+    for (var i = 0; i < entries.length; i++) if (entries[i].isIntersecting) load();
+  });
+  obs.observe(more);
 })();
 </script>
 {{end}}

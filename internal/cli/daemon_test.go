@@ -21,6 +21,31 @@ import (
 	"github.com/p3bot/hotseat/internal/store"
 )
 
+func TestRecordKeepsPageURL(t *testing.T) {
+	dir := t.TempDir()
+	const page = "http://127.0.0.1:4728"
+	if err := writeRecord(dir, 12, "127.0.0.1:4727", page); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := readRecord(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.PID != 12 || rec.Addr != "127.0.0.1:4727" || rec.Page != page {
+		t.Fatalf("%+v", rec)
+	}
+	if err := writeRecord(dir, 12, "127.0.0.1:4727", ""); err != nil {
+		t.Fatal(err)
+	}
+	rec, err = readRecord(dir)
+	if err != nil || rec.Page != "" || rec.Addr != "127.0.0.1:4727" {
+		t.Fatalf("%+v %v", rec, err)
+	}
+	if err := writeRecord(dir, 12, "127.0.0.1:4727", "notaurl"); err == nil {
+		t.Fatal("page without a URL was stored")
+	}
+}
+
 func TestBareStopTargetsSkipAddressWithoutNetNS(t *testing.T) {
 	storePIDs := []int{10}
 	owners := []listenOwner{{pid: 20, dir: t.TempDir()}}

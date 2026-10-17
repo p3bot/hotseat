@@ -30,6 +30,11 @@ const (
 	DefaultListen = "127.0.0.1:4728"
 )
 
+// URL is the address a browser opens for a page bound at hostport.
+func URL(hostport string) string {
+	return "http://" + hostport
+}
+
 // Server calls one bus.
 // Token is the capability secret. Empty omits the header.
 // Page responses do not include Token.
@@ -56,7 +61,6 @@ func (s Server) Handler() http.Handler {
 		if s.wrongHost(r) {
 			s.logger().Info("call", "op", "page", "outcome", bus.OutcomeRefused, "reason", "wrong host")
 			s.render(w, page{
-				Title:      "Page",
 				Notice:     "this page does not serve that host",
 				HTTPStatus: http.StatusForbidden,
 			})
@@ -151,10 +155,10 @@ func (s Server) handleList(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		s.render(w, page{Kind: kindList, Title: "Conversations", Notice: err.Error()})
+		s.render(w, page{Kind: kindList, Notice: err.Error()})
 		return
 	}
-	p := page{Kind: kindList, Title: "Conversations"}
+	p := page{Kind: kindList}
 	if res.Outcome != bus.OutcomeOK {
 		p.ListOutcome = res.Outcome
 		p.ListReason = res.Reason
@@ -169,7 +173,7 @@ func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	name := q.Get("conversation")
 	if !q.Has("conversation") || name == "" {
-		s.render(w, page{Title: "Conversation", Notice: "conversation is required"})
+		s.render(w, page{Notice: "conversation is required"})
 		return
 	}
 	p := conversationPage(name)
@@ -181,12 +185,13 @@ func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 		s.render(w, p)
 		return
 	}
-	asked := q.Has("cursor") || q.Has("limit")
-	if asked {
-		p.Cursor = q.Get("cursor")
-		p.Limit = q.Get("limit")
+	before, newest, ok := queryBefore(q)
+	if !ok {
+		p.Notice = "before must be an integer"
+		s.render(w, p)
+		return
 	}
-	if err := s.applyCursor(r.Context(), &p, asked); err != nil {
+	if err := s.fillRecent(r.Context(), &p, before, newest); err != nil {
 		if r.Context().Err() != nil {
 			return
 		}
@@ -198,12 +203,12 @@ func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 func (s Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.logger().Error("read form", "err", err)
-		s.render(w, page{Title: "Conversation", Notice: err.Error()})
+		s.render(w, page{Notice: err.Error()})
 		return
 	}
 	name := r.PostForm.Get("conversation")
 	if name == "" {
-		s.render(w, page{Title: "Conversation", Notice: "conversation is required"})
+		s.render(w, page{Notice: "conversation is required"})
 		return
 	}
 	p := conversationPage(name)
@@ -216,7 +221,7 @@ func (s Server) handleRead(w http.ResponseWriter, r *http.Request) {
 		s.render(w, p)
 		return
 	}
-	if err := s.applyCursor(r.Context(), &p, true); err != nil {
+	if err := s.fillRecent(r.Context(), &p, 0, true); err != nil {
 		if r.Context().Err() != nil {
 			return
 		}
@@ -229,7 +234,6 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if foreignPublish(r) {
 		s.logger().Info("call", "op", "publish", "outcome", bus.OutcomeRefused, "reason", "cross-site request")
 		s.render(w, page{
-			Title:      "Publish",
 			Notice:     "this publish did not come from this page",
 			HTTPStatus: http.StatusForbidden,
 		})
@@ -237,12 +241,12 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := r.ParseForm(); err != nil {
 		s.logger().Error("publish form", "err", err)
-		s.render(w, page{Title: "Publish", Notice: err.Error()})
+		s.render(w, page{Notice: err.Error()})
 		return
 	}
 	name := r.PostForm.Get("conversation")
 	if name == "" {
-		p := page{Title: "Publish", Notice: "conversation is required"}
+		p := page{Notice: "conversation is required"}
 		fillPosted(&p, r)
 		s.render(w, p)
 		return
@@ -289,7 +293,7 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		p.Status = res.Conversation.Status
 		p.StatusKnown = true
 	}
-	if err := s.applyCursor(r.Context(), &p, false); err != nil {
+	if err := s.fillRecent(r.Context(), &p, 0, true); err != nil {
 		if r.Context().Err() != nil {
 			return
 		}
@@ -306,7 +310,6 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 func conversationPage(name string) page {
 	return page{
 		Kind:          kindConversation,
-		Title:         name,
 		Name:          name,
 		ReadAction:    routeConversation,
 		PublishAction: routePublish,
@@ -314,8 +317,6 @@ func conversationPage(name string) page {
 }
 
 func fillPosted(p *page, r *http.Request) {
-	p.Cursor = r.PostForm.Get("cursor")
-	p.Limit = r.PostForm.Get("limit")
 	p.From = r.PostForm.Get("from")
 	p.ToText = r.PostForm.Get("to")
 	p.MessageKind = r.PostForm.Get("kind")
@@ -323,24 +324,19 @@ func fillPosted(p *page, r *http.Request) {
 	p.TxID = r.PostForm.Get("txid")
 }
 
-// applyCursor reads when the request asked for a transcript.
-// readAsked is set for a read. A publish leaves it false and reads only
-// when the request carried a cursor or a limit. The values stay on the
-// page for the response and are not kept.
-func (s Server) applyCursor(ctx context.Context, p *page, readAsked bool) error {
-	if !readAsked && p.Cursor == "" && p.Limit == "" {
-		return nil
+// transcriptLimit is one group. The newest group is the one on screen. The next group is older.
+var transcriptLimit int64 = 50
+
+// queryBefore reads the older-group boundary. An absent value selects the newest group.
+func queryBefore(q url.Values) (before int64, newest, ok bool) {
+	if !q.Has("before") {
+		return 0, true, true
 	}
-	if p.Cursor == "" || p.Limit == "" {
-		p.Notice = "cursor and limit are both required"
-		return nil
+	n, err := strconv.ParseInt(q.Get("before"), 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false, false
 	}
-	cursor, limit, ok := parseCursorLimit(p.Cursor, p.Limit)
-	if !ok {
-		p.Notice = "cursor and limit must be integers"
-		return nil
-	}
-	return s.fillRead(ctx, p, cursor, limit)
+	return n, false, true
 }
 
 func (s Server) list(ctx context.Context) (client.Result, error) {
@@ -376,29 +372,80 @@ func (s Server) fillStatus(ctx context.Context, p *page) error {
 	return nil
 }
 
-func (s Server) fillRead(ctx context.Context, p *page, cursor, limit int64) error {
-	start := time.Now()
-	res, err := client.Do(ctx, s.BusAddress, "read", s.Token, client.ReadRequest{
-		Conversation: p.Name,
-		Cursor:       cursor,
-		Limit:        limit,
-	})
+// fillRecent shows one group, newest message first.
+// The bus read walks oldest first, so this keeps a window of transcriptLimit.
+func (s Server) fillRecent(ctx context.Context, p *page, before int64, newest bool) error {
+	view, err := s.recent(ctx, p.Name, before, newest)
 	if err != nil {
 		return err
 	}
-	s.logCall("read", p.Name, res, start)
-	view := &readView{Outcome: res.Outcome, Reason: res.Reason}
-	if res.Messages != nil {
-		view.Messages = *res.Messages
-	}
-	if res.Outcome == bus.OutcomeOK && limit > 0 && int64(len(view.Messages)) == limit && len(view.Messages) > 0 {
-		last := view.Messages[len(view.Messages)-1].Seq
-		view.Full = true
-		view.NextCursor = last
-		view.NextPage = readHref(p.Name, strconv.FormatInt(last, 10), strconv.FormatInt(limit, 10))
-	}
 	p.Read = view
 	return nil
+}
+
+func (s Server) recent(ctx context.Context, name string, before int64, newest bool) (*readView, error) {
+	var window []client.Message
+	more := false
+	cursor := int64(0)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		start := time.Now()
+		res, err := client.Do(ctx, s.BusAddress, "read", s.Token, client.ReadRequest{
+			Conversation: name,
+			Cursor:       cursor,
+			Limit:        transcriptLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		s.logCall("read", name, res, start)
+		view := &readView{Outcome: res.Outcome, Reason: res.Reason}
+		if res.Outcome != bus.OutcomeOK {
+			return view, nil
+		}
+		if res.Messages == nil || len(*res.Messages) == 0 {
+			break
+		}
+		for _, m := range *res.Messages {
+			if !newest && m.Seq >= before {
+				return groupView(name, window, more), nil
+			}
+			if int64(len(window)) == transcriptLimit {
+				copy(window, window[1:])
+				window[len(window)-1] = m
+				more = true
+				continue
+			}
+			window = append(window, m)
+		}
+		if int64(len(*res.Messages)) < transcriptLimit {
+			break
+		}
+		cursor = (*res.Messages)[len(*res.Messages)-1].Seq
+	}
+	return groupView(name, window, more), nil
+}
+
+func groupView(name string, window []client.Message, more bool) *readView {
+	view := &readView{Outcome: bus.OutcomeOK, Messages: newestFirst(window)}
+	if more && len(window) > 0 {
+		view.Full = true
+		view.NextPage = olderHref(name, window[0].Seq)
+	}
+	return view
+}
+
+func newestFirst(msgs []client.Message) []client.Message {
+	if len(msgs) == 0 {
+		return nil
+	}
+	out := make([]client.Message, len(msgs))
+	for i := range msgs {
+		out[len(msgs)-1-i] = msgs[i]
+	}
+	return out
 }
 
 func (s Server) logCall(op, conv string, res client.Result, start time.Time) {
@@ -436,24 +483,11 @@ func conversationHref(name string) string {
 	return routeConversation + "?" + v.Encode()
 }
 
-func readHref(name, cursor, limit string) string {
+func olderHref(name string, before int64) string {
 	v := url.Values{}
 	v.Set("conversation", name)
-	v.Set("cursor", cursor)
-	v.Set("limit", limit)
+	v.Set("before", strconv.FormatInt(before, 10))
 	return routeConversation + "?" + v.Encode()
-}
-
-func parseCursorLimit(cursorRaw, limitRaw string) (int64, int64, bool) {
-	cursor, err := strconv.ParseInt(cursorRaw, 10, 64)
-	if err != nil {
-		return 0, 0, false
-	}
-	limit, err := strconv.ParseInt(limitRaw, 10, 64)
-	if err != nil {
-		return 0, 0, false
-	}
-	return cursor, limit, true
 }
 
 // wrongHost reports a request whose host is not this page.

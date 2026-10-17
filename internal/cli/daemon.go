@@ -31,6 +31,7 @@ import (
 
 	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/store"
+	"github.com/p3bot/hotseat/internal/web"
 )
 
 const (
@@ -64,11 +65,13 @@ type busProc struct {
 	lockHeld bool
 	pid      int
 	addr     string
+	page     string
 }
 
 type pidRecord struct {
 	PID  int
 	Addr string
+	Page string
 }
 
 type startupReport struct {
@@ -76,6 +79,7 @@ type startupReport struct {
 	PID    int    `json:"pid"`
 	Listen string `json:"listen"`
 	Store  string `json:"store"`
+	Page   string `json:"page,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
 
@@ -227,7 +231,7 @@ func startDaemon(ctx context.Context, out io.Writer, storeDir, addr, tokenFile s
 		return err
 	}
 	if got.running {
-		return printBus(out, got.pid, got.addr, dir)
+		return printBus(out, got.pid, got.addr, dir, got.page)
 	}
 	cfg, err := configureBus(storeDir, addr, tokenFile, maxBody)
 	if err != nil {
@@ -238,15 +242,44 @@ func startDaemon(ctx context.Context, out io.Writer, storeDir, addr, tokenFile s
 		return err
 	}
 	if got.running {
-		return printBus(out, got.pid, got.addr, cfg.store)
+		return printBus(out, got.pid, got.addr, cfg.store, got.page)
 	}
 	if got.lockHeld {
 		return store.ErrHeld
 	}
+	pageAddr, err := pageListen(cfg.bind)
+	if err != nil {
+		return err
+	}
 	if err := probeListen(cfg.bind, cfg.token); err != nil {
 		return err
 	}
+	if err := probePage(pageAddr); err != nil {
+		return err
+	}
 	return spawnBus(ctx, out, cfg, debug)
+}
+
+// pageListen is the loopback page for a bus address. The port is the bus port plus one.
+// The default bus at 127.0.0.1:4727 serves http://127.0.0.1:4728.
+func pageListen(busAddr string) (string, error) {
+	_, port, err := net.SplitHostPort(busAddr)
+	if err != nil {
+		return "", fmt.Errorf("page listen address: %w", err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 0 || n >= 65535 {
+		return "", fmt.Errorf("page port for %s does not fit", busAddr)
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(n+1)), nil
+}
+
+func probePage(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("page listen on %s: %w", addr, err)
+	}
+	return ln.Close()
 }
 
 func spawnBus(ctx context.Context, out io.Writer, cfg busConfig, debug bool) error {
@@ -315,7 +348,7 @@ func spawnBus(ctx context.Context, out io.Writer, cfg busConfig, debug bool) err
 		_ = cmd.Wait()
 		if strings.Contains(got.rep.Error, store.ErrHeld.Error()) {
 			if live, ok := awaitRunning(ctx, cfg.store); ok {
-				return printBus(out, live.pid, live.addr, cfg.store)
+				return printBus(out, live.pid, live.addr, cfg.store, live.page)
 			}
 		}
 		if got.rep.Error != "" {
@@ -323,7 +356,7 @@ func spawnBus(ctx context.Context, out io.Writer, cfg busConfig, debug bool) err
 		}
 		return errors.New("bus did not start")
 	}
-	if got.rep.PID != cmd.Process.Pid || got.rep.Listen == "" || got.rep.Store == "" {
+	if got.rep.PID != cmd.Process.Pid || got.rep.Listen == "" || got.rep.Store == "" || got.rep.Page == "" {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return errors.New("bus did not report its listener")
@@ -331,7 +364,7 @@ func spawnBus(ctx context.Context, out io.Writer, cfg busConfig, debug bool) err
 	if err := cmd.Process.Release(); err != nil {
 		return err
 	}
-	return printBus(out, got.rep.PID, got.rep.Listen, got.rep.Store)
+	return printBus(out, got.rep.PID, got.rep.Listen, got.rep.Store, got.rep.Page)
 }
 
 func awaitRunning(ctx context.Context, dir string) (busProc, bool) {
@@ -815,8 +848,14 @@ func sameListen(a, b string) bool {
 	return aip.Equal(bip)
 }
 
-func printBus(w io.Writer, pid int, addr, dir string) error {
-	_, err := fmt.Fprintf(w, "pid: %d\nlisten: %s\nstore: %s\n", pid, addr, dir)
+func printBus(w io.Writer, pid int, addr, dir, page string) error {
+	if _, err := fmt.Fprintf(w, "pid: %d\nlisten: %s\nstore: %s\n", pid, addr, dir); err != nil {
+		return err
+	}
+	if page == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "page: %s\n", page)
 	return err
 }
 
@@ -843,6 +882,7 @@ func serveDetached(ctx context.Context, storeDir, addr, tokenFile string, maxBod
 
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
+	bound := ln.Addr().String()
 	ready := newAcceptReady(ln)
 	errCh := make(chan error, 1)
 	go func() {
@@ -857,32 +897,78 @@ func serveDetached(ctx context.Context, storeDir, addr, tokenFile string, maxBod
 		_ = st.Close()
 		return reportBus(startup, startupReport{Error: startErr.Error()})
 	}
-
-	pid := os.Getpid()
-	bound := ln.Addr().String()
-	if err := writeRecord(dir, pid, bound); err != nil {
+	pageAddr, err := pageListen(bound)
+	if err != nil {
 		stop()
 		<-errCh
 		_ = st.Close()
 		return reportBus(startup, startupReport{Error: err.Error()})
 	}
-	if err := reportBus(startup, startupReport{OK: true, PID: pid, Listen: bound, Store: dir}); err != nil {
+	pageLn, err := net.Listen("tcp", pageAddr)
+	if err != nil {
 		stop()
 		<-errCh
+		_ = st.Close()
+		return reportBus(startup, startupReport{Error: fmt.Errorf("page listen on %s: %w", pageAddr, err).Error()})
+	}
+	pageReady := newAcceptReady(pageLn)
+	pageCh := make(chan error, 1)
+	go func() {
+		pageCh <- web.Serve(ctx, pageReady, bound, token, newLogger(debug))
+	}()
+	fromPage, pageErr := waitListening(ctx, pageReady.ch, pageCh)
+	if pageErr != nil {
+		stop()
+		if !fromPage {
+			<-pageCh
+		}
+		<-errCh
+		_ = st.Close()
+		return reportBus(startup, startupReport{Error: pageErr.Error()})
+	}
+
+	pid := os.Getpid()
+	page := web.URL(pageLn.Addr().String())
+	if err := writeRecord(dir, pid, bound, page); err != nil {
+		stop()
+		<-errCh
+		<-pageCh
+		_ = st.Close()
+		return reportBus(startup, startupReport{Error: err.Error()})
+	}
+	if err := reportBus(startup, startupReport{OK: true, PID: pid, Listen: bound, Store: dir, Page: page}); err != nil {
+		stop()
+		<-errCh
+		<-pageCh
 		_ = removeRecord(dir, pid)
 		_ = st.Close()
 		return err
 	}
 
 	// Remove the record before releasing the lock so a later start cannot delete a newer record.
-	err = <-errCh
-	if rerr := removeRecord(dir, pid); err == nil {
-		err = rerr
+	var runErr error
+	select {
+	case runErr = <-errCh:
+	case runErr = <-pageCh:
 	}
-	if cerr := st.Close(); err == nil {
-		err = cerr
+	stop()
+	select {
+	case other := <-errCh:
+		if runErr == nil {
+			runErr = other
+		}
+	case other := <-pageCh:
+		if runErr == nil {
+			runErr = other
+		}
 	}
-	return err
+	if rerr := removeRecord(dir, pid); runErr == nil {
+		runErr = rerr
+	}
+	if cerr := st.Close(); runErr == nil {
+		runErr = cerr
+	}
+	return runErr
 }
 
 func waitListening(ctx context.Context, ready <-chan struct{}, errCh <-chan error) (fromServe bool, err error) {
@@ -957,7 +1043,7 @@ func attachLog(dir string) error {
 func inspectBus(dir string) (busProc, error) {
 	rec, recErr := readRecord(dir)
 	if recErr == nil && busProcessMatches(rec.PID, dir) {
-		return busProc{running: true, pid: rec.PID, addr: rec.Addr}, nil
+		return busProc{running: true, pid: rec.PID, addr: rec.Addr, page: rec.Page}, nil
 	}
 	pids, err := busPIDs(dir)
 	if err != nil {
@@ -971,11 +1057,11 @@ func inspectBus(dir string) (busProc, error) {
 		return busProc{lockHeld: held}, nil
 	}
 	pid := chooseBus(pids, dir)
-	addr, err := busListenAddr(pid)
+	addr, page, err := splitListens(pid)
 	if err != nil {
 		return busProc{}, err
 	}
-	return busProc{running: true, pid: pid, addr: addr}, nil
+	return busProc{running: true, pid: pid, addr: addr, page: page}, nil
 }
 
 func busPIDs(dir string) ([]int, error) {
@@ -998,6 +1084,7 @@ func busPIDs(dir string) ([]int, error) {
 }
 
 func chooseBus(pids []int, dir string) int {
+	// A page adds a second socket, so this preference skips that process. The store directory below still selects it.
 	for _, pid := range pids {
 		addrs, err := processListenAddrs(pid)
 		if err == nil && len(addrs) == 1 {
@@ -1092,21 +1179,39 @@ func busesGone(pids []int, dir string) bool {
 	return true
 }
 
-func busListenAddr(pid int) (string, error) {
+// The page socket is not a second bus address.
+func splitListens(pid int) (busAddr, page string, err error) {
 	addrs, err := processListenAddrs(pid)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	switch len(addrs) {
-	case 1:
-		return addrs[0], nil
-	case 0:
-		if addr := requestedListen(pid); addr != "" {
-			return addr, nil
+	want := requestedListen(pid)
+	pageAddr, _ := pageListen(want)
+	var busAddrs []string
+	for _, addr := range addrs {
+		if pageAddr != "" && sameListen(addr, pageAddr) && !sameListen(addr, want) {
+			if page == "" {
+				page = web.URL(addr)
+			}
+			continue
 		}
-		return "", errors.New("bus listen address is unknown")
+		busAddrs = append(busAddrs, addr)
+	}
+	switch len(busAddrs) {
+	case 1:
+		return busAddrs[0], page, nil
+	case 0:
+		if want != "" {
+			return want, page, nil
+		}
+		return "", "", errors.New("bus listen address is unknown")
 	default:
-		return "", errors.New("bus has more than one listen address")
+		for _, addr := range busAddrs {
+			if want != "" && sameListen(addr, want) {
+				return addr, page, nil
+			}
+		}
+		return "", "", errors.New("bus has more than one listen address")
 	}
 }
 
@@ -1328,6 +1433,11 @@ func readRecord(dir string) (pidRecord, error) {
 			}
 			rec.Addr = val
 			sawAddr = true
+		case "page":
+			if val == "" || strings.ContainsAny(val, "\r\n") || !strings.HasPrefix(val, "http://") {
+				return pidRecord{}, errors.New("process record is corrupt")
+			}
+			rec.Page = val
 		default:
 			return pidRecord{}, errors.New("process record is corrupt")
 		}
@@ -1338,8 +1448,11 @@ func readRecord(dir string) (pidRecord, error) {
 	return rec, nil
 }
 
-func writeRecord(dir string, pid int, addr string) error {
+func writeRecord(dir string, pid int, addr, page string) error {
 	if pid <= 1 || addr == "" || strings.ContainsAny(addr, "\r\n=") {
+		return errors.New("process record is invalid")
+	}
+	if page != "" && (strings.ContainsAny(page, "\r\n=") || !strings.HasPrefix(page, "http://")) {
 		return errors.New("process record is invalid")
 	}
 	tmp, err := os.CreateTemp(dir, ".hotseat.pid.*")
@@ -1354,7 +1467,11 @@ func writeRecord(dir string, pid int, addr string) error {
 			_ = os.Remove(tmpName)
 		}
 	}()
-	if _, err := fmt.Fprintf(tmp, "pid=%d\naddr=%s\n", pid, addr); err != nil {
+	text := fmt.Sprintf("pid=%d\naddr=%s\n", pid, addr)
+	if page != "" {
+		text += "page=" + page + "\n"
+	}
+	if _, err := tmp.WriteString(text); err != nil {
 		return err
 	}
 	if err := tmp.Chmod(0o600); err != nil {

@@ -28,6 +28,7 @@ import (
 
 	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/store"
+	"github.com/p3bot/hotseat/internal/web"
 )
 
 // Version is set at build time with -X.
@@ -174,9 +175,11 @@ func newBusStartCmd() *cobra.Command {
 		Long: `Listen for create, publish, read, wait, close, list, register, member, session, and members. The process runs
 in a new session with no controlling terminal. Stdin is discarded. Stdout and
 stderr append to ` + logName + ` in the store directory. start returns after the
-listener is bound and the database is open, and prints the pid, the listen
-address, and the store path. A second start, while that bus is running, prints
-the running process and does not change it.
+listener is bound, the database is open, and the page is listening. It prints
+the pid, the listen address, the store path, and the page URL. The page listens
+on 127.0.0.1 at the next port and calls this bus. It does not open the database.
+The default page is ` + web.URL(web.DefaultListen) + `. A second start, while that
+bus is running, prints the running process and does not change it.
 
 The database is ` + store.FileName + ` inside the store directory. When --store
 is omitted the directory is $XDG_DATA_HOME/hotseat. An unset, empty, or relative
