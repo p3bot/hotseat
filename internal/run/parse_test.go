@@ -50,7 +50,7 @@ func TestTaskSlugDropsCategoryAndHotseat(t *testing.T) {
 	if err != nil || design != "design" {
 		t.Fatalf("design %q %v", design, err)
 	}
-	if got := bareConversation(slug, "foo-x234"); got != "review-ticket-foo-x234" {
+	if got := bareConversation(slug, "foo-x234"); got != "foo-x234-review-ticket" {
 		t.Fatalf("bare %s", got)
 	}
 	if got := bareConversation("design", ""); got != "design" {

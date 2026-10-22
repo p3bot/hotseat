@@ -98,7 +98,7 @@ hello
 
 ## Run
 
-`hotseat run` drives one conversation on a bus that is already listening. It does not start the bus and it does not open the database. It publishes the task as `owner`, launches each roster member through `start`, and exits when the acting seat posts `done` or a safety rail trips. A second run of the same task creates a new conversation unless `--conversation` names the existing one.
+`hotseat run` drives one conversation on a bus that is already listening. It does not start the bus and it does not open the database. It publishes the task as `owner`, launches each roster member through `start`, and exits when the acting seat posts `done` or a safety rail trips. The bare name is the ticket id, a hyphen, and the task slug. With no ticket the slug is the whole name. A taken bare name gains one 4-character code. A second run of the same task creates a new conversation unless `--conversation` names the existing one.
 
 The roster is `--agents` or `HOTSEAT_AGENTS`, a space-separated list of `name=module:model`. There is no `HOTSEAT_MEMBERS`. The flag wins over the matching `HOTSEAT_*` variable. `--seat` or `HOTSEAT_SEAT` names the seat. When both are absent, the seat is the first roster name in ASCII byte order. `--prompts` or `HOTSEAT_PROMPTS` and `--instructions` or `HOTSEAT_INSTRUCTIONS` are stored on the conversation. `--ticket` or `HOTSEAT_TICKET` selects the code-root the members launch in. Without a ticket, they launch in the directory `run` was started in.
 
@@ -108,7 +108,7 @@ Stdout is `key: value`, the same text result as the other client commands. The l
 
 ```bash
 hotseat run review/ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
-hotseat run --conversation review-ticket-foo-x234 --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"
+hotseat run --conversation foo-x234-review-ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"
 ```
 
 ## Attend

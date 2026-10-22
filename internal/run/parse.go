@@ -120,11 +120,12 @@ func taskSlug(idLine string) (string, error) {
 	return s, nil
 }
 
+// bareConversation leads with the ticket id so one work item sorts together.
 func bareConversation(slug, ticket string) string {
 	if ticket == "" {
 		return slug
 	}
-	return slug + "-" + ticket
+	return ticket + "-" + slug
 }
 
 func nameLimit(name string) error {

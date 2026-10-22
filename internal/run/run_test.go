@@ -347,7 +347,7 @@ func TestRunCreatesNamedConversationAndPublishesInstructions(t *testing.T) {
 	deadline := time.Now().Add(8 * time.Second)
 	var conv client.Conversation
 	for time.Now().Before(deadline) {
-		if c, ok := h.conv("review-ticket-foo-x234"); ok {
+		if c, ok := h.conv("foo-x234-review-ticket"); ok {
 			conv = c
 			break
 		}
@@ -387,7 +387,7 @@ func TestRunCreatesNamedConversationAndPublishesInstructions(t *testing.T) {
 			t.Fatalf("cwd %s", c.Dir)
 		}
 	}
-	if !strings.Contains(stdout, "conversation: review-ticket-foo-x234") || !strings.Contains(stdout, "outcome: done") {
+	if !strings.Contains(stdout, "conversation: foo-x234-review-ticket") || !strings.Contains(stdout, "outcome: done") {
 		t.Fatalf("stdout %s", stdout)
 	}
 }
@@ -402,12 +402,12 @@ func TestSecondRunMintsOneCodeAndDoesNotPublishIntoTheFirst(t *testing.T) {
 	}()
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := h.conv("review-ticket-foo-x234"); ok {
+		if _, ok := h.conv("foo-x234-review-ticket"); ok {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	h.publish("review-ticket-foo-x234", "alpha", "done", "finished", nil)
+	h.publish("foo-x234-review-ticket", "alpha", "done", "finished", nil)
 	cancel()
 	time.Sleep(50 * time.Millisecond)
 	h2 := newHarness(t)
@@ -425,7 +425,7 @@ func TestSecondRunMintsOneCodeAndDoesNotPublishIntoTheFirst(t *testing.T) {
 		res := h.do("list", struct{}{})
 		if res.Conversations != nil {
 			for _, c := range *res.Conversations {
-				if strings.HasPrefix(c.Name, "review-ticket-foo-x234-") && c.Name != "review-ticket-foo-x234" {
+				if strings.HasPrefix(c.Name, "foo-x234-review-ticket-") && c.Name != "foo-x234-review-ticket" {
 					second = c
 				}
 			}
@@ -438,14 +438,14 @@ func TestSecondRunMintsOneCodeAndDoesNotPublishIntoTheFirst(t *testing.T) {
 	if second.Name == "" {
 		t.Fatal("no coded conversation")
 	}
-	code := strings.TrimPrefix(second.Name, "review-ticket-foo-x234-")
+	code := strings.TrimPrefix(second.Name, "foo-x234-review-ticket-")
 	if len(code) != 4 || strings.Contains(code, "-") || !strings.ContainsRune(LetterAlphabet, rune(code[0])) {
 		t.Fatalf("code %q", code)
 	}
 	h.publish(second.Name, "alpha", "done", "finished", nil)
 	cancel2()
 	n := 0
-	for _, m := range h.messages("review-ticket-foo-x234") {
+	for _, m := range h.messages("foo-x234-review-ticket") {
 		if m.Kind == kindInstructions {
 			n++
 		}
@@ -463,7 +463,7 @@ func TestOversizeBodyUppercaseAndMissingModuleCreateNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("oversize created")
 	}
-	if _, ok := h.conv("review-ticket-foo-x234"); ok {
+	if _, ok := h.conv("foo-x234-review-ticket"); ok {
 		t.Fatal("conversation exists")
 	}
 	_ = stderr

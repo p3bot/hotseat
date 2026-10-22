@@ -47,12 +47,14 @@ stored on the binding. --address and --token-file follow the other client
 commands. A non-default address or a token path is passed only in the member
 launch prompt. The token value is not printed.
 
+The bare name is the ticket id, a hyphen, and the task slug. With no ticket
+the slug is the whole name. A taken bare name gains one 4-character code.
 A second run of the same task creates a new conversation unless --conversation
 names the existing one. agy (Antigravity CLI) has no hotseat module. Pass the
 task query when creating. When --conversation names a conversation that is
 not on the bus, the task argument is required.`,
 		Example: `  hotseat run review/ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
-  hotseat run --conversation review-ticket-foo-x234 --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"`,
+  hotseat run --conversation foo-x234-review-ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
