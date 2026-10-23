@@ -39,11 +39,12 @@ The default bus address is ` + bus.DefaultListen + `. The default page address i
 The token is not a flag and the page does not receive it. Omit the flag for a loopback bus.
 The page listens on loopback. Any other listen address is refused.
 The page answers for the address it listens on. On loopback, localhost with that port is the same address.
-Opening a conversation shows the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit.
-The person at the page supplies from, to, and the body.
-An empty transaction id is filled in the page when Publish is submitted.
+The top bar searches every conversation by name, task, and ticket, newest activity first. Conversations lists the open ones in that order.
+Opening one shows its name, status, task, ticket, seat, and directory, then the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit.
+Send opens the form. The person at the page supplies from, to, kind, and the body.
+An empty transaction id is filled in the page when Send is submitted.
 The server does not keep the place in the transcript or the transaction id, and it does not invent one.
-An ok publish clears the field. Any other result leaves the posted id there.
+An ok send clears the field. Any other result leaves the form open with the posted id.
 The process runs until it is signalled.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			token, err := tokenFromFlag(cmd)

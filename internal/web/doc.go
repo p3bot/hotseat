@@ -8,10 +8,15 @@
 // and publishes a message. It is a client of a running bus. It does not
 // open the store. hotseat bus start serves the page on 127.0.0.1 at the next
 // port. The default is DefaultListen.
-// Opening a conversation shows the newest 50 messages, latest first.
+// The top bar searches every conversation by name, task, and ticket, newest
+// activity first. Conversations lists the open ones in that order.
+// Opening a conversation shows its name, status, task, ticket, seat, and
+// directory, then the newest 50 messages, latest first.
 // The bottom of that group loads the next older 50. The server does not
-// keep that place. The page script fills an empty transaction id when Publish is
-// submitted. The server forwards the posted id and does not generate one.
+// keep that place. Send opens the publish form. The page script fills an
+// empty transaction id when Send is submitted. A refused send leaves the
+// form open with the posted values. The server forwards the posted id and
+// does not generate one.
 // The capability token is sent to the bus and is not written into the page
 // or the logs. The page listens on
 // loopback. Any other socket is closed. It answers for the host it listens

@@ -69,11 +69,10 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	_, body, hdr = getPage(t, page.URL+"/")
 	assertNoCookie(t, hdr)
 	alpha := strings.Index(body, ">alpha<")
-	beta := strings.Index(body, ">beta<")
-	if alpha < 0 || beta < alpha {
-		t.Fatalf("order alpha %d beta %d\n%s", alpha, beta, body)
+	if alpha < 0 || strings.Contains(body, ">beta<") || !strings.Contains(body, `data-name="beta"`) {
+		t.Fatalf("open list alpha %d\n%s", alpha, body)
 	}
-	if !strings.Contains(body, `class="status">open<`) || !strings.Contains(body, `class="status">closed<`) {
+	if !strings.Contains(body, `class="status">open<`) || strings.Contains(body, `class="status">closed<`) {
 		t.Fatalf("status\n%s", body)
 	}
 	_, body, _ = getPage(t, page.URL+"/c?conversation=beta")
@@ -82,6 +81,98 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "cursor=") {
 		t.Fatalf("log stored a cursor: %s", logs.String())
+	}
+}
+
+func TestStoredSendRefreshesActivityOrder(t *testing.T) {
+	addr := newBus(t, "", false)
+	page, _ := newPage(t, addr, "")
+	createConv(t, addr, "", "alpha")
+	createConv(t, addr, "", "beta")
+	publishMsg(t, addr, "", "beta", "alice", nil, "old", "b")
+
+	form := url.Values{}
+	form.Set("conversation", "alpha")
+	form.Set("from", "alice")
+	form.Set("kind", "say")
+	form.Set("body", "new")
+	form.Set("txid", "a")
+	_, body, _ := postPage(t, page.URL+"/publish", form)
+	if !strings.Contains(body, `id="stored">Stored.<`) {
+		t.Fatalf("stored\n%s", body)
+	}
+	alpha := strings.Index(body, `data-name="alpha"`)
+	beta := strings.Index(body, `data-name="beta"`)
+	if alpha < 0 || beta < 0 || alpha > beta {
+		t.Fatalf("index alpha %d beta %d\n%s", alpha, beta, body)
+	}
+}
+
+func TestEmptyListNamesClosedConversations(t *testing.T) {
+	addr := newBus(t, "", false)
+	page, _ := newPage(t, addr, "")
+	_, body, _ := getPage(t, page.URL+"/")
+	if !strings.Contains(body, `id="empty">No conversations.<`) {
+		t.Fatalf("fresh\n%s", body)
+	}
+	createConv(t, addr, "", "alpha")
+	closed := busCall(t, addr, "", "close", client.CloseRequest{Conversation: "alpha"})
+	if closed.Outcome != bus.OutcomeOK {
+		t.Fatalf("close %+v", closed)
+	}
+	_, body, _ = getPage(t, page.URL+"/")
+	if !strings.Contains(body, `id="empty">No open conversations.<`) || !strings.Contains(body, `data-name="alpha"`) {
+		t.Fatalf("closed\n%s", body)
+	}
+}
+
+func TestOpenListFollowsNewestActivity(t *testing.T) {
+	addr := newBus(t, "", false)
+	page, _ := newPage(t, addr, "")
+	created := busCall(t, addr, "", "create", client.CreateRequest{
+		Name: "alpha", Task: "tasks:review", Ticket: "foo-x234", Seat: "bravo", Directory: "/tmp/work",
+		Roster: []string{"bravo"},
+	})
+	if created.Outcome != bus.OutcomeOK {
+		t.Fatalf("create %+v", created)
+	}
+	createConv(t, addr, "", "beta")
+	publishMsg(t, addr, "", "alpha", "alice", []string{}, "one", "a")
+	publishMsg(t, addr, "", "beta", "alice", []string{}, "two", "b")
+
+	_, body, _ := getPage(t, page.URL+"/")
+	beta := strings.Index(body, ">beta<")
+	alpha := strings.Index(body, ">alpha<")
+	if beta < 0 || alpha < beta {
+		t.Fatalf("list beta %d alpha %d\n%s", beta, alpha, body)
+	}
+	betaName := strings.Index(body, `data-name="beta"`)
+	alphaName := strings.Index(body, `data-name="alpha"`)
+	if betaName < 0 || alphaName < betaName {
+		t.Fatalf("index beta %d alpha %d\n%s", betaName, alphaName, body)
+	}
+	_, conv, _ := getPage(t, page.URL+"/c?conversation=alpha")
+	if !strings.Contains(conv, `id="task">tasks:review<`) || !strings.Contains(conv, `id="ticket">foo-x234<`) || !strings.Contains(conv, `id="seat">bravo<`) || !strings.Contains(conv, `id="directory">/tmp/work<`) || !strings.Contains(conv, `id="send-pen"`) {
+		t.Fatalf("header\n%s", conv)
+	}
+}
+
+func TestActivityOrderPutsNewestFirst(t *testing.T) {
+	cs := []client.Conversation{
+		{Name: "old", Activity: "2020-01-01T00:00:02Z"},
+		{Name: "new", Activity: "2020-01-01T00:00:02.5Z"},
+		{Name: "quiet"},
+		{Name: "same", Activity: "2020-01-01T00:00:02.5Z"},
+		{Name: "also", Activity: "nope"},
+	}
+	got := ordered(&cs)
+	names := make([]string, len(got))
+	for i, c := range got {
+		names[i] = c.Name
+	}
+	want := []string{"new", "same", "old", "also", "quiet"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("order %v", names)
 	}
 }
 
@@ -175,6 +266,9 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	if strings.Contains(stored, `value="idem-9f3a"`) || !strings.Contains(stored, `id="txid" name="txid" value=""`) {
 		t.Fatalf("ok publish kept the field\n%s", stored)
 	}
+	if strings.Contains(stored, `id="send-dialog" data-send-open`) || strings.Contains(stored, `id="send-dialog" open`) || !strings.Contains(stored, `id="send-pen"`) {
+		t.Fatalf("stored send\n%s", stored)
+	}
 	if !strings.Contains(stored, "crypto.getRandomValues") || !strings.Contains(hdr.Get("Content-Security-Policy"), "script-src 'unsafe-inline'") {
 		t.Fatalf("script or policy\n%s\n%s", hdr.Get("Content-Security-Policy"), stored)
 	}
@@ -197,6 +291,9 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	_, conflict, _ := postPage(t, page.URL+"/publish", changed)
 	if !strings.Contains(conflict, `id="publish-outcome">refused<`) || !strings.Contains(conflict, bus.ReasonKeyConflict) {
 		t.Fatalf("conflict\n%s", conflict)
+	}
+	if strings.Contains(conflict, `id="send-dialog" open`) || !strings.Contains(conflict, `id="send-dialog" data-send-open`) {
+		t.Fatalf("refused send closed the form\n%s", conflict)
 	}
 	if !strings.Contains(conflict, `id="txid" name="txid" value="idem-9f3a"`) {
 		t.Fatalf("refused publish dropped the id\n%s", conflict)
@@ -816,7 +913,8 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 	_, body, _ = postPage(t, page.URL+"/publish", form)
 	got = take()
 	wantPub := bus.PathPublish + " " + auth + ` {"conversation":"job","from":"alice","to":["carol","bob"],"body":"hello","txid":"k1","kind":"say"}`
-	if len(got) != 3 || got[0] != bus.PathList+" "+auth+" {}" || got[1] != wantPub || got[2] != readBody {
+	list := bus.PathList + " " + auth + " {}"
+	if len(got) != 4 || got[0] != list || got[1] != wantPub || got[2] != list || got[3] != readBody {
 		t.Fatalf("publish %#v", got)
 	}
 	assertOmits(t, "publish page", body, token)

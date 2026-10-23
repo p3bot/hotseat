@@ -824,3 +824,38 @@ func openStore(t *testing.T) *Store {
 	})
 	return st
 }
+
+func TestListActivityFollowsHighestSeq(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Create(ctx, "quiet", Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	early := Publish{
+		Conversation: "job", From: "alice", To: []string{}, Body: "early", TxID: "a", Kind: "say",
+		Time: "2020-01-01T00:00:02Z",
+	}
+	late := early
+	late.Body = "late"
+	late.TxID = "b"
+	late.Time = "2020-01-01T00:00:02.5Z"
+	if _, _, _, err := st.Publish(ctx, early); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := st.Publish(ctx, late); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := st.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 || listed[0].Name != "job" || listed[1].Name != "quiet" {
+		t.Fatalf("order %+v", listed)
+	}
+	if listed[0].Activity != late.Time || listed[1].Activity != "" {
+		t.Fatalf("activity %+v", listed)
+	}
+}

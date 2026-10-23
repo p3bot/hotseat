@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -165,7 +166,7 @@ func (s Server) handleList(w http.ResponseWriter, r *http.Request) {
 		s.render(w, p)
 		return
 	}
-	p.Conversations = rows(res.Conversations)
+	applyList(&p, res.Conversations)
 	s.render(w, p)
 }
 
@@ -258,7 +259,7 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.Notice = err.Error()
-		s.render(w, p)
+		renderPublish(s, w, p)
 		return
 	}
 	start := time.Now()
@@ -275,7 +276,7 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.Notice = err.Error()
-		s.render(w, p)
+		renderPublish(s, w, p)
 		return
 	}
 	s.logCall("publish", name, res, start)
@@ -293,6 +294,19 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		p.Status = res.Conversation.Status
 		p.StatusKnown = true
 	}
+	if res.Outcome == bus.OutcomeOK && !view.AlreadyStored {
+		if err := s.refreshOrder(r.Context(), &p); err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			if p.Notice == "" {
+				p.Notice = err.Error()
+			}
+		} else if res.Conversation != nil {
+			p.Status = res.Conversation.Status
+			p.StatusKnown = true
+		}
+	}
 	if err := s.fillRecent(r.Context(), &p, 0, true); err != nil {
 		if r.Context().Err() != nil {
 			return
@@ -303,6 +317,14 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	if res.Outcome == bus.OutcomeOK {
 		p.TxID = ""
+	}
+	renderPublish(s, w, p)
+}
+
+// renderPublish opens Send when the attempt did not store.
+func renderPublish(s Server, w http.ResponseWriter, p page) {
+	if p.Publish == nil || p.Publish.Outcome != bus.OutcomeOK {
+		p.SendOpen = true
 	}
 	s.render(w, p)
 }
@@ -349,6 +371,26 @@ func (s Server) list(ctx context.Context) (client.Result, error) {
 	return res, nil
 }
 
+// refreshOrder lists again after a stored send.
+// A failed list leaves the page order in place and returns the failure.
+func (s Server) refreshOrder(ctx context.Context, p *page) error {
+	res, err := s.list(ctx)
+	if err != nil {
+		return err
+	}
+	if res.Outcome != bus.OutcomeOK {
+		text := res.Outcome
+		if res.Reason != "" {
+			text += " " + res.Reason
+		}
+		return errors.New(text)
+	}
+	applyList(p, res.Conversations)
+	p.ListOutcome = ""
+	p.ListReason = ""
+	return nil
+}
+
 func (s Server) fillStatus(ctx context.Context, p *page) error {
 	res, err := s.list(ctx)
 	if err != nil {
@@ -359,16 +401,7 @@ func (s Server) fillStatus(ctx context.Context, p *page) error {
 		p.ListReason = res.Reason
 		return nil
 	}
-	if res.Conversations == nil {
-		return nil
-	}
-	for _, c := range *res.Conversations {
-		if c.Name == p.Name {
-			p.Status = c.Status
-			p.StatusKnown = true
-			return nil
-		}
-	}
+	applyList(p, res.Conversations)
 	return nil
 }
 
@@ -462,19 +495,59 @@ func (s Server) logCall(op, conv string, res client.Result, start time.Time) {
 	s.logger().Info("call", attrs...)
 }
 
-func rows(cs *[]client.Conversation) []conversationRow {
+func applyList(p *page, cs *[]client.Conversation) {
+	all := ordered(cs)
+	p.Index = make([]indexEntry, 0, len(all))
+	var open []conversationRow
+	for _, c := range all {
+		href := conversationHref(c.Name)
+		p.Index = append(p.Index, indexEntry{
+			Name: c.Name, Status: c.Status, Task: c.Task, Ticket: c.Ticket, Href: href,
+		})
+		if c.Status == "open" {
+			open = append(open, conversationRow{Name: c.Name, Status: c.Status, Href: href})
+		}
+		if p.Name != "" && c.Name == p.Name {
+			p.Status = c.Status
+			p.StatusKnown = true
+			p.Task = c.Task
+			p.Ticket = c.Ticket
+			p.Seat = c.Seat
+			p.Directory = c.Directory
+		}
+	}
+	p.Conversations = open
+}
+
+// ordered sorts a copy by newest activity, then name.
+// A missing or unparseable activity sorts after a real time.
+func ordered(cs *[]client.Conversation) []client.Conversation {
 	if cs == nil {
 		return nil
 	}
-	out := make([]conversationRow, 0, len(*cs))
-	for _, c := range *cs {
-		out = append(out, conversationRow{
-			Name:   c.Name,
-			Status: c.Status,
-			Href:   conversationHref(c.Name),
-		})
-	}
+	out := append([]client.Conversation(nil), (*cs)...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return activityBefore(out[i], out[j])
+	})
 	return out
+}
+
+func activityBefore(a, b client.Conversation) bool {
+	at, aerr := time.Parse(time.RFC3339Nano, a.Activity)
+	bt, berr := time.Parse(time.RFC3339Nano, b.Activity)
+	switch {
+	case aerr == nil && berr == nil:
+		if at.Equal(bt) {
+			return a.Name < b.Name
+		}
+		return at.After(bt)
+	case aerr == nil:
+		return true
+	case berr == nil:
+		return false
+	default:
+		return a.Name < b.Name
+	}
 }
 
 func conversationHref(name string) string {

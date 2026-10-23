@@ -76,6 +76,19 @@ hello
 	}
 }
 
+func TestTextResultOmitsActivity(t *testing.T) {
+	convs := []client.Conversation{{
+		Name: "job", Status: "open", Activity: "2020-01-01T00:00:00Z",
+	}}
+	var buf bytes.Buffer
+	if err := writeResult(&buf, client.Result{Outcome: "ok", Conversations: &convs}); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(buf.Bytes(), []byte("activity")) || bytes.Contains(buf.Bytes(), []byte("2020-01-01")) {
+		t.Fatalf("activity printed\n%s", buf.String())
+	}
+}
+
 func TestWriteResultFramesAwkwardText(t *testing.T) {
 	existed := true
 	seq := int64(4)

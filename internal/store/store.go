@@ -129,9 +129,12 @@ type Binding struct {
 }
 
 // Conversation is a name, its status, and its binding.
+// Activity is the time of the newest message. List sets it.
+// Empty means the conversation has no messages. It is not a stored column.
 type Conversation struct {
-	Name   string
-	Status string
+	Name     string
+	Status   string
+	Activity string
 	Binding
 }
 
@@ -411,15 +414,24 @@ func (s *Store) CloseConversation(ctx context.Context, name string) (Conversatio
 }
 
 // List returns every conversation, open and closed, ordered by name.
+// Activity is the time on the message with the highest seq, or empty when there is none.
 func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 	var out []Conversation
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx,
-			`SELECT `+conversationColumns+` FROM conversations ORDER BY name`)
+		rows, err := tx.QueryContext(ctx, `
+			SELECT `+conversationColumns+`,
+				COALESCE((
+					SELECT time FROM messages
+					WHERE conversation = conversations.name
+					ORDER BY seq DESC
+					LIMIT 1
+				), '')
+			FROM conversations
+			ORDER BY name`)
 		if err != nil {
 			return err
 		}
-		out, err = scanConversations(rows)
+		out, err = scanListed(rows)
 		return err
 	})
 	return out, err
@@ -657,6 +669,35 @@ func scanConversation(row rowScanner) (Conversation, error) {
 	); err != nil {
 		return Conversation{}, err
 	}
+	return finishConversation(c, prompts, roster)
+}
+
+func scanListed(rows *sql.Rows) ([]Conversation, error) {
+	out := make([]Conversation, 0)
+	for rows.Next() {
+		var c Conversation
+		var prompts, roster string
+		if err := rows.Scan(
+			&c.Name, &c.Status, &c.Task, &c.Ticket, &c.Seat, &c.Directory, &prompts, &c.Custom, &roster, &c.Activity,
+		); err != nil {
+			return nil, joinClose(err, rows.Close())
+		}
+		c, err := finishConversation(c, prompts, roster)
+		if err != nil {
+			return nil, joinClose(err, rows.Close())
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, joinClose(err, rows.Close())
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func finishConversation(c Conversation, prompts, roster string) (Conversation, error) {
 	var err error
 	c.Prompts, err = unmarshalTo(prompts)
 	if err != nil {
@@ -719,24 +760,6 @@ func columnExists(ctx context.Context, tx *sql.Tx, table, col string) (bool, err
 	var n int
 	err := tx.QueryRowContext(ctx, q, col).Scan(&n)
 	return n > 0, err
-}
-
-func scanConversations(rows *sql.Rows) ([]Conversation, error) {
-	out := make([]Conversation, 0)
-	for rows.Next() {
-		c, err := scanConversation(rows)
-		if err != nil {
-			return nil, joinClose(err, rows.Close())
-		}
-		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, joinClose(err, rows.Close())
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func scanOne(rows *sql.Rows) (Message, error) {

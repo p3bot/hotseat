@@ -101,9 +101,12 @@ type Message struct {
 
 // Conversation is a name, its status, and its binding.
 // JSON from the bus always includes the binding keys.
+// Activity is the newest message time on a list row.
+// The key is omitted when that conversation has no messages.
 type Conversation struct {
 	Name      string   `json:"name"`
 	Status    string   `json:"status"`
+	Activity  string   `json:"activity,omitempty"`
 	Task      string   `json:"task"`
 	Ticket    string   `json:"ticket"`
 	Seat      string   `json:"seat"`

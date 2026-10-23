@@ -152,6 +152,102 @@ function __fire(which) {
 function __txid() { return __elements.txid.value; }
 `
 
+func TestRefusedSendOpensTheSameDialog(t *testing.T) {
+	refused := conversationPage("job")
+	refused.SendOpen = true
+	refusedHTML := renderPage(t, refused)
+	if strings.Contains(refusedHTML, `id="send-dialog" open`) || !sendMarked(refusedHTML) {
+		t.Fatalf("marker\n%s", refusedHTML)
+	}
+	vm := sendDialogVM(t, refusedHTML)
+	if scriptString(t, vm, "__shown()") != "1" {
+		t.Fatal("refused send did not open the dialog")
+	}
+	if _, err := vm.RunString(`__clickPen()`); err != nil {
+		t.Fatal(err)
+	}
+	if scriptString(t, vm, "__shown()") != "1" {
+		t.Fatal("pen opened a dialog that was already open")
+	}
+
+	quietHTML := renderPage(t, conversationPage("job"))
+	if sendMarked(quietHTML) {
+		t.Fatalf("marker\n%s", quietHTML)
+	}
+	vm = sendDialogVM(t, quietHTML)
+	if scriptString(t, vm, "__shown()") != "0" {
+		t.Fatal("a closed send opened the dialog")
+	}
+	if _, err := vm.RunString(`__clickPen()`); err != nil {
+		t.Fatal(err)
+	}
+	if scriptString(t, vm, "__shown()") != "1" {
+		t.Fatal("pen did not open the dialog")
+	}
+}
+
+func sendMarked(html string) bool {
+	return strings.Contains(html, `id="send-dialog" data-send-open`)
+}
+
+func renderPage(t *testing.T, p page) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := pageTmpl.Execute(&buf, p); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
+func sendDialogVM(t *testing.T, html string) *goja.Runtime {
+	t.Helper()
+	script, err := pageScript(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := goja.New()
+	if _, err := vm.RunString(sendDialogHarness); err != nil {
+		t.Fatal(err)
+	}
+	marked := "false"
+	if sendMarked(html) {
+		marked = "true"
+	}
+	if _, err := vm.RunString("__marked = " + marked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.RunString(script); err != nil {
+		t.Fatal(err)
+	}
+	return vm
+}
+
+const sendDialogHarness = `
+var __shownCount = 0;
+var __marked = false;
+var __dialog = {
+  open: false,
+  hasAttribute: function (name) { return name === "data-send-open" && __marked; },
+  showModal: function () {
+    if (this.open) throw new Error("already open");
+    this.open = true;
+    __shownCount++;
+  }
+};
+var __pen = {
+  addEventListener: function (type, fn) { this.onclick = fn; }
+};
+var document = {
+  getElementById: function (id) {
+    if (id === "send-dialog") return __dialog;
+    if (id === "send-pen") return __pen;
+    return null;
+  }
+};
+function __clickPen() { __pen.onclick(); }
+function __shown() { return String(__shownCount); }
+`
+
 func TestFailedOlderGroupKeepsTheMarker(t *testing.T) {
 	open := bytes.Buffer{}
 	page := conversationPage("job")
@@ -358,4 +454,126 @@ function __marker() {
 }
 function __olderError() { return __elements["older-error"].textContent; }
 function __added() { return String(__elements.transcript.children.length); }
+`
+
+func TestSearchKeepsActivityOrder(t *testing.T) {
+	var buf bytes.Buffer
+	if err := pageTmpl.Execute(&buf, page{Kind: kindList}); err != nil {
+		t.Fatal(err)
+	}
+	script, err := pageScript(buf.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := goja.New()
+	if _, err := vm.RunString(searchHarness); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.RunString(script); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.RunString(`__query("A")`); err != nil {
+		t.Fatal(err)
+	}
+	if got := scriptString(t, vm, "__names()"); got != "zeta,alpha" || scriptString(t, vm, "__hidden()") != "0" {
+		t.Fatalf("names %q hidden %q", got, scriptString(t, vm, "__hidden()"))
+	}
+	if _, err := vm.RunString(`__query("PEAR")`); err != nil {
+		t.Fatal(err)
+	}
+	if got := scriptString(t, vm, "__names()"); got != "alpha" {
+		t.Fatalf("ticket %q", got)
+	}
+	if _, err := vm.RunString(`__query("  ")`); err != nil {
+		t.Fatal(err)
+	}
+	if scriptString(t, vm, "__hidden()") != "1" || scriptString(t, vm, "__names()") != "" {
+		t.Fatalf("blank hidden %s names %s", scriptString(t, vm, "__hidden()"), scriptString(t, vm, "__names()"))
+	}
+	if _, err := vm.RunString(`__query("missing")`); err != nil {
+		t.Fatal(err)
+	}
+	if scriptString(t, vm, "__names()") != "" || scriptString(t, vm, "__empty()") != "No matches." {
+		t.Fatalf("empty %q names %q", scriptString(t, vm, "__empty()"), scriptString(t, vm, "__names()"))
+	}
+}
+
+const searchHarness = `
+function Node(tag) {
+  this.tag = tag;
+  this.attrs = {};
+  this.children = [];
+  this.hidden = false;
+  this.textContent = "";
+  this.className = "";
+  this.href = "";
+  this.id = "";
+  this.value = "";
+}
+Node.prototype.getAttribute = function (k) {
+  if (!Object.prototype.hasOwnProperty.call(this.attrs, k)) return null;
+  return this.attrs[k];
+};
+Node.prototype.appendChild = function (c) { this.children.push(c); return c; };
+Node.prototype.removeChild = function (c) {
+  var i = this.children.indexOf(c);
+  if (i >= 0) this.children.splice(i, 1);
+  return c;
+};
+Object.defineProperty(Node.prototype, "firstChild", {
+  get: function () { return this.children.length ? this.children[0] : null; }
+});
+Node.prototype.querySelector = function (sel) {
+  if (sel !== "a") return null;
+  for (var i = 0; i < this.children.length; i++) {
+    var ch = this.children[i];
+    if (ch.tag === "a") return ch;
+    if (ch.querySelector) {
+      var found = ch.querySelector(sel);
+      if (found) return found;
+    }
+  }
+  return null;
+};
+Node.prototype.addEventListener = function (type, fn) { this["on" + type] = fn; };
+function item(name, status, task, ticket, href) {
+  var n = new Node("li");
+  n.attrs = {"data-name": name, "data-status": status, "data-task": task, "data-ticket": ticket, "data-href": href};
+  return n;
+}
+var __index = new Node("ul");
+__index.children = [
+  item("zeta", "open", "apple", "", "/c?conversation=zeta"),
+  item("alpha", "closed", "", "pear", "/c?conversation=alpha"),
+  item("quiet", "open", "", "", "/c?conversation=quiet")
+];
+var __box = new Node("input");
+var __results = new Node("ul");
+__results.hidden = true;
+var document = {
+  getElementById: function (id) {
+    if (id === "search") return __box;
+    if (id === "search-results") return __results;
+    if (id === "conversation-index") return __index;
+    return null;
+  },
+  createElement: function (tag) { return new Node(tag); }
+};
+var window = {};
+function __query(v) { __box.value = v; __box.oninput(); }
+function __names() {
+  var out = [];
+  for (var i = 0; i < __results.children.length; i++) {
+    var link = __results.children[i].querySelector("a");
+    if (link) out.push(link.textContent);
+  }
+  return out.join(",");
+}
+function __hidden() { return __results.hidden ? "1" : "0"; }
+function __empty() {
+  for (var i = 0; i < __results.children.length; i++) {
+    if (__results.children[i].id === "search-empty") return __results.children[i].textContent;
+  }
+  return "";
+}
 `

@@ -207,6 +207,35 @@ func TestCreateFreshAndTaken(t *testing.T) {
 	}
 }
 
+func TestListJSONCarriesNewestActivity(t *testing.T) {
+	var n int
+	base, _, _, _ := startServer(t, Options{Clock: func() time.Time {
+		n++
+		return time.Date(2020, 1, 2, 0, 0, 0, n, time.UTC)
+	}})
+	_, created := mustRaw(t, base, PathCreate, map[string]any{"name": "job"})
+	if bytes.Contains(created, []byte(`"activity"`)) {
+		t.Fatalf("create %s", created)
+	}
+	publish(t, base, "job", "alice", nil, "one", "a")
+	if second := publish(t, base, "job", "alice", nil, "two", "b"); second.Outcome != OutcomeOK {
+		t.Fatalf("second %+v", second)
+	}
+	create(t, base, "quiet")
+	list, raw := mustRaw(t, base, PathList, map[string]any{})
+	if list.Conversations == nil || len(*list.Conversations) != 2 {
+		t.Fatalf("list %+v", list.Conversations)
+	}
+	want := time.Date(2020, 1, 2, 0, 0, 0, 2, time.UTC).Format(time.RFC3339Nano)
+	got := *list.Conversations
+	if got[0].Name != "job" || got[0].Activity != want || got[1].Name != "quiet" || got[1].Activity != "" {
+		t.Fatalf("rows %+v want %s", got, want)
+	}
+	if strings.Count(string(raw), `"activity"`) != 1 {
+		t.Fatalf("json %s", raw)
+	}
+}
+
 func TestPublishDurableRetryAndConflict(t *testing.T) {
 	fixed := time.Date(2026, 10, 3, 7, 0, 0, 123, time.UTC)
 	base, _, _, _ := startServer(t, Options{Clock: func() time.Time { return fixed }})
