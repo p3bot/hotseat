@@ -17,6 +17,8 @@
 // empty transaction id when Send is submitted. A refused send leaves the
 // form open with the posted values. The server forwards the posted id and
 // does not generate one.
+// A message body is rendered as Markdown. The stored text stays in the
+// message. Markdown shows that text, and Copy writes it.
 // The capability token is sent to the bus and is not written into the page
 // or the logs. The page listens on
 // loopback. Any other socket is closed. It answers for the host it listens

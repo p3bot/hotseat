@@ -65,6 +65,164 @@ func TestRenderedMessageShowsLocalTimeKindAndSequence(t *testing.T) {
 	}
 }
 
+func TestMessageFooterKeepsSourceBesideRenderedMarkdown(t *testing.T) {
+	p := conversationPage("job")
+	p.Read = &readView{Outcome: "ok", Messages: []client.Message{{
+		Seq: 4, From: "alice", Body: "**hello**", Kind: "instruction",
+	}}}
+	html := renderPage(t, p)
+	rendered := strings.Index(html, "<strong>hello</strong>")
+	source := strings.Index(html, `class="body source" hidden>**hello**</pre>`)
+	actions := strings.Index(html, `<button type="button" class="markdown" aria-pressed="false" aria-label="Markdown" title="Markdown"><svg`)
+	copyTitle := strings.Index(html, `class="copy" aria-label="Copy markdown" title="Copy markdown"`)
+	if copyTitle < 0 {
+		t.Fatalf("copy tooltip\n%s", html)
+	}
+	when := strings.Index(html, `class="when"`)
+	kind := strings.Index(html, `class="seq-n">4</span><span class="kind" data-kind="instruction">instruction</span>`)
+	if rendered < 0 || source < rendered || actions < 0 || when < actions || kind < source {
+		t.Fatalf("message\n%s", html)
+	}
+}
+
+func TestMessageControlsCopySourceAndToggleView(t *testing.T) {
+	script, err := pageScript(renderPage(t, conversationPage("job")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := goja.New()
+	if _, err := vm.RunString(messageControlHarness); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.RunString(script); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.RunString(`__click("svg")`); err != nil {
+		t.Fatal(err)
+	}
+	if scriptString(t, vm, "__copiedText()") != "line\n**two**" || scriptString(t, vm, "__label()") != "Copied" || scriptString(t, vm, "__title()") != "Copied" || scriptString(t, vm, "__copyClass()") != "copied" {
+		t.Fatalf("copy text %q label %q class %q", scriptString(t, vm, "__copiedText()"), scriptString(t, vm, "__label()"), scriptString(t, vm, "__copyClass()"))
+	}
+	if _, err := vm.RunString(`__flush()`); err != nil {
+		t.Fatal(err)
+	}
+	if scriptString(t, vm, "__label()") != "Copy markdown" || scriptString(t, vm, "__title()") != "Copy markdown" || scriptString(t, vm, "__copyClass()") != "" {
+		t.Fatalf("restore label %q class %q", scriptString(t, vm, "__label()"), scriptString(t, vm, "__copyClass()"))
+	}
+	if _, err := vm.RunString(`__failCopy(); __click("svg")`); err != nil {
+		t.Fatal(err)
+	}
+	if scriptString(t, vm, "__label()") != "Copy failed" || scriptString(t, vm, "__title()") != "Copy failed" || scriptString(t, vm, "__copyClass()") != "" {
+		t.Fatalf("fail label %q class %q", scriptString(t, vm, "__label()"), scriptString(t, vm, "__copyClass()"))
+	}
+	if _, err := vm.RunString(`__click("markdown")`); err != nil {
+		t.Fatal(err)
+	}
+	if scriptString(t, vm, "__pressed()") != "true" || scriptString(t, vm, "__shown()") != "source" || scriptString(t, vm, "__markdownName()") != "Markdown" {
+		t.Fatalf("on pressed %q shown %q name %q", scriptString(t, vm, "__pressed()"), scriptString(t, vm, "__shown()"), scriptString(t, vm, "__markdownName()"))
+	}
+	if _, err := vm.RunString(`__click("markdown")`); err != nil {
+		t.Fatal(err)
+	}
+	if scriptString(t, vm, "__pressed()") != "false" || scriptString(t, vm, "__shown()") != "rendered" || scriptString(t, vm, "__markdownName()") != "Markdown" {
+		t.Fatalf("off pressed %q shown %q name %q", scriptString(t, vm, "__pressed()"), scriptString(t, vm, "__shown()"), scriptString(t, vm, "__markdownName()"))
+	}
+}
+
+const messageControlHarness = `
+function __cls(names) {
+  var list = names ? names.split(" ") : [];
+  return {
+    contains: function (n) { return list.indexOf(n) >= 0; },
+    add: function (n) { if (list.indexOf(n) < 0) list.push(n); },
+    remove: function (n) { var i = list.indexOf(n); if (i >= 0) list.splice(i, 1); }
+  };
+}
+function __el(tag, className) {
+  var node = {
+    tag: tag,
+    classList: __cls(className),
+    attrs: {},
+    children: [],
+    textContent: "",
+    hidden: false,
+    parentNode: null,
+    getAttribute: function (k) {
+      if (!Object.prototype.hasOwnProperty.call(this.attrs, k)) return null;
+      return this.attrs[k];
+    },
+    setAttribute: function (k, v) { this.attrs[k] = String(v); },
+    removeAttribute: function (k) { delete this.attrs[k]; },
+    getElementsByTagName: function (want) {
+      var out = [];
+      function walk(n) {
+        for (var i = 0; i < n.children.length; i++) {
+          if (n.children[i].tag === want) out.push(n.children[i]);
+          walk(n.children[i]);
+        }
+      }
+      walk(this);
+      return out;
+    }
+  };
+  return node;
+}
+function __add(parent, child) {
+  child.parentNode = parent;
+  parent.children.push(child);
+  return child;
+}
+var __source = __el("pre", "body source");
+__source.textContent = "line\n**two**";
+__source.hidden = true;
+var __rendered = __el("div", "body rendered");
+var __copy = __el("button", "copy");
+__copy.attrs["aria-label"] = "Copy markdown";
+var __svg = __el("svg", "icon-copy");
+__add(__copy, __svg);
+var __markdown = __el("button", "markdown");
+__markdown.attrs["aria-pressed"] = "false";
+__markdown.attrs["aria-label"] = "Markdown";
+var __msg = __el("div", "message");
+__add(__msg, __rendered);
+__add(__msg, __source);
+var __foot = __el("p", "foot");
+__add(__foot, __markdown);
+__add(__foot, __copy);
+__add(__msg, __foot);
+var __main = __el("main", "");
+__add(__main, __msg);
+__main.addEventListener = function (type, fn) { this.onclick = fn; };
+var __timers = [];
+function setTimeout(fn) { __timers.push(fn); return __timers.length; }
+function clearTimeout() {}
+var __lastCopy = "";
+var __writeFails = false;
+var navigator = { clipboard: { writeText: function (text) {
+  if (__writeFails) return { then: function (ok, err) { err(); } };
+  __lastCopy = text;
+  return { then: function (ok) { ok(); } };
+}}};
+var document = { getElementById: function (id) { return id === "main" ? __main : null; } };
+function __click(which) {
+  var target = which === "svg" ? __svg : __markdown;
+  __main.onclick({ target: target });
+}
+function __copiedText() { return __lastCopy; }
+function __label() { return __copy.getAttribute("aria-label"); }
+function __title() { return __copy.getAttribute("title"); }
+function __copyClass() { return __copy.classList.contains("copied") ? "copied" : ""; }
+function __pressed() { return __markdown.getAttribute("aria-pressed"); }
+function __markdownName() { return __markdown.getAttribute("aria-label"); }
+function __shown() {
+  if (!__rendered.hidden && __source.hidden) return "rendered";
+  if (__rendered.hidden && !__source.hidden) return "source";
+  return "both";
+}
+function __flush() { var fn = __timers.shift(); if (fn) fn(); }
+function __failCopy() { __writeFails = true; }
+`
+
 func TestTabTitleNamesTheProduct(t *testing.T) {
 	if got := (page{}).TabTitle(); got != "Hotseat" {
 		t.Fatalf("list %q", got)

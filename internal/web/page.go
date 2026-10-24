@@ -111,7 +111,8 @@ func setPageHeaders(w http.ResponseWriter) {
 }
 
 var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
-	"viewTime": viewTime,
+	"viewTime":   viewTime,
+	"renderBody": renderBody,
 }).Parse(pageSource))
 
 // viewTime renders a bus timestamp for reading.
@@ -182,7 +183,7 @@ body.has-meta #read-form { flex: 1 1 auto; min-height: 0; overflow: auto; margin
 #send-pen:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
 #send-pen svg { width: 1.15rem; height: 1.15rem; display: block; }
 label { display: grid; gap: 0.25rem; margin: 0.75rem 0; }
-button { padding: 0.3rem 0.7rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); }
+button { padding: 0.3rem 0.7rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); cursor: pointer; }
 button:hover { border-color: var(--accent); }
 #publish-button { background: var(--accent); border-color: var(--accent); color: #fff; }
 #publish-button:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
@@ -196,13 +197,38 @@ dialog::backdrop { background: rgb(28 25 23 / 0.45); }
 #older-error, #list-error, #publish-reason { color: var(--issues); }
 #older-error:empty { display: none; }
 #notice, #list-error, #publish-reason { background: var(--banner); padding: 0.35rem 0.55rem; border-radius: 4px; }
-pre.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0 0; font-family: ui-monospace, monospace; }
+.meta-end { display: flex; align-items: center; gap: 0.75rem; margin-left: auto; flex: none; }
+.msg-actions { display: flex; align-items: center; gap: 0.35rem; flex: none; }
+.msg-actions .markdown,
+.msg-actions .copy { width: 1.7rem; height: 1.7rem; padding: 0; display: grid; place-items: center; line-height: 0; border-radius: 4px; flex: none; }
+.msg-actions .markdown svg { width: 1.2rem; height: 0.61rem; display: block; }
+.msg-actions .copy svg { width: 1rem; height: 1rem; display: block; }
+.msg-actions .markdown[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.msg-actions .markdown[aria-pressed="true"]:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
+.msg-actions .copy .icon-check { display: none; }
+.msg-actions .copy.copied .icon-copy { display: none; }
+.msg-actions .copy.copied .icon-check { display: block; }
+.body { margin: 1rem 0 0; overflow-wrap: anywhere; }
+.rendered { overflow-x: auto; }
+.rendered > :first-child { margin-top: 0; }
+.rendered > :last-child { margin-bottom: 0; }
+.rendered p, .rendered ul, .rendered ol, .rendered pre, .rendered blockquote, .rendered h1, .rendered h2, .rendered h3, .rendered h4, .rendered h5, .rendered h6 { margin: 0.55rem 0; }
+.rendered h1, .rendered h2, .rendered h3, .rendered h4, .rendered h5, .rendered h6 { font-size: 1rem; line-height: 1.4; }
+.rendered ul, .rendered ol { padding-left: 1.3rem; }
+.rendered blockquote { margin-left: 0; padding-left: 0.75rem; border-left: 3px solid var(--line); }
+.rendered pre, .rendered code { font-family: ui-monospace, monospace; }
+.rendered pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); padding: 0.55rem 0.7rem; border-radius: 4px; }
+.rendered :not(pre) > code { background: var(--bg); padding: 0.05rem 0.3rem; border-radius: 3px; }
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.rendered table { border-collapse: collapse; }
+.rendered th, .rendered td { border: 1px solid var(--line); padding: 0.15rem 0.45rem; vertical-align: top; text-align: left; }
+pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0 0; font-family: ui-monospace, monospace; }
 .hint, .meta { font-size: 0.875rem; color: var(--muted); }
-.meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0.25rem 1rem; margin: 0; }
+.meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 0.25rem 1rem; margin: 0; }
 .meta .who { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .meta .from { display: inline-block; min-width: 12ch; max-width: 100%; margin-right: 0.75rem; color: var(--fg); overflow-wrap: anywhere; vertical-align: baseline; }
 .meta .to { overflow-wrap: anywhere; color: var(--fg); }
-.meta .when { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.meta .when { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 1rem 0 0.15rem; font-size: 0.875rem; color: var(--muted); }
 .foot .seq-n { color: var(--fg); font-variant-numeric: tabular-nums; }
 .kind { display: inline-block; padding: 0.05rem 0.55rem; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--muted); font-size: 0.75rem; font-weight: 650; line-height: 1.4; text-transform: capitalize; }
@@ -232,7 +258,7 @@ pre.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0 0; fon
 <nav>
 <a href="/" id="nav-conversations"{{if eq .Kind "list"}} aria-current="page"{{end}}>Conversations</a>
 </nav>
-<main>
+<main id="main">
 {{if .Notice}}<p id="notice">{{.Notice}}</p>{{end}}
 {{if eq .Kind "list"}}
 <h1>Conversations</h1>
@@ -244,7 +270,7 @@ pre.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0 0; fon
 {{else if eq .Kind "conversation"}}
 <header class="conv-head">
 <h1>{{.Name}}</h1>
-<button type="button" id="send-pen" aria-label="Send">
+<button type="button" id="send-pen" aria-label="Send" title="Send">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
 </button>
 </header>
@@ -255,7 +281,7 @@ pre.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0 0; fon
 {{if .Publish.Stored}}<p id="stored">Stored.</p>{{end}}
 {{if .Publish.Message}}<div id="publish-message" class="message">
 {{template "messageMeta" .Publish.Message}}
-<pre class="body">{{.Publish.Message.Body}}</pre>
+{{template "messageBody" .Publish.Message}}
 {{template "messageFoot" .Publish.Message}}
 </div>{{end}}
 </section>{{end}}
@@ -268,7 +294,7 @@ pre.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0 0; fon
 {{else}}<ol id="transcript">
 {{range .Read.Messages}}<li class="message" data-seq="{{.Seq}}">
 {{template "messageMeta" .}}
-<pre class="body">{{.Body}}</pre>
+{{template "messageBody" .}}
 {{template "messageFoot" .}}
 </li>{{end}}</ol>
 {{if .Read.Full}}<p id="older-error"></p>
@@ -394,6 +420,69 @@ pre.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0 0; fon
   if (cancel && dialog && typeof dialog.close === "function") {
     cancel.addEventListener("click", function () { dialog.close(); });
   }
+  var mainEl = document.getElementById("main");
+  if (mainEl && mainEl.addEventListener) mainEl.addEventListener("click", onMessageClick);
+  function hasClass(node, name) {
+    return node && node.classList && node.classList.contains(name);
+  }
+  function ancestor(node, name) {
+    while (node && node !== mainEl) {
+      if (hasClass(node, name)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+  function part(msg, tag, name) {
+    if (!msg || !msg.getElementsByTagName) return null;
+    var nodes = msg.getElementsByTagName(tag);
+    for (var i = 0; i < nodes.length; i++) if (hasClass(nodes[i], name)) return nodes[i];
+    return null;
+  }
+  function setHidden(el, on) {
+    if (!el) return;
+    el.hidden = on;
+    if (on) el.setAttribute("hidden", "");
+    else el.removeAttribute("hidden");
+  }
+  function toggleMarkdown(btn) {
+    var msg = ancestor(btn, "message");
+    var on = btn.getAttribute("aria-pressed") === "true";
+    btn.setAttribute("aria-pressed", on ? "false" : "true");
+    setHidden(part(msg, "div", "rendered"), !on);
+    setHidden(part(msg, "pre", "source"), on);
+  }
+  function copyMarkdown(btn) {
+    var pre = part(ancestor(btn, "message"), "pre", "source");
+    var text = pre ? pre.textContent : "";
+    function copyName(text) {
+      btn.setAttribute("aria-label", text);
+      btn.setAttribute("title", text);
+    }
+    var fail = function () {
+      btn.classList.remove("copied");
+      copyName("Copy failed");
+    };
+    var clip = typeof navigator === "undefined" ? null : navigator.clipboard;
+    if (!clip || !clip.writeText) { fail(); return; }
+    var pending;
+    try { pending = clip.writeText(text); } catch (err) { fail(); return; }
+    if (!pending || !pending.then) { fail(); return; }
+    pending.then(function () {
+      btn.classList.add("copied");
+      copyName("Copied");
+      if (btn._copyTimer) clearTimeout(btn._copyTimer);
+      btn._copyTimer = setTimeout(function () {
+        btn.classList.remove("copied");
+        copyName("Copy markdown");
+      }, 1500);
+    }, fail);
+  }
+  function onMessageClick(event) {
+    var copy = ancestor(event.target, "copy");
+    if (copy) { copyMarkdown(copy); return; }
+    var markdown = ancestor(event.target, "markdown");
+    if (markdown) toggleMarkdown(markdown);
+  }
   var more = document.getElementById("more");
   var list = document.getElementById("transcript");
   if (!more || !list || !more.getAttribute("data-next")) return;
@@ -463,6 +552,7 @@ pre.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0 0; fon
 </script>
 </body>
 </html>
-{{define "messageMeta"}}<p class="meta"><span class="who">From: <span class="from">{{.From}}</span>{{if .To}} To: <span class="to">{{range $i, $name := .To}}{{if $i}}, {{end}}<span class="addressee">{{$name}}</span>{{end}}</span>{{end}}</span><time class="when" datetime="{{.Time}}">{{viewTime .Time}}</time></p>{{end}}
+{{define "messageMeta"}}<p class="meta"><span class="who">From: <span class="from">{{.From}}</span>{{if .To}} To: <span class="to">{{range $i, $name := .To}}{{if $i}}, {{end}}<span class="addressee">{{$name}}</span>{{end}}</span>{{end}}</span><span class="meta-end"><span class="msg-actions"><button type="button" class="markdown" aria-pressed="false" aria-label="Markdown" title="Markdown"><svg viewBox="25 22 165 84" aria-hidden="true"><path fill="currentColor" d="M30 98V30h20l20 25 20-25h20v68H90V59L70 84 50 59v39zm125 0-30-33h20V30h20v35h20z"/></svg></button><button type="button" class="copy" aria-label="Copy markdown" title="Copy markdown"><svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></button></span><time class="when" datetime="{{.Time}}">{{viewTime .Time}}</time></span></p>{{end}}
+{{define "messageBody"}}<div class="body rendered">{{renderBody .Body}}</div><pre class="body source" hidden>{{.Body}}</pre>{{end}}
 {{define "messageFoot"}}<p class="foot"><span class="seq-n">{{.Seq}}</span><span class="kind" data-kind="{{.Kind}}">{{.Kind}}</span></p>{{end}}
 `

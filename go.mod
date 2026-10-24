@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/dop251/goja v0.0.0-20261007200356-e2ea74d3d210
 	github.com/spf13/cobra v1.10.2
+	github.com/yuin/goldmark v1.7.13
 	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.60.1
 )

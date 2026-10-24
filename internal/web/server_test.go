@@ -312,7 +312,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	}
 
 	_, transcript, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
-	if strings.Count(transcript, "&lt;b&gt;&amp;") != 1 || strings.Contains(transcript, ">other<") || strings.Contains(transcript, ">nope<") || !strings.Contains(transcript, `class="from">alice<`) || !strings.Contains(transcript, `data-kind="say">say<`) {
+	if strings.Count(transcript, "&lt;b&gt;&amp;") != 2 || strings.Contains(transcript, ">other<") || strings.Contains(transcript, ">nope<") || !strings.Contains(transcript, `class="from">alice<`) || !strings.Contains(transcript, `data-kind="say">say<`) {
 		t.Fatalf("transcript\n%s", transcript)
 	}
 
@@ -335,7 +335,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 		t.Fatalf("not readable\n%s", stored)
 	}
 	_, still, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
-	if strings.Count(still, "&lt;b&gt;&amp;") != 1 || !strings.Contains(still, ">later<") {
+	if strings.Count(still, "&lt;b&gt;&amp;") != 2 || !strings.Contains(still, ">later<") {
 		t.Fatalf("changed\n%s", still)
 	}
 	if strings.Contains(still, `id="read-outcome"`) || !strings.Contains(still, `data-status="closed">closed<`) {
@@ -346,7 +346,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 		t.Fatalf("replay\n%s", replay)
 	}
 	_, final, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
-	if strings.Count(final, "&lt;b&gt;&amp;") != 1 {
+	if strings.Count(final, "&lt;b&gt;&amp;") != 2 {
 		t.Fatalf("replay wrote\n%s", final)
 	}
 	if strings.Contains(logs.String(), "idem-9f3a") || strings.Contains(logs.String(), "idem-new") || strings.Contains(logs.String(), "cursor=") {
