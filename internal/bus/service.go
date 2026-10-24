@@ -146,6 +146,20 @@ func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) 
 	}, nil
 }
 
+// Messages returns the newest limit messages across every conversation.
+func (s *Service) Messages(ctx context.Context, limit int) (Result, error) {
+	if limit < 1 {
+		return refused(ReasonLimitRange), nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msgs, err := s.store.Newest(ctx, limit)
+	if err != nil {
+		return s.fail(err, "messages")
+	}
+	return Result{Outcome: OutcomeOK, Messages: msgs}, nil
+}
+
 func (s *Service) Read(ctx context.Context, conv string, cursor int64, limit int, name string, hasName bool, kinds []string, hasKinds bool) (Result, error) {
 	if err := requireConversation(conv); err != nil {
 		return asRefused(err)

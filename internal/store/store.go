@@ -139,14 +139,16 @@ type Conversation struct {
 }
 
 // Message is one accepted publish. To keeps the caller's order.
+// Conversation is set by Newest. Other reads leave it empty.
 type Message struct {
-	Seq  int64
-	Time string
-	From string
-	To   []string
-	Body string
-	TxID string
-	Kind string
+	Conversation string
+	Seq          int64
+	Time         string
+	From         string
+	To           []string
+	Body         string
+	TxID         string
+	Kind         string
 }
 
 // Publish is a validated publish to commit.
@@ -411,6 +413,49 @@ func (s *Store) CloseConversation(ctx context.Context, name string) (Conversatio
 		return Conversation{}, err
 	}
 	return conv, nil
+}
+
+// Newest returns the newest messages across every conversation.
+// The order is time, then conversation name, then higher seq.
+// A time with a fraction sorts after the same second with no fraction.
+func (s *Store) Newest(ctx context.Context, limit int) ([]Message, error) {
+	if limit < 1 {
+		return nil, errors.New("newest limit must be positive")
+	}
+	var out []Message
+	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
+		// An RFC3339 second is 19 characters. subsec stops at milliseconds, so the fraction is read from the text.
+		rows, err := tx.QueryContext(ctx, `
+			SELECT conversation, seq, time, sender, recipients, body, txid, kind
+			FROM messages
+			ORDER BY unixepoch(time) DESC,
+				CASE WHEN substr(time, 20, 1) = '.'
+					THEN CAST('0.' || rtrim(substr(time, 21), 'Z') AS REAL)
+					ELSE 0 END DESC,
+				conversation ASC, seq DESC
+			LIMIT ?`, limit)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var m Message
+			var rec string
+			if err := rows.Scan(&m.Conversation, &m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind); err != nil {
+				return joinClose(err, rows.Close())
+			}
+			to, err := unmarshalTo(rec)
+			if err != nil {
+				return joinClose(fmt.Errorf("message %s/%d recipients: %w", m.Conversation, m.Seq, err), rows.Close())
+			}
+			m.To = to
+			out = append(out, m)
+		}
+		if err := rows.Err(); err != nil {
+			return joinClose(err, rows.Close())
+		}
+		return rows.Close()
+	})
+	return out, err
 }
 
 // List returns every conversation, open and closed, ordered by name.

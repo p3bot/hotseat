@@ -207,6 +207,40 @@ func TestCreateFreshAndTaken(t *testing.T) {
 	}
 }
 
+func TestMessagesReturnsTheNewestLimit(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	create(t, base, "beta")
+	create(t, base, "alpha")
+	publish(t, base, "beta", "alice", nil, "b1", "b1")
+	publish(t, base, "alpha", "alice", nil, "a1", "a1")
+	publish(t, base, "alpha", "alice", nil, "a2", "a2")
+
+	missing := mustPost(t, base, PathMessages, map[string]any{})
+	if missing.Outcome != OutcomeRefused || missing.Reason != ReasonLimitRequired {
+		t.Fatalf("missing limit %+v", missing)
+	}
+	zero := mustPost(t, base, PathMessages, map[string]any{"limit": 0})
+	if zero.Outcome != OutcomeRefused || zero.Reason != ReasonLimitRange {
+		t.Fatalf("zero %+v", zero)
+	}
+	one := mustPost(t, base, PathMessages, map[string]any{"limit": 1})
+	if one.Messages == nil || len(*one.Messages) != 1 || (*one.Messages)[0].Body != "a2" || (*one.Messages)[0].Conversation != "alpha" {
+		t.Fatalf("one %+v", one.Messages)
+	}
+	all := mustPost(t, base, PathMessages, map[string]any{"limit": 10})
+	if all.Messages == nil || len(*all.Messages) != 3 {
+		t.Fatalf("count %+v", all.Messages)
+	}
+	got := *all.Messages
+	if got[0].Body != "a2" || got[1].Body != "a1" || got[2].Body != "b1" || got[2].Conversation != "beta" {
+		t.Fatalf("order %+v", got)
+	}
+	_, raw := mustRaw(t, base, PathRead, map[string]any{"conversation": "alpha", "cursor": 0, "limit": 1})
+	if bytes.Contains(raw, []byte(`"conversation"`)) {
+		t.Fatalf("read carries a conversation %s", raw)
+	}
+}
+
 func TestListJSONCarriesNewestActivity(t *testing.T) {
 	var n int
 	base, _, _, _ := startServer(t, Options{Clock: func() time.Time {

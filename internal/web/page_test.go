@@ -42,8 +42,6 @@ func TestRenderedMessageShowsLocalTimeKindAndSequence(t *testing.T) {
 	}
 	p := conversationPage("job")
 	p.Read = &readView{Outcome: "ok", Messages: []client.Message{msg}}
-	echo := msg
-	p.Publish = &publishView{Outcome: "ok", Stored: true, Message: &echo}
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, p); err != nil {
 		t.Fatal(err)
@@ -54,10 +52,10 @@ func TestRenderedMessageShowsLocalTimeKindAndSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := parsed.In(time.Local).Format("2006-01-02 15:04:05.000")
-	if strings.Count(html, want) != 2 || strings.Count(html, `datetime="`+raw+`"`) != 2 {
+	if strings.Count(html, want) != 1 || strings.Count(html, `datetime="`+raw+`"`) != 1 {
 		t.Fatalf("time\n%s", html)
 	}
-	if strings.Count(html, `data-kind="say">say<`) != 2 || strings.Count(html, `class="seq-n">4<`) != 2 {
+	if strings.Count(html, `data-kind="say">say<`) != 1 || strings.Count(html, `class="seq-n">4<`) != 1 {
 		t.Fatalf("kind or seq\n%s", html)
 	}
 	if strings.Contains(html, `id="read-outcome"`) {
@@ -80,7 +78,7 @@ func TestMessageFooterKeepsSourceBesideRenderedMarkdown(t *testing.T) {
 	}
 	when := strings.Index(html, `class="when"`)
 	kind := strings.Index(html, `class="seq-n">4</span><span class="kind" data-kind="instruction">instruction</span>`)
-	if rendered < 0 || source < rendered || actions < 0 || when < actions || kind < source {
+	if rendered < 0 || source < rendered || actions < 0 || when < 0 || actions < when || kind < source {
 		t.Fatalf("message\n%s", html)
 	}
 }
@@ -225,6 +223,9 @@ function __failCopy() { __writeFails = true; }
 
 func TestTabTitleNamesTheProduct(t *testing.T) {
 	if got := (page{}).TabTitle(); got != "Hotseat" {
+		t.Fatalf("recent %q", got)
+	}
+	if got := (page{Kind: kindList}).TabTitle(); got != "Hotseat - Conversations" {
 		t.Fatalf("list %q", got)
 	}
 	if got := (page{Name: "job"}).TabTitle(); got != "Hotseat - job" {
@@ -325,13 +326,13 @@ func quoteJS(s string) string {
 const publishScriptHarness = `
 var __calls = 0;
 var __elements = {
-  "read-form": {},
+  "send-form": {},
   "publish-button": {},
   "read-button": {},
   "txid": { value: "" }
 };
-__elements["read-form"].addEventListener = function (type, fn) {
-  __elements["read-form"].onsubmit = fn;
+__elements["send-form"].addEventListener = function (type, fn) {
+  __elements["send-form"].onsubmit = fn;
 };
 function Uint8Array(n) {
   var a = new Array(n);
@@ -352,7 +353,7 @@ var document = {
 };
 function __setTxID(v) { __elements.txid.value = v; }
 function __fire(which) {
-  __elements["read-form"].onsubmit({ submitter: __elements[which] });
+  __elements["send-form"].onsubmit({ submitter: __elements[which] });
 }
 function __txid() { return __elements.txid.value; }
 `
@@ -460,7 +461,7 @@ func TestFailedOlderGroupKeepsTheMarker(t *testing.T) {
 		Outcome:  "ok",
 		Messages: []client.Message{{Body: "newest"}},
 		Full:     true,
-		NextPage: "/c?conversation=job&before=3",
+		NextPage: "/conversations/job?before=3",
 	}
 	if err := pageTmpl.Execute(&open, page); err != nil {
 		t.Fatal(err)
@@ -473,7 +474,7 @@ func TestFailedOlderGroupKeepsTheMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const marker = "/c?conversation=job&before=3"
+	const marker = "/conversations/job?before=3"
 	cases := []struct {
 		name    string
 		job     string
@@ -487,7 +488,7 @@ func TestFailedOlderGroupKeepsTheMarker(t *testing.T) {
 		{name: "network", job: `{network:true}`, marker: marker, message: "older messages did not load", added: "0"},
 		{name: "end", job: `{ok:true, outcome:"ok", notice:"", reason:"", next:"", bodies:1}`, message: "", added: "1"},
 		{name: "empty", job: `{ok:true, outcome:"ok", empty:true, notice:"", reason:"", next:"", bodies:0}`, message: "", added: "0"},
-		{name: "next", job: `{ok:true, outcome:"ok", notice:"", reason:"", next:"/c?conversation=job&before=1", bodies:1}`, marker: "/c?conversation=job&before=1", added: "1"},
+		{name: "next", job: `{ok:true, outcome:"ok", notice:"", reason:"", next:"/conversations/job?before=1", bodies:1}`, marker: "/conversations/job?before=1", added: "1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -654,7 +655,7 @@ __node("txid", {});
 __elements.txid.value = "kept";
 __node("transcript", {});
 __node("older-error", {});
-__node("more", { "data-next": "/c?conversation=job&before=3" });
+__node("more", { "data-next": "/conversations/job?before=3" });
 var document = {
   getElementById: function (id) { return __elements[id] || null; },
   importNode: function (node) { return node; },
@@ -757,9 +758,9 @@ function item(name, status, task, ticket, href) {
 }
 var __index = new Node("ul");
 __index.children = [
-  item("zeta", "open", "apple", "", "/c?conversation=zeta"),
-  item("alpha", "closed", "", "pear", "/c?conversation=alpha"),
-  item("quiet", "open", "", "", "/c?conversation=quiet")
+  item("zeta", "open", "apple", "", "/conversations/zeta"),
+  item("alpha", "closed", "", "pear", "/conversations/alpha"),
+  item("quiet", "open", "", "", "/conversations/quiet")
 ];
 var __box = new Node("input");
 var __results = new Node("ul");

@@ -54,9 +54,13 @@ func TestNamesFromLines(t *testing.T) {
 func TestListShowsOpenAndClosed(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, logs := newPage(t, addr, "")
-	status, body, hdr := getPage(t, page.URL+"/")
-	if status != http.StatusOK || !strings.Contains(body, `id="empty"`) || !strings.Contains(body, "<title>Hotseat</title>") {
+	status, body, hdr := getPage(t, page.URL+"/conversations")
+	if status != http.StatusOK || !strings.Contains(body, `id="empty">No conversations.<`) || !strings.Contains(body, "<title>Hotseat - Conversations</title>") {
 		t.Fatalf("empty %d %s", status, body)
+	}
+	_, home, _ := getPage(t, page.URL+"/")
+	if !strings.Contains(home, `id="empty">No messages.<`) {
+		t.Fatalf("messages\n%s", home)
 	}
 	assertNoCookie(t, hdr)
 
@@ -66,7 +70,7 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	if closed.Outcome != bus.OutcomeOK {
 		t.Fatalf("close %+v", closed)
 	}
-	_, body, hdr = getPage(t, page.URL+"/")
+	_, body, hdr = getPage(t, page.URL+"/conversations")
 	assertNoCookie(t, hdr)
 	alpha := strings.Index(body, ">alpha<")
 	if alpha < 0 || strings.Contains(body, ">beta<") || !strings.Contains(body, `data-name="beta"`) {
@@ -75,7 +79,7 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	if !strings.Contains(body, `data-status="open">open<`) || strings.Contains(body, `data-status="closed">closed<`) {
 		t.Fatalf("status\n%s", body)
 	}
-	_, body, _ = getPage(t, page.URL+"/c?conversation=beta")
+	_, body, _ = getPage(t, page.URL+"/conversations/beta")
 	if !strings.Contains(body, `id="conversation-status"`) || !strings.Contains(body, `data-status="closed">closed<`) || !strings.Contains(body, "<title>Hotseat - beta</title>") {
 		t.Fatalf("beta\n%s", body)
 	}
@@ -97,8 +101,8 @@ func TestStoredSendRefreshesActivityOrder(t *testing.T) {
 	form.Set("kind", "say")
 	form.Set("body", "new")
 	form.Set("txid", "a")
-	_, body, _ := postPage(t, page.URL+"/publish", form)
-	if !strings.Contains(body, `id="stored">Stored.<`) {
+	body, _, _ := postStored(t, messagesURL(page.URL, "alpha"), form)
+	if !strings.Contains(body, ">new<") {
 		t.Fatalf("stored\n%s", body)
 	}
 	alpha := strings.Index(body, `data-name="alpha"`)
@@ -111,7 +115,7 @@ func TestStoredSendRefreshesActivityOrder(t *testing.T) {
 func TestEmptyListNamesClosedConversations(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
-	_, body, _ := getPage(t, page.URL+"/")
+	_, body, _ := getPage(t, page.URL+"/conversations")
 	if !strings.Contains(body, `id="empty">No conversations.<`) {
 		t.Fatalf("fresh\n%s", body)
 	}
@@ -120,7 +124,7 @@ func TestEmptyListNamesClosedConversations(t *testing.T) {
 	if closed.Outcome != bus.OutcomeOK {
 		t.Fatalf("close %+v", closed)
 	}
-	_, body, _ = getPage(t, page.URL+"/")
+	_, body, _ = getPage(t, page.URL+"/conversations")
 	if !strings.Contains(body, `id="empty">No open conversations.<`) || !strings.Contains(body, `data-name="alpha"`) {
 		t.Fatalf("closed\n%s", body)
 	}
@@ -140,7 +144,7 @@ func TestOpenListFollowsNewestActivity(t *testing.T) {
 	publishMsg(t, addr, "", "alpha", "alice", []string{}, "one", "a")
 	publishMsg(t, addr, "", "beta", "alice", []string{}, "two", "b")
 
-	_, body, _ := getPage(t, page.URL+"/")
+	_, body, _ := getPage(t, page.URL+"/conversations")
 	beta := strings.Index(body, ">beta<")
 	alpha := strings.Index(body, ">alpha<")
 	if beta < 0 || alpha < beta {
@@ -151,9 +155,62 @@ func TestOpenListFollowsNewestActivity(t *testing.T) {
 	if betaName < 0 || alphaName < betaName {
 		t.Fatalf("index beta %d alpha %d\n%s", betaName, alphaName, body)
 	}
-	_, conv, _ := getPage(t, page.URL+"/c?conversation=alpha")
+	_, conv, _ := getPage(t, page.URL+"/conversations/alpha")
 	if !strings.Contains(conv, `id="task">tasks:review<`) || !strings.Contains(conv, `id="ticket">foo-x234<`) || !strings.Contains(conv, `id="seat">bravo<`) || !strings.Contains(conv, `id="directory">/tmp/work<`) || !strings.Contains(conv, `id="send-pen"`) {
 		t.Fatalf("header\n%s", conv)
+	}
+}
+
+func TestMessagesShowsTheNewestAcrossConversations(t *testing.T) {
+	addr := newBus(t, "", false)
+	page, _ := newPage(t, addr, "")
+	createConv(t, addr, "", "alpha")
+	createConv(t, addr, "", "beta")
+	createConv(t, addr, "", "gamma")
+	createConv(t, addr, "", "quiet")
+	publishMsg(t, addr, "", "gamma", "alice", nil, "gamma-note", "g")
+	publishMsg(t, addr, "", "alpha", "alice", nil, "old-alpha", "a1")
+	publishMsg(t, addr, "", "beta", "alice", nil, "beta-only", "b")
+	publishMsg(t, addr, "", "alpha", "alice", nil, "new-alpha", "a2")
+	shut := busCall(t, addr, "", "close", client.CloseRequest{Conversation: "gamma"})
+	if shut.Outcome != bus.OutcomeOK {
+		t.Fatalf("close %+v", shut)
+	}
+
+	_, body, _ := getPage(t, page.URL+"/")
+	newest := strings.Index(body, ">new-alpha<")
+	beta := strings.Index(body, ">beta-only<")
+	old := strings.Index(body, ">old-alpha<")
+	gamma := strings.Index(body, ">gamma-note<")
+	if newest < 0 || beta < newest || old < beta || gamma < old || strings.Contains(body, ">quiet<") {
+		t.Fatalf("messages newest %d beta %d old %d gamma %d\n%s", newest, beta, old, gamma, body)
+	}
+	if !strings.Contains(body, `href="/conversations/alpha"`) || !strings.Contains(body, "<title>Hotseat</title>") || !strings.Contains(body, `id="nav-messages" aria-current="page">Messages`) || !strings.Contains(body, "<h1>Messages</h1>") {
+		t.Fatalf("links\n%s", body)
+	}
+}
+
+func TestDotNamesHaveNoPageLink(t *testing.T) {
+	addr := newBus(t, "", false)
+	page, _ := newPage(t, addr, "")
+	createConv(t, addr, "", ".")
+	createConv(t, addr, "", "..")
+	publishMsg(t, addr, "", ".", "alice", nil, "dot-body", "d")
+	publishMsg(t, addr, "", "..", "alice", nil, "dotdot-body", "dd")
+
+	_, list, _ := getPage(t, page.URL+"/conversations")
+	if !strings.Contains(list, `class="name">.</span>`) || !strings.Contains(list, `class="name">..</span>`) {
+		t.Fatalf("list\n%s", list)
+	}
+	if strings.Contains(list, `href="/conversations/."`) || strings.Contains(list, `href="/conversations/.."`) {
+		t.Fatalf("linked a dot name\n%s", list)
+	}
+	_, recent, _ := getPage(t, page.URL+"/")
+	if !strings.Contains(recent, ">dot-body<") || !strings.Contains(recent, ">dotdot-body<") {
+		t.Fatalf("recent\n%s", recent)
+	}
+	if strings.Contains(recent, `href="/conversations/."`) || strings.Contains(recent, `href="/conversations/.."`) {
+		t.Fatalf("recent linked a dot name\n%s", recent)
 	}
 }
 
@@ -188,7 +245,7 @@ func TestReadShowsNewestThenOlderGroup(t *testing.T) {
 	publishMsg(t, addr, "", "job", "alice", []string{"carol"}, "two", "k2")
 	publishMsg(t, addr, "", "job", "alice", []string{}, "three", "k3")
 
-	firstURL := page.URL + "/c?conversation=job"
+	firstURL := page.URL + "/conversations/job"
 	_, first, hdr := getPage(t, firstURL)
 	_, second, _ := getPage(t, firstURL)
 	if first != second {
@@ -223,7 +280,7 @@ func TestReadShowsNewestThenOlderGroup(t *testing.T) {
 		t.Fatal("group changed on the server")
 	}
 
-	_, bad, _ := getPage(t, page.URL+"/c?conversation=job&before=abc")
+	_, bad, _ := getPage(t, page.URL+"/conversations/job?before=abc")
 	if !strings.Contains(bad, `id="notice">before must be an integer<`) || strings.Contains(bad, `id="transcript"`) {
 		t.Fatalf("bad before\n%s", bad)
 	}
@@ -244,9 +301,10 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	form.Set("body", "<b>&")
 	form.Set("txid", "idem-9f3a")
 
-	_, stored, hdr := postPage(t, page.URL+"/publish", form)
+	stored, hdr, pageHdr := postStored(t, messagesURL(page.URL, "job"), form)
 	assertNoCookie(t, hdr)
-	if !strings.Contains(stored, `id="stored">Stored.<`) || strings.Contains(stored, `id="already-stored"`) {
+	assertNoCookie(t, pageHdr)
+	if strings.Contains(stored, `id="publish-outcome"`) {
 		t.Fatalf("stored\n%s", stored)
 	}
 	if !strings.Contains(stored, "&lt;b&gt;&amp;") || strings.Contains(stored, "<b>&") {
@@ -269,15 +327,15 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	if strings.Contains(stored, `id="send-dialog" data-send-open`) || strings.Contains(stored, `id="send-dialog" open`) || !strings.Contains(stored, `id="send-pen"`) {
 		t.Fatalf("stored send\n%s", stored)
 	}
-	if !strings.Contains(stored, "crypto.getRandomValues") || !strings.Contains(hdr.Get("Content-Security-Policy"), "script-src 'unsafe-inline'") {
-		t.Fatalf("script or policy\n%s\n%s", hdr.Get("Content-Security-Policy"), stored)
+	if !strings.Contains(stored, "crypto.getRandomValues") || !strings.Contains(pageHdr.Get("Content-Security-Policy"), "script-src 'unsafe-inline'") {
+		t.Fatalf("script or policy\n%s\n%s", pageHdr.Get("Content-Security-Policy"), stored)
 	}
 
-	_, again, _ := postPage(t, page.URL+"/publish", form)
-	if !strings.Contains(again, `id="already-stored">Already stored.<`) || strings.Contains(again, `id="stored"`) {
+	again, _, _ := postStored(t, messagesURL(page.URL, "job"), form)
+	if strings.Count(again, "&lt;b&gt;&amp;") != 2 || strings.Contains(again, `id="publish-outcome"`) {
 		t.Fatalf("again\n%s", again)
 	}
-	if !strings.Contains(again, `class="from">alice<`) || !strings.Contains(again, "&lt;b&gt;&amp;") {
+	if !strings.Contains(again, `class="from">alice<`) {
 		t.Fatalf("original message\n%s", again)
 	}
 
@@ -288,7 +346,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	changed.Set("kind", "say")
 	changed.Set("body", "other")
 	changed.Set("txid", "idem-9f3a")
-	_, conflict, _ := postPage(t, page.URL+"/publish", changed)
+	_, conflict, _ := postPage(t, messagesURL(page.URL, "job"), changed)
 	if !strings.Contains(conflict, `id="publish-outcome">refused<`) || !strings.Contains(conflict, bus.ReasonKeyConflict) {
 		t.Fatalf("conflict\n%s", conflict)
 	}
@@ -306,12 +364,12 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	emptyKey.Set("kind", "say")
 	emptyKey.Set("body", "nope")
 	emptyKey.Set("txid", "")
-	_, missing, _ := postPage(t, page.URL+"/publish", emptyKey)
+	_, missing, _ := postPage(t, messagesURL(page.URL, "job"), emptyKey)
 	if !strings.Contains(missing, bus.ReasonKeyRequired) {
 		t.Fatalf("empty key\n%s", missing)
 	}
 
-	_, transcript, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
+	_, transcript, _ := getPage(t, page.URL+"/conversations/job?cursor=0&limit=10")
 	if strings.Count(transcript, "&lt;b&gt;&amp;") != 2 || strings.Contains(transcript, ">other<") || strings.Contains(transcript, ">nope<") || !strings.Contains(transcript, `class="from">alice<`) || !strings.Contains(transcript, `data-kind="say">say<`) {
 		t.Fatalf("transcript\n%s", transcript)
 	}
@@ -327,25 +385,25 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	fresh.Set("kind", "say")
 	fresh.Set("body", "later")
 	fresh.Set("txid", "idem-new")
-	_, stored, _ = postPage(t, page.URL+"/publish", fresh)
-	if !strings.Contains(stored, `id="publish-outcome">ok<`) || !strings.Contains(stored, `id="stored">Stored.<`) || !strings.Contains(stored, ">later<") {
+	stored, _, _ = postStored(t, messagesURL(page.URL, "job"), fresh)
+	if strings.Contains(stored, `id="publish-outcome"`) || !strings.Contains(stored, ">later<") {
 		t.Fatalf("closed publish\n%s", stored)
 	}
-	if !strings.Contains(stored, `id="read-form"`) || !strings.Contains(stored, `data-status="closed">closed<`) {
+	if !strings.Contains(stored, `id="send-form"`) || !strings.Contains(stored, `data-status="closed">closed<`) {
 		t.Fatalf("not readable\n%s", stored)
 	}
-	_, still, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
+	_, still, _ := getPage(t, page.URL+"/conversations/job?cursor=0&limit=10")
 	if strings.Count(still, "&lt;b&gt;&amp;") != 2 || !strings.Contains(still, ">later<") {
 		t.Fatalf("changed\n%s", still)
 	}
 	if strings.Contains(still, `id="read-outcome"`) || !strings.Contains(still, `data-status="closed">closed<`) {
 		t.Fatalf("read closed\n%s", still)
 	}
-	_, replay, _ := postPage(t, page.URL+"/publish", form)
-	if !strings.Contains(replay, `id="already-stored">Already stored.<`) {
+	replay, _, _ := postStored(t, messagesURL(page.URL, "job"), form)
+	if strings.Count(replay, "&lt;b&gt;&amp;") != 2 || !strings.Contains(replay, ">later<") {
 		t.Fatalf("replay\n%s", replay)
 	}
-	_, final, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
+	_, final, _ := getPage(t, page.URL+"/conversations/job?cursor=0&limit=10")
 	if strings.Count(final, "&lt;b&gt;&amp;") != 2 {
 		t.Fatalf("replay wrote\n%s", final)
 	}
@@ -370,7 +428,7 @@ func TestFailedPublishKeepsThePostedID(t *testing.T) {
 	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "keep-me")
-	_, body, _ := postPage(t, page.URL+"/publish", form)
+	_, body, _ := postPage(t, messagesURL(page.URL, "job"), form)
 	if !strings.Contains(body, client.OutcomeConnectionFailure) || !strings.Contains(body, `id="txid" name="txid" value="keep-me"`) {
 		t.Fatalf("page\n%s", body)
 	}
@@ -386,7 +444,7 @@ func TestOpenConversationShowsNewestFirst(t *testing.T) {
 	publishMsg(t, addr, "", "job", "alice", []string{"bob"}, "one", "k1")
 	publishMsg(t, addr, "", "job", "alice", []string{"carol"}, "two", "k2")
 
-	_, blank, _ := getPage(t, page.URL+"/c?conversation=job")
+	_, blank, _ := getPage(t, page.URL+"/conversations/job")
 	if strings.Contains(blank, `name="cursor"`) || strings.Contains(blank, `name="limit"`) {
 		t.Fatalf("cursor form\n%s", blank)
 	}
@@ -403,25 +461,14 @@ func TestOpenConversationShowsNewestFirst(t *testing.T) {
 	form.Set("kind", "say")
 	form.Set("body", "via-page")
 	form.Set("txid", "page-key")
-	_, published, _ := postPage(t, page.URL+"/publish", form)
-	if !strings.Contains(published, `id="stored"`) || strings.Contains(published, `name="cursor"`) {
+	published, _, _ := postStored(t, messagesURL(page.URL, "job"), form)
+	if strings.Contains(published, `name="cursor"`) || strings.Contains(published, "page-key=") || !strings.Contains(published, `action="/conversations/job/messages"`) {
 		t.Fatalf("publish\n%s", published)
 	}
 	transcript := published[strings.Index(published, `id="transcript"`):]
 	via := strings.Index(transcript, ">via-page<")
 	if via < 0 || strings.Index(transcript, ">two<") < via {
 		t.Fatalf("transcript\n%s", published)
-	}
-
-	read := url.Values{}
-	read.Set("conversation", "job")
-	read.Set("txid", "page-key")
-	status, body, _ := postPage(t, page.URL+"/c", read)
-	if status != http.StatusOK || !strings.Contains(body, `value="page-key"`) || strings.Contains(body, `name="cursor"`) {
-		t.Fatalf("read post %d %s", status, body)
-	}
-	if strings.Contains(body, "page-key=") || !strings.Contains(body, `action="/c"`) {
-		t.Fatalf("key in a url\n%s", body)
 	}
 	if strings.Contains(logs.String(), "page-key") || strings.Contains(logs.String(), "cursor=") {
 		t.Fatalf("log %s", logs.String())
@@ -446,11 +493,11 @@ func TestPublishRejectsForeignOrigin(t *testing.T) {
 		{"Origin": {page.URL}, "Sec-Fetch-Site": {"cross-site"}},
 	}
 	for _, h := range foreign {
-		status, body, _ := postHeaders(t, page.URL+"/publish", form, h)
+		status, body, _ := postHeaders(t, messagesURL(page.URL, "job"), form, h)
 		if status != http.StatusForbidden || !strings.Contains(body, `id="notice">this publish did not come from this page<`) {
 			t.Fatalf("headers %v → %d %s", h, status, body)
 		}
-		if strings.Contains(body, "pwned-cross-site") || strings.Contains(body, "idem-foreign") || strings.Contains(body, `id="read-form"`) {
+		if strings.Contains(body, "pwned-cross-site") || strings.Contains(body, "idem-foreign") || strings.Contains(body, `id="send-form"`) {
 			t.Fatalf("echoed the foreign post\n%s", body)
 		}
 	}
@@ -460,12 +507,16 @@ func TestPublishRejectsForeignOrigin(t *testing.T) {
 	}
 
 	own := http.Header{"Origin": {page.URL}, "Sec-Fetch-Site": {"same-origin"}}
-	status, body, hdr := postHeaders(t, page.URL+"/publish", form, own)
+	status, _, hdr := postHeaders(t, messagesURL(page.URL, "job"), form, own)
 	if hdr.Get("Referrer-Policy") != "same-origin" {
 		t.Fatalf("referrer policy %q", hdr.Get("Referrer-Policy"))
 	}
-	if status != http.StatusOK || !strings.Contains(body, `id="stored"`) || !strings.Contains(body, ">pwned-cross-site<") {
-		t.Fatalf("same origin %d %s", status, body)
+	if status != http.StatusSeeOther {
+		t.Fatalf("same origin %d", status)
+	}
+	_, body, _ := getPage(t, resolveLocation(t, messagesURL(page.URL, "job"), hdr.Get("Location")))
+	if !strings.Contains(body, ">pwned-cross-site<") || strings.Contains(body, `id="publish-outcome"`) {
+		t.Fatalf("same origin %s", body)
 	}
 	if strings.Contains(logs.String(), "idem-foreign") {
 		t.Fatalf("log %s", logs.String())
@@ -482,7 +533,7 @@ func TestPublishShowsParseFormError(t *testing.T) {
 
 	postRaw := func(body string) (int, string) {
 		t.Helper()
-		req, err := http.NewRequest(http.MethodPost, page.URL+"/publish", strings.NewReader(body))
+		req, err := http.NewRequest(http.MethodPost, messagesURL(page.URL, "job"), strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -504,7 +555,7 @@ func TestPublishShowsParseFormError(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(got, `id="notice">`+html.EscapeString(escape)+`<`) {
 		t.Fatalf("escape %d %s", status, got)
 	}
-	if strings.Contains(got, "idem-bad-escape") || strings.Contains(got, `id="read-form"`) || strings.Contains(got, "the form could not be read") {
+	if strings.Contains(got, "idem-bad-escape") || strings.Contains(got, `id="send-form"`) || strings.Contains(got, "the form could not be read") {
 		t.Fatalf("echoed the bad form\n%s", got)
 	}
 
@@ -522,7 +573,7 @@ func TestPublishShowsParseFormError(t *testing.T) {
 		}
 		t.Fatalf("size %d %s", status, snippet)
 	}
-	if strings.Contains(got, marker) || strings.Contains(got, `id="read-form"`) {
+	if strings.Contains(got, marker) || strings.Contains(got, `id="send-form"`) {
 		t.Fatal("echoed the large form")
 	}
 
@@ -554,7 +605,7 @@ func TestPageRejectsADifferentHost(t *testing.T) {
 
 	post := func(host, origin, site string) (int, string) {
 		t.Helper()
-		req, err := http.NewRequest(http.MethodPost, page.URL+"/publish", strings.NewReader(form.Encode()))
+		req, err := http.NewRequest(http.MethodPost, messagesURL(page.URL, "job"), strings.NewReader(form.Encode()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -625,7 +676,7 @@ func TestPageRejectsADifferentHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, body = post("localhost:"+u.Port(), "http://localhost:"+u.Port(), "same-origin")
-	if status != http.StatusOK || !strings.Contains(body, `id="stored"`) || !strings.Contains(body, ">pwned-rebind<") {
+	if status != http.StatusSeeOther || strings.Contains(body, ">pwned-rebind<") {
 		t.Fatalf("localhost %d %s", status, body)
 	}
 	status, body = post("localhost:9", "http://localhost:9", "same-origin")
@@ -709,7 +760,7 @@ func TestUnfilteredReadHasNoRoster(t *testing.T) {
 	publishMsg(t, addr, "", "job", "alice", []string{"bob"}, "for-bob", "a")
 	publishMsg(t, addr, "", "job", "alice", []string{}, "for-none", "b")
 	publishMsg(t, addr, "", "job", "carol", []string{"alice"}, "for-carol", "c")
-	_, body, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
+	_, body, _ := getPage(t, page.URL+"/conversations/job?cursor=0&limit=10")
 	bob := strings.Index(body, ">for-bob<")
 	none := strings.Index(body, ">for-none<")
 	carol := strings.Index(body, ">for-carol<")
@@ -737,7 +788,7 @@ func TestLoopbackWorksWithoutToken(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
 	createConv(t, addr, "", "job")
-	_, body, _ := getPage(t, page.URL+"/")
+	_, body, _ := getPage(t, page.URL+"/conversations")
 	if !strings.Contains(body, ">job<") || !strings.Contains(body, `data-status="open">open<`) {
 		t.Fatalf("list\n%s", body)
 	}
@@ -748,18 +799,18 @@ func TestLoopbackWorksWithoutToken(t *testing.T) {
 	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "k")
-	_, stored, _ := postPage(t, page.URL+"/publish", form)
-	if !strings.Contains(stored, `id="stored"`) {
+	stored, _, _ := postStored(t, messagesURL(page.URL, "job"), form)
+	if !strings.Contains(stored, ">hello<") {
 		t.Fatalf("publish\n%s", stored)
 	}
-	_, read, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
+	_, read, _ := getPage(t, page.URL+"/conversations/job?cursor=0&limit=10")
 	if !strings.Contains(read, ">hello<") || !strings.Contains(read, `class="from">alice<`) {
 		t.Fatalf("read\n%s", read)
 	}
 
 	const token = "hstk-loopback-ignored"
 	page2, logs := newPage(t, addr, token)
-	_, body, hdr := getPage(t, page2.URL+"/")
+	_, body, hdr := getPage(t, page2.URL+"/conversations")
 	if !strings.Contains(body, ">job<") {
 		t.Fatalf("with token\n%s", body)
 	}
@@ -793,7 +844,7 @@ func TestTokenStaysOffThePage(t *testing.T) {
 
 	page, logs := newPage(t, addr, token)
 	createConv(t, addr, token, "job")
-	_, body, hdr = getPage(t, page.URL+"/")
+	_, body, hdr = getPage(t, page.URL+"/conversations")
 	if !strings.Contains(body, ">job<") || !strings.Contains(body, `data-status="open">open<`) {
 		t.Fatalf("list\n%s", body)
 	}
@@ -804,11 +855,11 @@ func TestTokenStaysOffThePage(t *testing.T) {
 	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "idem-token")
-	_, stored, shdr := postPage(t, page.URL+"/publish", form)
-	if !strings.Contains(stored, `id="stored"`) || !strings.Contains(stored, ">hello<") || !strings.Contains(stored, `class="from">alice<`) {
+	stored, shdr, _ := postStored(t, messagesURL(page.URL, "job"), form)
+	if !strings.Contains(stored, ">hello<") || !strings.Contains(stored, `class="from">alice<`) {
 		t.Fatalf("publish\n%s", stored)
 	}
-	_, read, rhdr := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
+	_, read, rhdr := getPage(t, page.URL+"/conversations/job?cursor=0&limit=10")
 	if !strings.Contains(read, ">hello<") || !strings.Contains(read, `class="from">alice<`) || strings.Contains(read, `class="txid"`) {
 		t.Fatalf("read\n%s", read)
 	}
@@ -845,6 +896,8 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 		switch r.URL.Path {
 		case bus.PathList:
 			payload = `{"outcome":"ok","conversations":[{"name":"job","status":"open"}]}`
+		case bus.PathMessages:
+			payload = `{"outcome":"ok","messages":[]}`
 		case bus.PathRead:
 			payload = `{"outcome":"ok","messages":[{"seq":4,"time":"t","from":"alice","to":["bob"],"body":"hello","txid":"k"}]}`
 		case bus.PathPublish:
@@ -877,12 +930,14 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 
 	_, body, _ := getPage(t, page.URL+"/")
 	got := take()
-	if len(got) != 1 || got[0] != bus.PathList+" "+auth+" {}" {
-		t.Fatalf("list %#v", got)
+	list := bus.PathList + " " + auth + " {}"
+	messages := bus.PathMessages + " " + auth + ` {"limit":` + strconv.FormatInt(transcriptLimit, 10) + `}`
+	if len(got) != 2 || got[0] != list || got[1] != messages {
+		t.Fatalf("messages %#v", got)
 	}
 	assertOmits(t, "list page", body, token)
 
-	_, body, _ = getPage(t, page.URL+"/c?conversation=job&before=4")
+	_, body, _ = getPage(t, page.URL+"/conversations/job?before=4")
 	got = take()
 	readBody := bus.PathRead + " " + auth + ` {"conversation":"job","cursor":0,"limit":` + strconv.FormatInt(transcriptLimit, 10) + `}`
 	if len(got) != 2 || got[0] != bus.PathList+" "+auth+" {}" || got[1] != readBody {
@@ -893,14 +948,14 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 	}
 	assertOmits(t, "read page", body, token)
 
-	_, _, _ = getPage(t, page.URL+"/c?conversation=job&before=abc")
+	_, _, _ = getPage(t, page.URL+"/conversations/job?before=abc")
 	got = take()
 	if len(got) != 1 || !strings.HasPrefix(got[0], bus.PathList+" ") {
 		t.Fatalf("bad before called %#v", got)
 	}
-	_, _, _ = getPage(t, page.URL+"/c")
+	_, _, _ = getPage(t, page.URL+"/nope")
 	if got = take(); len(got) != 0 {
-		t.Fatalf("missing conversation called %#v", got)
+		t.Fatalf("unknown path called %#v", got)
 	}
 
 	form := url.Values{}
@@ -910,11 +965,10 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "k1")
-	_, body, _ = postPage(t, page.URL+"/publish", form)
+	_, body, _ = postPage(t, messagesURL(page.URL, "job"), form)
 	got = take()
 	wantPub := bus.PathPublish + " " + auth + ` {"conversation":"job","from":"alice","to":["carol","bob"],"body":"hello","txid":"k1","kind":"say"}`
-	list := bus.PathList + " " + auth + " {}"
-	if len(got) != 4 || got[0] != list || got[1] != wantPub || got[2] != list || got[3] != readBody {
+	if len(got) != 2 || got[0] != list || got[1] != wantPub {
 		t.Fatalf("publish %#v", got)
 	}
 	assertOmits(t, "publish page", body, token)
@@ -950,8 +1004,12 @@ func TestServeRefusesNonLoopback(t *testing.T) {
 func TestBusDownIsAnOutcome(t *testing.T) {
 	page, _ := newPage(t, "127.0.0.1:1", "")
 	status, body, _ := getPage(t, page.URL+"/")
-	if status != http.StatusOK || !strings.Contains(body, client.OutcomeConnectionFailure) {
+	if status != http.StatusOK || !strings.Contains(body, client.OutcomeConnectionFailure) || strings.Contains(body, `id="empty"`) {
 		t.Fatalf("%d %s", status, body)
+	}
+	status, body, _ = getPage(t, page.URL+"/conversations")
+	if status != http.StatusOK || !strings.Contains(body, client.OutcomeConnectionFailure) || strings.Contains(body, `id="empty"`) {
+		t.Fatalf("list %d %s", status, body)
 	}
 }
 
@@ -1062,6 +1120,42 @@ func waitListen(t *testing.T, addr string, errCh <-chan error) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("did not listen on %s: %v", addr, last)
+}
+
+func resolveLocation(t *testing.T, base, loc string) string {
+	t.Helper()
+	b, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := url.Parse(loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.ResolveReference(r).String()
+}
+
+func messagesURL(base, name string) string {
+	return base + "/conversations/" + url.PathEscape(name) + "/messages"
+}
+
+// postStored requires the stored-send redirect and returns that conversation page.
+// The first header is the redirect. The second header is the conversation page.
+func postStored(t *testing.T, rawURL string, form url.Values) (string, http.Header, http.Header) {
+	t.Helper()
+	status, body, hdr := postPage(t, rawURL, form)
+	if status != http.StatusSeeOther {
+		t.Fatalf("publish %d\n%s", status, body)
+	}
+	loc := resolveLocation(t, rawURL, hdr.Get("Location"))
+	if !strings.Contains(loc, "/conversations/") || strings.HasSuffix(loc, "/messages") {
+		t.Fatalf("location %q", loc)
+	}
+	got, page, pageHdr := getPage(t, loc)
+	if got != http.StatusOK {
+		t.Fatalf("redirect %d %s", got, page)
+	}
+	return page, hdr, pageHdr
 }
 
 func getPage(t *testing.T, rawURL string) (int, string, http.Header) {

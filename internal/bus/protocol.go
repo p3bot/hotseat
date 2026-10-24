@@ -86,6 +86,7 @@ const (
 	PathWait     = "/wait"
 	PathClose    = "/close"
 	PathList     = "/list"
+	PathMessages = "/messages"
 	PathRegister = "/register"
 	PathMember   = "/member"
 	PathSession  = "/session"

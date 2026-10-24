@@ -24,8 +24,7 @@ import (
 )
 
 const (
-	routeConversation = "/c"
-	routePublish      = "/publish"
+	routeConversations = "/conversations"
 
 	// DefaultListen is the loopback address of the page when the operator does not set one.
 	DefaultListen = "127.0.0.1:4728"
@@ -49,15 +48,15 @@ type Server struct {
 	ListenHost string
 }
 
-// Handler serves the list, the transcript, and publish.
-// It calls only those bus operations.
+// Handler serves the messages page, the conversation list, a transcript, and publish.
+// It calls only list, messages, read, and publish.
 // A request whose host is not ListenHost is refused before any of those calls.
 func (s Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.handleList)
-	mux.HandleFunc("GET "+routeConversation, s.handleConversation)
-	mux.HandleFunc("POST "+routeConversation, s.handleRead)
-	mux.HandleFunc("POST "+routePublish, s.handlePublish)
+	mux.HandleFunc("GET /{$}", s.handleMessages)
+	mux.HandleFunc("GET "+routeConversations, s.handleList)
+	mux.HandleFunc("GET "+routeConversations+"/{name}", s.handleConversation)
+	mux.HandleFunc("POST "+routeConversations+"/{name}/messages", s.handlePublish)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.wrongHost(r) {
 			s.logger().Info("call", "op", "page", "outcome", bus.OutcomeRefused, "reason", "wrong host")
@@ -150,6 +149,32 @@ func (s Server) logger() *slog.Logger {
 	return s.Log
 }
 
+func (s Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	res, err := s.list(r.Context())
+	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		s.render(w, page{Kind: kindMessages, Notice: err.Error()})
+		return
+	}
+	p := page{Kind: kindMessages}
+	if res.Outcome != bus.OutcomeOK {
+		p.ListOutcome = res.Outcome
+		p.ListReason = res.Reason
+		s.render(w, p)
+		return
+	}
+	applyList(&p, res.Conversations)
+	if err := s.fillMessages(r.Context(), &p); err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		p.Notice = err.Error()
+	}
+	s.render(w, p)
+}
+
 func (s Server) handleList(w http.ResponseWriter, r *http.Request) {
 	res, err := s.list(r.Context())
 	if err != nil {
@@ -172,11 +197,7 @@ func (s Server) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	name := q.Get("conversation")
-	if !q.Has("conversation") || name == "" {
-		s.render(w, page{Notice: "conversation is required"})
-		return
-	}
+	name := r.PathValue("name")
 	p := conversationPage(name)
 	if err := s.fillStatus(r.Context(), &p); err != nil {
 		if r.Context().Err() != nil {
@@ -201,36 +222,6 @@ func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 	s.render(w, p)
 }
 
-func (s Server) handleRead(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.logger().Error("read form", "err", err)
-		s.render(w, page{Notice: err.Error()})
-		return
-	}
-	name := r.PostForm.Get("conversation")
-	if name == "" {
-		s.render(w, page{Notice: "conversation is required"})
-		return
-	}
-	p := conversationPage(name)
-	fillPosted(&p, r)
-	if err := s.fillStatus(r.Context(), &p); err != nil {
-		if r.Context().Err() != nil {
-			return
-		}
-		p.Notice = err.Error()
-		s.render(w, p)
-		return
-	}
-	if err := s.fillRecent(r.Context(), &p, 0, true); err != nil {
-		if r.Context().Err() != nil {
-			return
-		}
-		p.Notice = err.Error()
-	}
-	s.render(w, p)
-}
-
 func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if foreignPublish(r) {
 		s.logger().Info("call", "op", "publish", "outcome", bus.OutcomeRefused, "reason", "cross-site request")
@@ -245,13 +236,7 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		s.render(w, page{Notice: err.Error()})
 		return
 	}
-	name := r.PostForm.Get("conversation")
-	if name == "" {
-		p := page{Notice: "conversation is required"}
-		fillPosted(&p, r)
-		s.render(w, p)
-		return
-	}
+	name := r.PathValue("name")
 	p := conversationPage(name)
 	fillPosted(&p, r)
 	if err := s.fillStatus(r.Context(), &p); err != nil {
@@ -280,32 +265,15 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logCall("publish", name, res, start)
-	view := &publishView{Outcome: res.Outcome, Reason: res.Reason}
-	if res.AlreadyStored != nil && *res.AlreadyStored {
-		view.AlreadyStored = true
+	if res.Outcome == bus.OutcomeOK {
+		setPageHeaders(w)
+		http.Redirect(w, r, conversationPath(name), http.StatusSeeOther)
+		return
 	}
-	if res.Outcome == bus.OutcomeOK && res.Message != nil {
-		msg := *res.Message
-		view.Message = &msg
-		view.Stored = !view.AlreadyStored
-	}
-	p.Publish = view
+	p.Publish = &publishView{Outcome: res.Outcome, Reason: res.Reason}
 	if res.Conversation != nil {
 		p.Status = res.Conversation.Status
 		p.StatusKnown = true
-	}
-	if res.Outcome == bus.OutcomeOK && !view.AlreadyStored {
-		if err := s.refreshOrder(r.Context(), &p); err != nil {
-			if r.Context().Err() != nil {
-				return
-			}
-			if p.Notice == "" {
-				p.Notice = err.Error()
-			}
-		} else if res.Conversation != nil {
-			p.Status = res.Conversation.Status
-			p.StatusKnown = true
-		}
 	}
 	if err := s.fillRecent(r.Context(), &p, 0, true); err != nil {
 		if r.Context().Err() != nil {
@@ -314,9 +282,6 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		if p.Notice == "" {
 			p.Notice = err.Error()
 		}
-	}
-	if res.Outcome == bus.OutcomeOK {
-		p.TxID = ""
 	}
 	renderPublish(s, w, p)
 }
@@ -333,8 +298,7 @@ func conversationPage(name string) page {
 	return page{
 		Kind:          kindConversation,
 		Name:          name,
-		ReadAction:    routeConversation,
-		PublishAction: routePublish,
+		PublishAction: messagesPath(name),
 	}
 }
 
@@ -371,26 +335,6 @@ func (s Server) list(ctx context.Context) (client.Result, error) {
 	return res, nil
 }
 
-// refreshOrder lists again after a stored send.
-// A failed list leaves the page order in place and returns the failure.
-func (s Server) refreshOrder(ctx context.Context, p *page) error {
-	res, err := s.list(ctx)
-	if err != nil {
-		return err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		text := res.Outcome
-		if res.Reason != "" {
-			text += " " + res.Reason
-		}
-		return errors.New(text)
-	}
-	applyList(p, res.Conversations)
-	p.ListOutcome = ""
-	p.ListReason = ""
-	return nil
-}
-
 func (s Server) fillStatus(ctx context.Context, p *page) error {
 	res, err := s.list(ctx)
 	if err != nil {
@@ -402,6 +346,39 @@ func (s Server) fillStatus(ctx context.Context, p *page) error {
 		return nil
 	}
 	applyList(p, res.Conversations)
+	return nil
+}
+
+type messagesRequest struct {
+	Limit int64 `json:"limit"`
+}
+
+// fillMessages loads the newest transcriptLimit messages across every conversation.
+func (s Server) fillMessages(ctx context.Context, p *page) error {
+	start := time.Now()
+	res, err := client.Do(ctx, s.BusAddress, "messages", s.Token, messagesRequest{Limit: transcriptLimit})
+	if err != nil {
+		return err
+	}
+	s.logCall("messages", "", res, start)
+	if res.Outcome != bus.OutcomeOK {
+		p.Read = &readView{Outcome: res.Outcome, Reason: res.Reason}
+		p.Messages = nil
+		return nil
+	}
+	if res.Messages == nil {
+		p.Messages = nil
+		return nil
+	}
+	rows := make([]messageRow, 0, len(*res.Messages))
+	for _, m := range *res.Messages {
+		rows = append(rows, messageRow{
+			Conversation: m.Conversation,
+			Href:         conversationHref(m.Conversation),
+			Message:      m,
+		})
+	}
+	p.Messages = rows
 	return nil
 }
 
@@ -495,7 +472,7 @@ func (s Server) logCall(op, conv string, res client.Result, start time.Time) {
 	s.logger().Info("call", attrs...)
 }
 
-func applyList(p *page, cs *[]client.Conversation) {
+func applyList(p *page, cs *[]client.Conversation) []client.Conversation {
 	all := ordered(cs)
 	p.Index = make([]indexEntry, 0, len(all))
 	var open []conversationRow
@@ -517,6 +494,7 @@ func applyList(p *page, cs *[]client.Conversation) {
 		}
 	}
 	p.Conversations = open
+	return all
 }
 
 // ordered sorts a copy by newest activity, then name.
@@ -550,17 +528,31 @@ func activityBefore(a, b client.Conversation) bool {
 	}
 }
 
+// conversationPath is the transcript URL. The name is one path segment.
+func conversationPath(name string) string {
+	return routeConversations + "/" + url.PathEscape(name)
+}
+
+// messagesPath is the publish target for one conversation.
+func messagesPath(name string) string {
+	return conversationPath(name) + "/messages"
+}
+
+// conversationHref is the link for a conversation.
+// A name of "." or ".." has no link. The router cleans those segments before a handler runs.
 func conversationHref(name string) string {
-	v := url.Values{}
-	v.Set("conversation", name)
-	return routeConversation + "?" + v.Encode()
+	if name == "." || name == ".." {
+		return ""
+	}
+	return conversationPath(name)
 }
 
 func olderHref(name string, before int64) string {
-	v := url.Values{}
-	v.Set("conversation", name)
-	v.Set("before", strconv.FormatInt(before, 10))
-	return routeConversation + "?" + v.Encode()
+	href := conversationHref(name)
+	if href == "" {
+		return ""
+	}
+	return href + "?before=" + strconv.FormatInt(before, 10)
 }
 
 // wrongHost reports a request whose host is not this page.

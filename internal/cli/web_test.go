@@ -43,7 +43,7 @@ func TestWebCommandServesList(t *testing.T) {
 	}()
 	waitDial(t, webAddr, errCh)
 
-	status, body := httpGet(t, "http://"+webAddr+"/")
+	status, body := httpGet(t, "http://"+webAddr+"/conversations")
 	if status != http.StatusOK || !strings.Contains(body, ">job<") || !strings.Contains(body, `data-status="open">open<`) {
 		t.Fatalf("list %d %s", status, body)
 	}
@@ -106,17 +106,16 @@ func TestWebCommandUsesTokenFile(t *testing.T) {
 	}()
 	waitDial(t, webAddr, webErr)
 
-	_, body := httpGet(t, "http://"+webAddr+"/")
+	_, body := httpGet(t, "http://"+webAddr+"/conversations")
 	form := url.Values{}
-	form.Set("conversation", "job")
 	form.Set("from", "alice")
 	form.Set("to", "bob")
 	form.Set("kind", "say")
 	form.Set("body", "hello")
 	form.Set("txid", "idem-web")
-	_, stored := httpPost(t, "http://"+webAddr+"/publish", form)
-	_, read := httpGet(t, "http://"+webAddr+"/c?conversation=job&cursor=0&limit=10")
-	if !strings.Contains(body, ">job<") || !strings.Contains(stored, `id="stored"`) || !strings.Contains(read, ">hello<") {
+	_, stored := httpPost(t, "http://"+webAddr+"/conversations/job/messages", form)
+	_, read := httpGet(t, "http://"+webAddr+"/conversations/job?cursor=0&limit=10")
+	if !strings.Contains(body, ">job<") || !strings.Contains(stored, ">hello<") || !strings.Contains(read, ">hello<") {
 		t.Fatalf("list %s\npublish %s\nread %s", body, stored, read)
 	}
 	for _, part := range []struct{ name, text string }{

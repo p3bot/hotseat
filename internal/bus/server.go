@@ -103,6 +103,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST "+PathWait, s.handleWait)
 	mux.HandleFunc("POST "+PathClose, s.handleClose)
 	mux.HandleFunc("POST "+PathList, s.handleList)
+	mux.HandleFunc("POST "+PathMessages, s.handleMessages)
 	mux.HandleFunc("POST "+PathRegister, s.handleRegister)
 	mux.HandleFunc("POST "+PathMember, s.handleMember)
 	mux.HandleFunc("POST "+PathSession, s.handleSession)
@@ -203,6 +204,8 @@ func opName(path string) string {
 		return "close"
 	case PathList:
 		return "list"
+	case PathMessages:
+		return "messages"
 	case PathRegister:
 		return "register"
 	case PathMember:
@@ -297,6 +300,26 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	in.To = names
 	res, err := s.svc.Publish(r.Context(), in)
 	s.finish(w, "publish", in.Conversation, start, res, err)
+}
+
+func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	var req struct {
+		Limit *int64 `json:"limit"`
+	}
+	if !s.decode(w, r, "messages", "", start, &req) {
+		return
+	}
+	if req.Limit == nil {
+		s.finish(w, "messages", "", start, refused(ReasonLimitRequired), nil)
+		return
+	}
+	if *req.Limit > math.MaxInt {
+		s.finish(w, "messages", "", start, refused(ReasonLimitRange), nil)
+		return
+	}
+	res, err := s.svc.Messages(r.Context(), int(*req.Limit))
+	s.finish(w, "messages", "", start, res, err)
 }
 
 func (s *server) handleRead(w http.ResponseWriter, r *http.Request) {
@@ -611,13 +634,14 @@ type wire struct {
 }
 
 type wireMessage struct {
-	Seq  int64    `json:"seq"`
-	Time string   `json:"time"`
-	From string   `json:"from"`
-	To   []string `json:"to"`
-	Body string   `json:"body"`
-	TxID string   `json:"txid"`
-	Kind string   `json:"kind"`
+	Seq          int64    `json:"seq"`
+	Time         string   `json:"time"`
+	From         string   `json:"from"`
+	To           []string `json:"to"`
+	Body         string   `json:"body"`
+	TxID         string   `json:"txid"`
+	Kind         string   `json:"kind"`
+	Conversation string   `json:"conversation,omitempty"`
 }
 
 type wireConversation struct {
@@ -670,7 +694,7 @@ func toWire(op string, res Result) wire {
 		case "list":
 			cs := wireConvs(res.Conversations)
 			out.Conversations = &cs
-		case "read", "wait":
+		case "messages", "read", "wait":
 			ms := wireMsgs(res.Messages)
 			out.Messages = &ms
 			if op == "wait" && res.MatchSeq != 0 {
@@ -705,13 +729,14 @@ func wireMsg(m *store.Message) *wireMessage {
 		to = []string{}
 	}
 	return &wireMessage{
-		Seq:  m.Seq,
-		Time: m.Time,
-		From: m.From,
-		To:   to,
-		Body: m.Body,
-		TxID: m.TxID,
-		Kind: m.Kind,
+		Seq:          m.Seq,
+		Time:         m.Time,
+		From:         m.From,
+		To:           to,
+		Body:         m.Body,
+		TxID:         m.TxID,
+		Kind:         m.Kind,
+		Conversation: m.Conversation,
 	}
 }
 

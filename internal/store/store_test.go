@@ -19,6 +19,79 @@ import (
 	"testing"
 )
 
+func TestNewestOrdersAFractionAfterTheSameSecond(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	ctx := context.Background()
+	if _, _, err := st.Create(ctx, "alpha", Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Create(ctx, "beta", Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	publishAt := func(conv, body, txid, when string) {
+		t.Helper()
+		if _, _, _, err := st.Publish(ctx, Publish{
+			Conversation: conv, From: "alice", Body: body, TxID: txid, Kind: "say", Time: when,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publishAt("beta", "early", "b", "2020-01-02T00:00:00Z")
+	publishAt("alpha", "mid", "a1", "2020-01-02T00:00:00.9Z")
+	publishAt("alpha", "late", "a2", "2020-01-02T00:00:01Z")
+	got, err := st.Newest(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Body != "late" || got[0].Conversation != "alpha" || got[1].Body != "mid" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestNewestOrdersALaterFractionBeforeAnEarlierName(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	ctx := context.Background()
+	if _, _, err := st.Create(ctx, "alpha", Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Create(ctx, "beta", Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	publishAt := func(conv, body, when string) {
+		t.Helper()
+		if _, _, _, err := st.Publish(ctx, Publish{
+			Conversation: conv, From: "alice", Body: body, TxID: body, Kind: "say", Time: when,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publishAt("alpha", "earlier", "2020-01-02T00:00:00.0001Z")
+	publishAt("beta", "later", "2020-01-02T00:00:00.0002Z")
+	got, err := st.Newest(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Body != "later" || got[0].Conversation != "beta" || got[1].Body != "earlier" {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestOpenRelativeDirectory(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)

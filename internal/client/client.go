@@ -89,14 +89,16 @@ type Result struct {
 }
 
 // Message is one transcript entry as the bus returned it.
+// Conversation is set by the messages operation and omitted on the others.
 type Message struct {
-	Seq  int64    `json:"seq"`
-	Time string   `json:"time"`
-	From string   `json:"from"`
-	To   []string `json:"to"`
-	Body string   `json:"body"`
-	TxID string   `json:"txid"`
-	Kind string   `json:"kind"`
+	Seq          int64    `json:"seq"`
+	Time         string   `json:"time"`
+	From         string   `json:"from"`
+	To           []string `json:"to"`
+	Body         string   `json:"body"`
+	TxID         string   `json:"txid"`
+	Kind         string   `json:"kind"`
+	Conversation string   `json:"conversation,omitempty"`
 }
 
 // Conversation is a name, its status, and its binding.
@@ -380,6 +382,8 @@ func operationPath(op string) (string, error) {
 		return bus.PathClose, nil
 	case "list":
 		return bus.PathList, nil
+	case "messages":
+		return bus.PathMessages, nil
 	case "register":
 		return bus.PathRegister, nil
 	case "member":

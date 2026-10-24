@@ -22,14 +22,14 @@ func newWebCmd() *cobra.Command {
 	var busAddr, listenAddr string
 	cmd := &cobra.Command{
 		Use:           "web",
-		Short:         "Serve a page to list, read, and publish",
+		Short:         "Serve a page to show messages, list, read, and publish",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		Example: `  hotseat web --listen 127.0.0.1:4808
   hotseat web --address 127.0.0.1:4727 --listen 127.0.0.1:4808
   hotseat web --address 192.0.2.10:4727 --listen 127.0.0.1:4808 --token-file /run/hotseat/token`,
-		Long: `Serve a page that lists conversations, reads a transcript, and publishes.
+		Long: `Serve a page that shows messages, lists conversations, reads a transcript, and publishes.
 
 bus start serves this page on 127.0.0.1 at the next port. The default is ` + web.URL(web.DefaultListen) + `.
 This command serves the same page for a bus that is already running, on a listen address you choose.
@@ -39,12 +39,12 @@ The default bus address is ` + bus.DefaultListen + `. The default page address i
 The token is not a flag and the page does not receive it. Omit the flag for a loopback bus.
 The page listens on loopback. Any other listen address is refused.
 The page answers for the address it listens on. On loopback, localhost with that port is the same address.
-The top bar searches every conversation by name, task, and ticket, newest activity first. Conversations lists the open ones in that order.
-Opening one shows its name, status, task, ticket, seat, and directory, then the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit.
-Send opens the form. The person at the page supplies from, to, kind, and the body.
+The top bar searches every conversation by name, task, and ticket, newest activity first. Messages, at /, shows the newest 50 messages across every conversation, newest first. A conversation can appear more than once. Conversations, at /conversations, lists the open ones in that order. A conversation named "." or ".." is shown without a link.
+Opening /conversations/{name} shows its name, status, task, ticket, seat, and directory, then the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit.
+Send posts to /conversations/{name}/messages. The person at the page supplies from, to, kind, and the body.
 An empty transaction id is filled in the page when Send is submitted.
 The server does not keep the place in the transcript or the transaction id, and it does not invent one.
-An ok send clears the field. Any other result leaves the form open with the posted id.
+A stored send redirects to the conversation. Any other result leaves the form open with the posted id.
 The process runs until it is signalled.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			token, err := tokenFromFlag(cmd)

@@ -34,6 +34,7 @@
 //	POST /wait     {"conversation","cursor","name"?,"deadline"?,"kinds"?}
 //	POST /close    {"conversation"}
 //	POST /list     {}
+//	POST /messages {"limit"}
 //	POST /register {"conversation","name"}
 //	POST /member   {"conversation","name","status"?,"pid"?}
 //	POST /session  {"conversation","name"?,"session"?}
@@ -56,6 +57,11 @@
 //
 // cursor 0 means the caller has seen no message. The bus does not store it.
 // limit is the maximum number of messages read returns. Wait has no limit.
+// /messages uses limit the same way and returns those newest messages
+// across every conversation, newest first. Each message includes
+// conversation. The same time orders by conversation name, then higher
+// seq. A time with a fraction is after that second with the fraction
+// omitted.
 //
 // An ok create returns the conversation and its binding. Omitted binding
 // fields are stored empty. prompts and roster keep the caller's order. A

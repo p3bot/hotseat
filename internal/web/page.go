@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	kindMessages     = "messages"
 	kindList         = "list"
 	kindConversation = "conversation"
 )
@@ -23,6 +24,7 @@ type page struct {
 	Kind          string
 	Notice        string
 	Conversations []conversationRow
+	Messages      []messageRow
 	Index         []indexEntry
 	ListOutcome   string
 	ListReason    string
@@ -33,7 +35,6 @@ type page struct {
 	Ticket        string
 	Seat          string
 	Directory     string
-	ReadAction    string
 	PublishAction string
 	Read          *readView
 	From          string
@@ -50,6 +51,13 @@ type conversationRow struct {
 	Name   string
 	Status string
 	Href   string
+}
+
+// messageRow is one message on the messages page.
+type messageRow struct {
+	Conversation string
+	Href         string
+	Message      client.Message
 }
 
 type indexEntry struct {
@@ -69,20 +77,21 @@ type readView struct {
 }
 
 type publishView struct {
-	Outcome       string
-	Reason        string
-	AlreadyStored bool
-	Stored        bool
-	Message       *client.Message
+	Outcome string
+	Reason  string
 }
 
-// TabTitle is the browser tab label. The list is the product name.
-// A conversation adds its name so two transcripts stay distinct.
+// TabTitle is the browser tab label. Messages is the product name.
+// The conversation list and a transcript add a suffix so two tabs stay distinct.
 func (p page) TabTitle() string {
-	if p.Name != "" {
+	switch {
+	case p.Name != "":
 		return "Hotseat - " + p.Name
+	case p.Kind == kindList:
+		return "Hotseat - Conversations"
+	default:
+		return "Hotseat"
 	}
-	return "Hotseat"
 }
 
 func (s Server) render(w http.ResponseWriter, p page) {
@@ -165,12 +174,12 @@ input, textarea, #search { width: 100%; box-sizing: border-box; padding: 0.3rem 
 .status[data-status="open"] { color: var(--ok); }
 .status[data-status="closed"] { color: var(--muted); }
 nav { grid-area: nav; min-height: 0; overflow: auto; padding: 0.75rem; border-right: 1px solid var(--line); background: var(--ticket); }
-nav a { display: block; padding: 0.5rem 0.7rem; border: 1px solid var(--muted); border-radius: 6px; background: var(--muted); color: #fff; font-weight: 650; text-decoration: none; }
+nav a { display: block; margin: 0 0 0.4rem; padding: 0.5rem 0.7rem; border: 1px solid var(--muted); border-radius: 6px; background: var(--muted); color: #fff; font-weight: 650; text-decoration: none; }
 nav a:hover { background: color-mix(in srgb, var(--muted) 88%, #000); border-color: color-mix(in srgb, var(--muted) 88%, #000); text-decoration: none; }
 main { grid-area: main; min-width: 0; min-height: 0; overflow: auto; padding: 1.25rem 1.5rem 1.5rem; }
 body:not(.has-meta) main { max-width: 46rem; }
 body.has-meta main { display: flex; flex-direction: column; overflow: hidden; }
-body.has-meta #read-form { flex: 1 1 auto; min-height: 0; overflow: auto; margin-right: -1.5rem; margin-bottom: -1.5rem; padding: 0 1.25rem 1.5rem 0; }
+body.has-meta #transcript-section { flex: 1 1 auto; min-height: 0; overflow: auto; margin-right: -1.5rem; margin-bottom: -1.5rem; padding: 0 1.25rem 1.5rem 0; }
 .conv-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex: none; }
 .conv-head h1 { margin: 0 0 2rem; }
 #conversation-meta { grid-area: meta; min-width: 0; min-height: 0; overflow: auto; padding: 1.25rem 1rem 2rem; border-left: 1px solid var(--line); background: var(--ticket); }
@@ -234,12 +243,14 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 .kind { display: inline-block; padding: 0.05rem 0.55rem; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--muted); font-size: 0.75rem; font-weight: 650; line-height: 1.4; text-transform: capitalize; }
 .kind[data-kind="error"] { color: var(--issues); background: var(--banner); border-color: color-mix(in srgb, var(--issues) 35%, var(--line)); }
 .kind[data-kind="instruction"], .kind[data-kind="instructions"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, #fff); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.where { margin: 0 0 0.35rem; font-weight: 650; }
+#messages { list-style: none; margin: 0; padding: 0; }
 #conversations { list-style: none; padding: 0; }
 #conversations li { display: flex; gap: 0.75rem; align-items: baseline; padding: 0.4rem 0; border-bottom: 1px solid var(--line); }
 @media (max-width: 960px) {
   body, body.has-meta { height: auto; min-height: 100vh; overflow: visible; grid-template-columns: 1fr; grid-template-rows: auto; grid-template-areas: "bar" "nav" "meta" "main"; }
-  main, body.has-meta main, body.has-meta #read-form { display: block; overflow: visible; }
-  body.has-meta #read-form { margin: 0; padding: 0; }
+  main, body.has-meta main, body.has-meta #transcript-section { display: block; overflow: visible; }
+  body.has-meta #transcript-section { margin: 0; padding: 0; }
   nav { border-right: 0; border-bottom: 1px solid var(--line); }
   #conversation-meta { border-left: 0; border-bottom: 1px solid var(--line); }
   .search { width: min(16rem, 50vw); }
@@ -256,16 +267,28 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 </div>
 </header>
 <nav>
-<a href="/" id="nav-conversations"{{if eq .Kind "list"}} aria-current="page"{{end}}>Conversations</a>
+<a href="/" id="nav-messages"{{if eq .Kind "messages"}} aria-current="page"{{end}}>Messages</a>
+<a href="/conversations" id="nav-conversations"{{if eq .Kind "list"}} aria-current="page"{{end}}>Conversations</a>
 </nav>
 <main id="main">
 {{if .Notice}}<p id="notice">{{.Notice}}</p>{{end}}
-{{if eq .Kind "list"}}
+{{if eq .Kind "messages"}}
+<h1>Messages</h1>
+{{if .ListOutcome}}<p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p>
+{{else if .Read}}{{if ne .Read.Outcome "ok"}}<p id="read-outcome">{{.Read.Outcome}}</p>{{if .Read.Reason}}<p id="read-reason">{{.Read.Reason}}</p>{{end}}{{end}}
+{{else if eq (len .Messages) 0}}{{if not .Notice}}<p id="empty">No messages.</p>{{end}}
+{{else}}<ol id="messages">
+{{range .Messages}}<li class="message" data-seq="{{.Message.Seq}}"><p class="where">{{if .Href}}<a href="{{.Href}}">{{.Conversation}}</a>{{else}}{{.Conversation}}{{end}}</p>
+{{template "messageMeta" .Message}}
+{{template "messageBody" .Message}}
+{{template "messageFoot" .Message}}
+</li>{{end}}</ol>{{end}}
+{{else if eq .Kind "list"}}
 <h1>Conversations</h1>
 {{if .ListOutcome}}<p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p>
-{{else if eq (len .Conversations) 0}}{{if eq (len .Index) 0}}<p id="empty">No conversations.</p>{{else}}<p id="empty">No open conversations.</p>{{end}}
+{{else if eq (len .Conversations) 0}}{{if eq (len .Index) 0}}{{if not .Notice}}<p id="empty">No conversations.</p>{{end}}{{else}}<p id="empty">No open conversations.</p>{{end}}
 {{else}}<ul id="conversations">
-{{range .Conversations}}<li><a href="{{.Href}}">{{.Name}}</a> <span class="status" data-status="{{.Status}}">{{.Status}}</span></li>
+{{range .Conversations}}<li>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="name">{{.Name}}</span>{{end}} <span class="status" data-status="{{.Status}}">{{.Status}}</span></li>
 {{end}}</ul>{{end}}
 {{else if eq .Kind "conversation"}}
 <header class="conv-head">
@@ -277,16 +300,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{if .Publish}}<section id="publish-result">
 <p id="publish-outcome">{{.Publish.Outcome}}</p>
 {{if .Publish.Reason}}<p id="publish-reason">{{.Publish.Reason}}</p>{{end}}
-{{if .Publish.AlreadyStored}}<p id="already-stored">Already stored.</p>{{end}}
-{{if .Publish.Stored}}<p id="stored">Stored.</p>{{end}}
-{{if .Publish.Message}}<div id="publish-message" class="message">
-{{template "messageMeta" .Publish.Message}}
-{{template "messageBody" .Publish.Message}}
-{{template "messageFoot" .Publish.Message}}
-</div>{{end}}
 </section>{{end}}
-<form id="read-form" method="post" action="{{.ReadAction}}">
-<input type="hidden" name="conversation" value="{{.Name}}">
 <section id="transcript-section">
 {{if .Read}}{{if ne .Read.Outcome "ok"}}<p id="read-outcome">{{.Read.Outcome}}</p>
 {{if .Read.Reason}}<p id="read-reason">{{.Read.Reason}}</p>{{end}}
@@ -301,6 +315,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 <div id="more" data-next="{{.Read.NextPage}}"></div>{{end}}
 {{end}}{{end}}{{end}}
 </section>
+<form id="send-form" method="post" action="{{.PublishAction}}">
 <dialog id="send-dialog"{{if .SendOpen}} data-send-open{{end}}>
 <h2>Send</h2>
 <label for="from">From <input id="from" name="from" value="{{.From}}" autocomplete="off"></label>
@@ -311,7 +326,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 <label for="txid">Transaction id <input id="txid" name="txid" value="{{.TxID}}" autocomplete="off"></label>
 <div class="dialog-actions">
 <button type="button" id="send-cancel">Cancel</button>
-<button type="submit" id="publish-button" formaction="{{.PublishAction}}">Send</button>
+<button type="submit" id="publish-button">Send</button>
 </div>
 <p class="hint">An empty id is filled here when you send. The server does not invent one. A stored send clears this field.</p>
 </dialog>
@@ -361,8 +376,8 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
       for (var i = 0; i < items.length; i++) {
         if (!hit(items[i], q)) continue;
         var li = document.createElement("li");
-        var link = document.createElement("a");
-        link.href = items[i].href;
+        var link = document.createElement(items[i].href ? "a" : "span");
+        if (items[i].href) link.href = items[i].href;
         link.textContent = items[i].name;
         var st = document.createElement("span");
         st.className = "status";
@@ -390,7 +405,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
       window.location = link.href;
     });
   }
-  var form = document.getElementById("read-form");
+  var form = document.getElementById("send-form");
   var publish = document.getElementById("publish-button");
   if (form && publish) {
     form.addEventListener("submit", function (event) {
@@ -552,7 +567,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 </script>
 </body>
 </html>
-{{define "messageMeta"}}<p class="meta"><span class="who">From: <span class="from">{{.From}}</span>{{if .To}} To: <span class="to">{{range $i, $name := .To}}{{if $i}}, {{end}}<span class="addressee">{{$name}}</span>{{end}}</span>{{end}}</span><span class="meta-end"><span class="msg-actions"><button type="button" class="markdown" aria-pressed="false" aria-label="Markdown" title="Markdown"><svg viewBox="25 22 165 84" aria-hidden="true"><path fill="currentColor" d="M30 98V30h20l20 25 20-25h20v68H90V59L70 84 50 59v39zm125 0-30-33h20V30h20v35h20z"/></svg></button><button type="button" class="copy" aria-label="Copy markdown" title="Copy markdown"><svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></button></span><time class="when" datetime="{{.Time}}">{{viewTime .Time}}</time></span></p>{{end}}
+{{define "messageMeta"}}<p class="meta"><span class="who">From: <span class="from">{{.From}}</span>{{if .To}} To: <span class="to">{{range $i, $name := .To}}{{if $i}}, {{end}}<span class="addressee">{{$name}}</span>{{end}}</span>{{end}}</span><span class="meta-end"><time class="when" datetime="{{.Time}}">{{viewTime .Time}}</time><span class="msg-actions"><button type="button" class="markdown" aria-pressed="false" aria-label="Markdown" title="Markdown"><svg viewBox="25 22 165 84" aria-hidden="true"><path fill="currentColor" d="M30 98V30h20l20 25 20-25h20v68H90V59L70 84 50 59v39zm125 0-30-33h20V30h20v35h20z"/></svg></button><button type="button" class="copy" aria-label="Copy markdown" title="Copy markdown"><svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></button></span></span></p>{{end}}
 {{define "messageBody"}}<div class="body rendered">{{renderBody .Body}}</div><pre class="body source" hidden>{{.Body}}</pre>{{end}}
 {{define "messageFoot"}}<p class="foot"><span class="seq-n">{{.Seq}}</span><span class="kind" data-kind="{{.Kind}}">{{.Kind}}</span></p>{{end}}
 `
