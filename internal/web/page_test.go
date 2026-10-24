@@ -12,11 +12,58 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dop251/goja"
 
 	"github.com/p3bot/hotseat/internal/client"
 )
+
+func TestViewTime(t *testing.T) {
+	raw := "2026-10-17T12:30:27.069994715Z"
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := parsed.In(time.Local).Format("2006-01-02 15:04:05.000")
+	if got := viewTime(raw); got != want {
+		t.Fatalf("viewTime %q, want %q", got, want)
+	}
+	if got := viewTime("not-a-time"); got != "not-a-time" {
+		t.Fatalf("unparsed %q", got)
+	}
+}
+
+func TestRenderedMessageShowsLocalTimeKindAndSequence(t *testing.T) {
+	raw := "2026-10-17T12:30:27.069994715Z"
+	msg := client.Message{
+		Seq: 4, Time: raw, From: "alice", To: []string{"bob"},
+		Body: "hello", TxID: "idem", Kind: "say",
+	}
+	p := conversationPage("job")
+	p.Read = &readView{Outcome: "ok", Messages: []client.Message{msg}}
+	echo := msg
+	p.Publish = &publishView{Outcome: "ok", Stored: true, Message: &echo}
+	var buf bytes.Buffer
+	if err := pageTmpl.Execute(&buf, p); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := parsed.In(time.Local).Format("2006-01-02 15:04:05.000")
+	if strings.Count(html, want) != 2 || strings.Count(html, `datetime="`+raw+`"`) != 2 {
+		t.Fatalf("time\n%s", html)
+	}
+	if strings.Count(html, `data-kind="say">say<`) != 2 || strings.Count(html, `class="seq-n">4<`) != 2 {
+		t.Fatalf("kind or seq\n%s", html)
+	}
+	if strings.Contains(html, `id="read-outcome"`) {
+		t.Fatalf("ok outcome shown\n%s", html)
+	}
+}
 
 func TestTabTitleNamesTheProduct(t *testing.T) {
 	if got := (page{}).TabTitle(); got != "Hotseat" {
@@ -281,6 +328,7 @@ func TestFailedOlderGroupKeepsTheMarker(t *testing.T) {
 		{name: "status", job: `{ok:false, outcome:"", notice:"", reason:"", next:"", bodies:0}`, marker: marker, message: "older messages did not load", added: "0"},
 		{name: "network", job: `{network:true}`, marker: marker, message: "older messages did not load", added: "0"},
 		{name: "end", job: `{ok:true, outcome:"ok", notice:"", reason:"", next:"", bodies:1}`, message: "", added: "1"},
+		{name: "empty", job: `{ok:true, outcome:"ok", empty:true, notice:"", reason:"", next:"", bodies:0}`, message: "", added: "0"},
 		{name: "next", job: `{ok:true, outcome:"ok", notice:"", reason:"", next:"/c?conversation=job&before=1", bodies:1}`, marker: "/c?conversation=job&before=1", added: "1"},
 	}
 	for _, tc := range cases {
@@ -396,11 +444,18 @@ DOMParser.prototype.parseFromString = function () {
   return {
     getElementById: function (id) {
       if (id === "notice") return textNode(page.notice);
-      if (id === "read-outcome") return textNode(page.outcome);
+      if (id === "read-outcome") {
+        if (!page.outcome || page.outcome === "ok") return null;
+        return textNode(page.outcome);
+      }
       if (id === "read-reason") return textNode(page.reason);
       if (id === "transcript") {
-        if (page.outcome !== "ok") return null;
+        if (page.outcome !== "ok" || page.empty) return null;
         return { querySelectorAll: function () { return items; } };
+      }
+      if (id === "transcript-empty") {
+        if (page.outcome === "ok" && page.empty) return {};
+        return null;
       }
       if (id === "more") {
         if (!page.next) return null;
@@ -514,6 +569,7 @@ Node.prototype.getAttribute = function (k) {
   if (!Object.prototype.hasOwnProperty.call(this.attrs, k)) return null;
   return this.attrs[k];
 };
+Node.prototype.setAttribute = function (k, v) { this.attrs[k] = v; };
 Node.prototype.appendChild = function (c) { this.children.push(c); return c; };
 Node.prototype.removeChild = function (c) {
   var i = this.children.indexOf(c);

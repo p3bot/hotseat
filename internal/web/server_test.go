@@ -72,11 +72,11 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	if alpha < 0 || strings.Contains(body, ">beta<") || !strings.Contains(body, `data-name="beta"`) {
 		t.Fatalf("open list alpha %d\n%s", alpha, body)
 	}
-	if !strings.Contains(body, `class="status">open<`) || strings.Contains(body, `class="status">closed<`) {
+	if !strings.Contains(body, `data-status="open">open<`) || strings.Contains(body, `data-status="closed">closed<`) {
 		t.Fatalf("status\n%s", body)
 	}
 	_, body, _ = getPage(t, page.URL+"/c?conversation=beta")
-	if !strings.Contains(body, `id="conversation-status"`) || !strings.Contains(body, `class="status">closed<`) || !strings.Contains(body, "<title>Hotseat - beta</title>") {
+	if !strings.Contains(body, `id="conversation-status"`) || !strings.Contains(body, `data-status="closed">closed<`) || !strings.Contains(body, "<title>Hotseat - beta</title>") {
 		t.Fatalf("beta\n%s", body)
 	}
 	if strings.Contains(logs.String(), "cursor=") {
@@ -195,8 +195,8 @@ func TestReadShowsNewestThenOlderGroup(t *testing.T) {
 		t.Fatalf("repeat differed\n%s\n%s", first, second)
 	}
 	assertNoCookie(t, hdr)
-	if !strings.Contains(first, `id="read-outcome">ok<`) {
-		t.Fatalf("outcome\n%s", first)
+	if strings.Contains(first, `id="read-outcome"`) {
+		t.Fatalf("outcome shown\n%s", first)
 	}
 	if strings.Contains(first, `name="cursor"`) || strings.Contains(first, `name="limit"`) {
 		t.Fatalf("cursor form\n%s", first)
@@ -257,7 +257,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	if carol < 0 || bob < carol {
 		t.Fatalf("to order\n%s", stored)
 	}
-	if !strings.Contains(stored, `class="from">alice<`) || !strings.Contains(stored, `class="txid">idem-9f3a<`) || !strings.Contains(stored, `class="kind">say<`) {
+	if !strings.Contains(stored, `class="from">alice<`) || !strings.Contains(stored, `From:`) || !strings.Contains(stored, `data-kind="say">say<`) || strings.Contains(stored, `class="txid"`) {
 		t.Fatalf("identity\n%s", stored)
 	}
 	if !strings.Contains(stored, `id="kind" name="kind"`) || strings.Contains(stored, "member register") || strings.Contains(stored, "/members") {
@@ -277,8 +277,8 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	if !strings.Contains(again, `id="already-stored">Already stored.<`) || strings.Contains(again, `id="stored"`) {
 		t.Fatalf("again\n%s", again)
 	}
-	if !strings.Contains(again, "seq 1 from") {
-		t.Fatalf("original seq\n%s", again)
+	if !strings.Contains(again, `class="from">alice<`) || !strings.Contains(again, "&lt;b&gt;&amp;") {
+		t.Fatalf("original message\n%s", again)
 	}
 
 	changed := url.Values{}
@@ -312,7 +312,7 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	}
 
 	_, transcript, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
-	if strings.Count(transcript, "&lt;b&gt;&amp;") != 1 || strings.Contains(transcript, ">other<") || strings.Contains(transcript, ">nope<") || !strings.Contains(transcript, `class="kind">say<`) {
+	if strings.Count(transcript, "&lt;b&gt;&amp;") != 1 || strings.Contains(transcript, ">other<") || strings.Contains(transcript, ">nope<") || !strings.Contains(transcript, `class="from">alice<`) || !strings.Contains(transcript, `data-kind="say">say<`) {
 		t.Fatalf("transcript\n%s", transcript)
 	}
 
@@ -331,14 +331,14 @@ func TestPublishUsesSuppliedKeyAndClosedStaysReadable(t *testing.T) {
 	if !strings.Contains(stored, `id="publish-outcome">ok<`) || !strings.Contains(stored, `id="stored">Stored.<`) || !strings.Contains(stored, ">later<") {
 		t.Fatalf("closed publish\n%s", stored)
 	}
-	if !strings.Contains(stored, `id="read-form"`) || !strings.Contains(stored, `class="status">closed<`) {
+	if !strings.Contains(stored, `id="read-form"`) || !strings.Contains(stored, `data-status="closed">closed<`) {
 		t.Fatalf("not readable\n%s", stored)
 	}
 	_, still, _ := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
 	if strings.Count(still, "&lt;b&gt;&amp;") != 1 || !strings.Contains(still, ">later<") {
 		t.Fatalf("changed\n%s", still)
 	}
-	if !strings.Contains(still, `id="read-outcome">ok<`) || !strings.Contains(still, `class="status">closed<`) {
+	if strings.Contains(still, `id="read-outcome"`) || !strings.Contains(still, `data-status="closed">closed<`) {
 		t.Fatalf("read closed\n%s", still)
 	}
 	_, replay, _ := postPage(t, page.URL+"/publish", form)
@@ -738,7 +738,7 @@ func TestLoopbackWorksWithoutToken(t *testing.T) {
 	page, _ := newPage(t, addr, "")
 	createConv(t, addr, "", "job")
 	_, body, _ := getPage(t, page.URL+"/")
-	if !strings.Contains(body, ">job<") || !strings.Contains(body, `class="status">open<`) {
+	if !strings.Contains(body, ">job<") || !strings.Contains(body, `data-status="open">open<`) {
 		t.Fatalf("list\n%s", body)
 	}
 	form := url.Values{}
@@ -794,7 +794,7 @@ func TestTokenStaysOffThePage(t *testing.T) {
 	page, logs := newPage(t, addr, token)
 	createConv(t, addr, token, "job")
 	_, body, hdr = getPage(t, page.URL+"/")
-	if !strings.Contains(body, ">job<") || !strings.Contains(body, `class="status">open<`) {
+	if !strings.Contains(body, ">job<") || !strings.Contains(body, `data-status="open">open<`) {
 		t.Fatalf("list\n%s", body)
 	}
 	form := url.Values{}
@@ -809,7 +809,7 @@ func TestTokenStaysOffThePage(t *testing.T) {
 		t.Fatalf("publish\n%s", stored)
 	}
 	_, read, rhdr := getPage(t, page.URL+"/c?conversation=job&cursor=0&limit=10")
-	if !strings.Contains(read, ">hello<") || !strings.Contains(read, `class="txid">idem-token<`) {
+	if !strings.Contains(read, ">hello<") || !strings.Contains(read, `class="from">alice<`) || strings.Contains(read, `class="txid"`) {
 		t.Fatalf("read\n%s", read)
 	}
 	for _, part := range []struct{ name, text string }{
