@@ -88,7 +88,7 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	}
 }
 
-func TestStoredSendRefreshesActivityOrder(t *testing.T) {
+func TestStoredSendMovesConversationFirst(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
 	createConv(t, addr, "", "alpha")
@@ -130,7 +130,7 @@ func TestEmptyListNamesClosedConversations(t *testing.T) {
 	}
 }
 
-func TestOpenListFollowsNewestActivity(t *testing.T) {
+func TestOpenListFollowsNewestMessage(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
 	created := busCall(t, addr, "", "create", client.CreateRequest{
@@ -214,22 +214,24 @@ func TestDotNamesHaveNoPageLink(t *testing.T) {
 	}
 }
 
-func TestActivityOrderPutsNewestFirst(t *testing.T) {
+func TestListKeepsBusOrder(t *testing.T) {
 	cs := []client.Conversation{
-		{Name: "old", Activity: "2020-01-01T00:00:02Z"},
-		{Name: "new", Activity: "2020-01-01T00:00:02.5Z"},
-		{Name: "quiet"},
-		{Name: "same", Activity: "2020-01-01T00:00:02.5Z"},
-		{Name: "also", Activity: "nope"},
+		{Name: "newest", Status: "open"},
+		{Name: "older", Status: "open"},
+		{Name: "alpha", Status: "open"},
 	}
-	got := ordered(&cs)
-	names := make([]string, len(got))
-	for i, c := range got {
-		names[i] = c.Name
+	var p page
+	applyList(&p, &cs)
+	var index, open []string
+	for _, e := range p.Index {
+		index = append(index, e.Name)
 	}
-	want := []string{"new", "same", "old", "also", "quiet"}
-	if strings.Join(names, ",") != strings.Join(want, ",") {
-		t.Fatalf("order %v", names)
+	for _, c := range p.Conversations {
+		open = append(open, c.Name)
+	}
+	want := "newest,older,alpha"
+	if strings.Join(index, ",") != want || strings.Join(open, ",") != want {
+		t.Fatalf("index %v open %v", index, open)
 	}
 }
 

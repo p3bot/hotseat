@@ -55,13 +55,16 @@
 // "0s" does the same. A stored match still returns ok. A retry sends the
 // same end time, so time already spent stays spent.
 //
+// seq is assigned at commit. It increases across the whole store and within
+// each conversation, with gaps. A cursor is a seq the caller has seen.
 // cursor 0 means the caller has seen no message. The bus does not store it.
 // limit is the maximum number of messages read returns. Wait has no limit.
 // /messages uses limit the same way and returns those newest messages
-// across every conversation, newest first. Each message includes
-// conversation. The same time orders by conversation name, then higher
-// seq. A time with a fraction is after that second with the fraction
-// omitted.
+// across every conversation, highest seq first. Each message includes
+// conversation.
+//
+// /list returns every conversation. The one whose newest message has the
+// highest seq is first. Conversations with no message follow, by name.
 //
 // An ok create returns the conversation and its binding. Omitted binding
 // fields are stored empty. prompts and roster keep the caller's order. A

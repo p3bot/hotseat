@@ -670,7 +670,7 @@ function __olderError() { return __elements["older-error"].textContent; }
 function __added() { return String(__elements.transcript.children.length); }
 `
 
-func TestSearchKeepsActivityOrder(t *testing.T) {
+func TestSearchKeepsListOrder(t *testing.T) {
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, page{Kind: kindList}); err != nil {
 		t.Fatal(err)

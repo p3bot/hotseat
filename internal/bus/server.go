@@ -654,8 +654,6 @@ type wireConversation struct {
 	Prompts   []string `json:"prompts"`
 	Custom    string   `json:"custom"`
 	Roster    []string `json:"roster"`
-	// Activity is the newest message time. List omits it when there is no message.
-	Activity string `json:"activity,omitempty"`
 }
 
 type wireMemberPublic struct {
@@ -771,7 +769,6 @@ func wireConv(c *store.Conversation) *wireConversation {
 		Prompts:   prompts,
 		Custom:    c.Custom,
 		Roster:    roster,
-		Activity:  c.Activity,
 	}
 }
 

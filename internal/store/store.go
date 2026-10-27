@@ -70,17 +70,17 @@ var schemaStmts = []string{
   roster TEXT NOT NULL
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS messages (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation TEXT NOT NULL REFERENCES conversations(name),
-  seq INTEGER NOT NULL CHECK (seq >= 1),
   time TEXT NOT NULL,
   sender TEXT NOT NULL,
   recipients TEXT NOT NULL,
   body TEXT NOT NULL,
   txid TEXT NOT NULL,
   kind TEXT NOT NULL,
-  PRIMARY KEY (conversation, seq),
   UNIQUE (conversation, sender, txid)
 ) STRICT`,
+	`CREATE INDEX IF NOT EXISTS messages_conversation_seq ON messages (conversation, seq)`,
 	`CREATE TABLE IF NOT EXISTS members (
   conversation TEXT NOT NULL REFERENCES conversations(name),
   name TEXT NOT NULL,
@@ -101,7 +101,8 @@ var (
 	// ErrHeld means another process already has the database.
 	ErrHeld = errors.New("database is held by another process")
 	// ErrSchema means this binary will not serve the file.
-	// The recorded version differs, or a version-1 file lacks kind, the binding columns, or the member table.
+	// The recorded version differs, or a version-1 file lacks kind, the binding columns, or the member table,
+	// or its messages primary key is not seq alone.
 	ErrSchema = errors.New("store schema is not supported by this binary")
 	// ErrNotRoster means the name is not on the conversation roster.
 	ErrNotRoster = errors.New("name is not in the roster")
@@ -129,16 +130,15 @@ type Binding struct {
 }
 
 // Conversation is a name, its status, and its binding.
-// Activity is the time of the newest message. List sets it.
-// Empty means the conversation has no messages. It is not a stored column.
 type Conversation struct {
-	Name     string
-	Status   string
-	Activity string
+	Name   string
+	Status string
 	Binding
 }
 
 // Message is one accepted publish. To keeps the caller's order.
+// Seq is assigned at commit and increases across the whole store. Within one
+// conversation it increases with gaps where other conversations published.
 // Conversation is set by Newest. Other reads leave it empty.
 type Message struct {
 	Conversation string
@@ -415,24 +415,17 @@ func (s *Store) CloseConversation(ctx context.Context, name string) (Conversatio
 	return conv, nil
 }
 
-// Newest returns the newest messages across every conversation.
-// The order is time, then conversation name, then higher seq.
-// A time with a fraction sorts after the same second with no fraction.
+// Newest returns the newest messages across every conversation, highest seq first.
 func (s *Store) Newest(ctx context.Context, limit int) ([]Message, error) {
 	if limit < 1 {
 		return nil, errors.New("newest limit must be positive")
 	}
 	var out []Message
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		// An RFC3339 second is 19 characters. subsec stops at milliseconds, so the fraction is read from the text.
 		rows, err := tx.QueryContext(ctx, `
 			SELECT conversation, seq, time, sender, recipients, body, txid, kind
 			FROM messages
-			ORDER BY unixepoch(time) DESC,
-				CASE WHEN substr(time, 20, 1) = '.'
-					THEN CAST('0.' || rtrim(substr(time, 21), 'Z') AS REAL)
-					ELSE 0 END DESC,
-				conversation ASC, seq DESC
+			ORDER BY seq DESC
 			LIMIT ?`, limit)
 		if err != nil {
 			return err
@@ -458,21 +451,19 @@ func (s *Store) Newest(ctx context.Context, limit int) ([]Message, error) {
 	return out, err
 }
 
-// List returns every conversation, open and closed, ordered by name.
-// Activity is the time on the message with the highest seq, or empty when there is none.
+// List returns every conversation, open and closed.
+// The conversation whose newest message has the highest seq is first.
+// Conversations with no message follow, ordered by name.
 func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 	var out []Conversation
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
-			SELECT `+conversationColumns+`,
-				COALESCE((
-					SELECT time FROM messages
-					WHERE conversation = conversations.name
-					ORDER BY seq DESC
-					LIMIT 1
-				), '')
+			SELECT `+conversationColumns+`
 			FROM conversations
-			ORDER BY name`)
+			ORDER BY (
+				SELECT MAX(seq) FROM messages
+				WHERE conversation = conversations.name
+			) DESC NULLS LAST, name`)
 		if err != nil {
 			return err
 		}
@@ -513,22 +504,18 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, Conversation,
 			return ErrConflict
 		}
 
-		var seq int64
-		err = tx.QueryRowContext(ctx,
-			`SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversation = ?`,
-			in.Conversation).Scan(&seq)
-		if err != nil {
-			return err
-		}
 		rec, err := marshalTo(in.To)
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `
+		// Seq order is commit order only because the store has one writer.
+		var seq int64
+		err = tx.QueryRowContext(ctx, `
 			INSERT INTO messages (
-				conversation, seq, time, sender, recipients, body, txid, kind
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.Conversation, seq, in.Time, in.From, rec, in.Body, in.TxID, in.Kind)
+				conversation, time, sender, recipients, body, txid, kind
+			) VALUES (?, ?, ?, ?, ?, ?, ?)
+			RETURNING seq`,
+			in.Conversation, in.Time, in.From, rec, in.Body, in.TxID, in.Kind).Scan(&seq)
 		if err != nil {
 			return err
 		}
@@ -720,14 +707,7 @@ func scanConversation(row rowScanner) (Conversation, error) {
 func scanListed(rows *sql.Rows) ([]Conversation, error) {
 	out := make([]Conversation, 0)
 	for rows.Next() {
-		var c Conversation
-		var prompts, roster string
-		if err := rows.Scan(
-			&c.Name, &c.Status, &c.Task, &c.Ticket, &c.Seat, &c.Directory, &prompts, &c.Custom, &roster, &c.Activity,
-		); err != nil {
-			return nil, joinClose(err, rows.Close())
-		}
-		c, err := finishConversation(c, prompts, roster)
+		c, err := scanConversation(rows)
 		if err != nil {
 			return nil, joinClose(err, rows.Close())
 		}
@@ -782,7 +762,21 @@ func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 			return false, err
 		}
 	}
+	seqKey, err := seqIsPrimaryKey(ctx, tx)
+	if err != nil || !seqKey {
+		return false, err
+	}
 	return tableExists(ctx, tx, "members")
+}
+
+// seqIsPrimaryKey reports whether seq alone is the messages primary key.
+// The per-conversation shape also has a seq column, so presence cannot tell them apart.
+func seqIsPrimaryKey(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var n int
+	var name string
+	err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(MAX(name), '') FROM pragma_table_info('messages') WHERE pk > 0`).Scan(&n, &name)
+	return n == 1 && name == "seq", err
 }
 
 func tableExists(ctx context.Context, tx *sql.Tx, name string) (bool, error) {

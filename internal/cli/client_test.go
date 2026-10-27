@@ -861,7 +861,7 @@ func TestUsageErrorPrintsNoStdout(t *testing.T) {
 	}
 }
 
-func TestListShowsStatus(t *testing.T) {
+func TestListShowsStatusAndNamesQuietConversations(t *testing.T) {
 	addr, stop := startBus(t)
 	defer stop()
 	ctx := context.Background()
@@ -879,6 +879,31 @@ func TestListShowsStatus(t *testing.T) {
 	cs := *listed.Conversations
 	if cs[0].Name != "a" || cs[0].Status != "closed" || cs[1].Name != "b" || cs[1].Status != "open" {
 		t.Fatalf("list %+v", cs)
+	}
+}
+
+func TestListOrdersByNewestMessage(t *testing.T) {
+	addr, stop := startBus(t)
+	defer stop()
+	ctx := context.Background()
+	for _, name := range []string{"quiet", "old", "new"} {
+		create(t, ctx, addr, name)
+	}
+	for _, conv := range []string{"new", "old"} {
+		if res, raw := runClient(t, ctx, "publish", "--address", addr, "--conversation", conv, "--from", "alice", "--kind", "say", "--body", conv, "--txid", conv); res.Outcome != bus.OutcomeOK {
+			t.Fatalf("publish %s", raw)
+		}
+	}
+	listed, raw := runClient(t, ctx, "list", "--address", addr)
+	if listed.Conversations == nil {
+		t.Fatalf("list %s", raw)
+	}
+	var names []string
+	for _, c := range *listed.Conversations {
+		names = append(names, c.Name)
+	}
+	if strings.Join(names, ",") != "old,new,quiet" {
+		t.Fatalf("order %v", names)
 	}
 }
 

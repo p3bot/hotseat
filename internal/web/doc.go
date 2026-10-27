@@ -8,8 +8,8 @@
 // reads a transcript, and publishes a message. It is a client of a running
 // bus. It does not open the store. hotseat bus start serves the page on
 // 127.0.0.1 at the next port. The default is DefaultListen.
-// The top bar searches every conversation by name, task, and ticket, newest
-// activity first. Messages, at /, shows the newest 50 messages across
+// The top bar searches every conversation by name, task, and ticket, in the
+// list order. Messages, at /, shows the newest 50 messages across
 // every conversation, newest first. A conversation can appear more than
 // once. Conversations, at /conversations,
 // lists the open ones in that order. A conversation named "." or ".." is

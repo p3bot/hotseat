@@ -121,7 +121,6 @@ func (lw *lineWriter) integer(key string, n int64) {
 }
 
 func (lw *lineWriter) conversation(conv client.Conversation) {
-	// Activity orders the page. The text result stays the binding.
 	lw.plain("name", conv.Name)
 	// A caller that only has the name must not print a blank status.
 	if conv.Status != "" {

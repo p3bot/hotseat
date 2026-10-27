@@ -39,7 +39,7 @@ The default bus address is ` + bus.DefaultListen + `. The default page address i
 The token is not a flag and the page does not receive it. Omit the flag for a loopback bus.
 The page listens on loopback. Any other listen address is refused.
 The page answers for the address it listens on. On loopback, localhost with that port is the same address.
-The top bar searches every conversation by name, task, and ticket, newest activity first. Messages, at /, shows the newest 50 messages across every conversation, newest first. A conversation can appear more than once. Conversations, at /conversations, lists the open ones in that order. A conversation named "." or ".." is shown without a link.
+The top bar searches every conversation by name, task, and ticket, in the list order. Messages, at /, shows the newest 50 messages across every conversation, newest first. A conversation can appear more than once. Conversations, at /conversations, lists the open ones in that order. A conversation named "." or ".." is shown without a link.
 Opening /conversations/{name} shows its name, status, task, ticket, seat, and directory, then the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit.
 Send posts to /conversations/{name}/messages. The person at the page supplies from, to, kind, and the body.
 An empty transaction id is filled in the page when Send is submitted.

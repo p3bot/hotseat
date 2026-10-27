@@ -241,32 +241,30 @@ func TestMessagesReturnsTheNewestLimit(t *testing.T) {
 	}
 }
 
-func TestListJSONCarriesNewestActivity(t *testing.T) {
-	var n int
+func TestListOrdersByNewestSeqNotClock(t *testing.T) {
+	n := 10
 	base, _, _, _ := startServer(t, Options{Clock: func() time.Time {
-		n++
-		return time.Date(2020, 1, 2, 0, 0, 0, n, time.UTC)
+		n--
+		return time.Date(2020, 1, 2, 0, 0, n, 0, time.UTC)
 	}})
-	_, created := mustRaw(t, base, PathCreate, map[string]any{"name": "job"})
-	if bytes.Contains(created, []byte(`"activity"`)) {
-		t.Fatalf("create %s", created)
+	for _, name := range []string{"alpha", "beta", "quiet"} {
+		create(t, base, name)
 	}
-	publish(t, base, "job", "alice", nil, "one", "a")
-	if second := publish(t, base, "job", "alice", nil, "two", "b"); second.Outcome != OutcomeOK {
-		t.Fatalf("second %+v", second)
+	for _, conv := range []string{"alpha", "beta"} {
+		if res := publish(t, base, conv, "alice", nil, conv, conv); res.Outcome != OutcomeOK {
+			t.Fatalf("publish %s %+v", conv, res)
+		}
 	}
-	create(t, base, "quiet")
-	list, raw := mustRaw(t, base, PathList, map[string]any{})
-	if list.Conversations == nil || len(*list.Conversations) != 2 {
-		t.Fatalf("list %+v", list.Conversations)
+	list := mustPost(t, base, PathList, map[string]any{})
+	if list.Conversations == nil {
+		t.Fatalf("list %+v", list)
 	}
-	want := time.Date(2020, 1, 2, 0, 0, 0, 2, time.UTC).Format(time.RFC3339Nano)
-	got := *list.Conversations
-	if got[0].Name != "job" || got[0].Activity != want || got[1].Name != "quiet" || got[1].Activity != "" {
-		t.Fatalf("rows %+v want %s", got, want)
+	var names []string
+	for _, c := range *list.Conversations {
+		names = append(names, c.Name)
 	}
-	if strings.Count(string(raw), `"activity"`) != 1 {
-		t.Fatalf("json %s", raw)
+	if got := strings.Join(names, ","); got != "beta,alpha,quiet" {
+		t.Fatalf("order %s", got)
 	}
 }
 
@@ -289,8 +287,8 @@ func TestPublishDurableRetryAndConflict(t *testing.T) {
 		t.Fatalf("message = %+v", first.Message)
 	}
 	other := publish(t, base, "other", "alice", []string{"bob"}, "x", "k")
-	if other.Message == nil || other.Message.Seq != 1 {
-		t.Fatalf("independent seq = %+v", other.Message)
+	if other.Message == nil || other.Message.Seq != 2 {
+		t.Fatalf("store-wide seq = %+v", other.Message)
 	}
 	retry := publish(t, base, "job", "alice", []string{"bob", "carol"}, "hello", "k")
 	if retry.Outcome != OutcomeOK || retry.AlreadyStored == nil || !*retry.AlreadyStored || retry.Message.Seq != 1 {
@@ -308,7 +306,7 @@ func TestPublishDurableRetryAndConflict(t *testing.T) {
 		t.Fatalf("different body = %+v", changed)
 	}
 	sender := publish(t, base, "job", "erin", []string{"bob", "carol"}, "hello", "k")
-	if sender.Outcome != OutcomeOK || sender.AlreadyStored == nil || *sender.AlreadyStored || sender.Message == nil || sender.Message.Seq != 2 || sender.Message.From != "erin" || sender.Message.TxID != "k" {
+	if sender.Outcome != OutcomeOK || sender.AlreadyStored == nil || *sender.AlreadyStored || sender.Message == nil || sender.Message.Seq != 3 || sender.Message.From != "erin" || sender.Message.TxID != "k" {
 		t.Fatalf("different from = %+v", sender)
 	}
 	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
@@ -316,7 +314,7 @@ func TestPublishDurableRetryAndConflict(t *testing.T) {
 		t.Fatalf("transcript = %+v", read.Messages)
 	}
 	empty := publish(t, base, "job", "alice", []string{}, "", "empty")
-	if empty.Outcome != OutcomeOK || empty.Message == nil || empty.Message.Body != "" || empty.Message.Seq != 3 {
+	if empty.Outcome != OutcomeOK || empty.Message == nil || empty.Message.Body != "" || empty.Message.Seq != 4 {
 		t.Fatalf("empty body = %+v", empty)
 	}
 	tag := publish(t, base, "job", "alice", []string{"bob"}, "<tag>&", "tag")

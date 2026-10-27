@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -472,11 +471,14 @@ func (s Server) logCall(op, conv string, res client.Result, start time.Time) {
 	s.logger().Info("call", attrs...)
 }
 
-func applyList(p *page, cs *[]client.Conversation) []client.Conversation {
-	all := ordered(cs)
-	p.Index = make([]indexEntry, 0, len(all))
+// applyList fills the index and the open list in the bus order.
+func applyList(p *page, cs *[]client.Conversation) {
+	if cs == nil {
+		return
+	}
+	p.Index = make([]indexEntry, 0, len(*cs))
 	var open []conversationRow
-	for _, c := range all {
+	for _, c := range *cs {
 		href := conversationHref(c.Name)
 		p.Index = append(p.Index, indexEntry{
 			Name: c.Name, Status: c.Status, Task: c.Task, Ticket: c.Ticket, Href: href,
@@ -494,38 +496,6 @@ func applyList(p *page, cs *[]client.Conversation) []client.Conversation {
 		}
 	}
 	p.Conversations = open
-	return all
-}
-
-// ordered sorts a copy by newest activity, then name.
-// A missing or unparseable activity sorts after a real time.
-func ordered(cs *[]client.Conversation) []client.Conversation {
-	if cs == nil {
-		return nil
-	}
-	out := append([]client.Conversation(nil), (*cs)...)
-	sort.SliceStable(out, func(i, j int) bool {
-		return activityBefore(out[i], out[j])
-	})
-	return out
-}
-
-func activityBefore(a, b client.Conversation) bool {
-	at, aerr := time.Parse(time.RFC3339Nano, a.Activity)
-	bt, berr := time.Parse(time.RFC3339Nano, b.Activity)
-	switch {
-	case aerr == nil && berr == nil:
-		if at.Equal(bt) {
-			return a.Name < b.Name
-		}
-		return at.After(bt)
-	case aerr == nil:
-		return true
-	case berr == nil:
-		return false
-	default:
-		return a.Name < b.Name
-	}
 }
 
 // conversationPath is the transcript URL. The name is one path segment.

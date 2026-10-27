@@ -7,6 +7,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -19,59 +20,13 @@ import (
 	"testing"
 )
 
-func TestNewestOrdersAFractionAfterTheSameSecond(t *testing.T) {
-	st, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := st.Close(); err != nil {
-			t.Errorf("close: %v", err)
-		}
-	})
+func TestNewestOrdersBySeqNotTime(t *testing.T) {
+	st := openStore(t)
 	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "alpha", Binding{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := st.Create(ctx, "beta", Binding{}); err != nil {
-		t.Fatal(err)
-	}
-	publishAt := func(conv, body, txid, when string) {
-		t.Helper()
-		if _, _, _, err := st.Publish(ctx, Publish{
-			Conversation: conv, From: "alice", Body: body, TxID: txid, Kind: "say", Time: when,
-		}); err != nil {
+	for _, name := range []string{"alpha", "beta"} {
+		if _, _, err := st.Create(ctx, name, Binding{}); err != nil {
 			t.Fatal(err)
 		}
-	}
-	publishAt("beta", "early", "b", "2020-01-02T00:00:00Z")
-	publishAt("alpha", "mid", "a1", "2020-01-02T00:00:00.9Z")
-	publishAt("alpha", "late", "a2", "2020-01-02T00:00:01Z")
-	got, err := st.Newest(ctx, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].Body != "late" || got[0].Conversation != "alpha" || got[1].Body != "mid" {
-		t.Fatalf("%+v", got)
-	}
-}
-
-func TestNewestOrdersALaterFractionBeforeAnEarlierName(t *testing.T) {
-	st, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := st.Close(); err != nil {
-			t.Errorf("close: %v", err)
-		}
-	})
-	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "alpha", Binding{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := st.Create(ctx, "beta", Binding{}); err != nil {
-		t.Fatal(err)
 	}
 	publishAt := func(conv, body, when string) {
 		t.Helper()
@@ -81,14 +36,58 @@ func TestNewestOrdersALaterFractionBeforeAnEarlierName(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	publishAt("alpha", "earlier", "2020-01-02T00:00:00.0001Z")
-	publishAt("beta", "later", "2020-01-02T00:00:00.0002Z")
-	got, err := st.Newest(ctx, 2)
+	publishAt("beta", "first", "2020-01-02T00:00:05Z")
+	publishAt("alpha", "second", "2020-01-02T00:00:05Z")
+	publishAt("beta", "third", "2020-01-02T00:00:01Z")
+	got, err := st.Newest(ctx, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].Body != "later" || got[0].Conversation != "beta" || got[1].Body != "earlier" {
+	if len(got) != 3 {
 		t.Fatalf("%+v", got)
+	}
+	want := []struct {
+		conv, body string
+		seq        int64
+	}{{"beta", "third", 3}, {"alpha", "second", 2}, {"beta", "first", 1}}
+	for i, w := range want {
+		if got[i].Conversation != w.conv || got[i].Body != w.body || got[i].Seq != w.seq {
+			t.Fatalf("newest[%d] = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+func TestSeqIncreasesAcrossConversations(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	for _, name := range []string{"a", "b"} {
+		if _, _, err := st.Create(ctx, name, Binding{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, conv := range []string{"a", "b", "a", "b"} {
+		m, _, _, err := st.Publish(ctx, Publish{
+			Conversation: conv, From: "alice", Body: fmt.Sprintf("m%d", i), TxID: fmt.Sprintf("k%d", i), Kind: "say", Time: "t",
+		})
+		if err != nil || m.Seq != int64(i+1) {
+			t.Fatalf("publish %d to %s = %+v err=%v", i, conv, m, err)
+		}
+	}
+	for conv, want := range map[string][]int64{"a": {1, 3}, "b": {2, 4}} {
+		_, msgs, err := st.Transcript(ctx, conv, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) != 2 || msgs[0].Seq != want[0] || msgs[1].Seq != want[1] {
+			t.Fatalf("%s transcript = %+v", conv, msgs)
+		}
+		_, after, err := st.Transcript(ctx, conv, want[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after) != 1 || after[0].Seq != want[1] {
+			t.Fatalf("%s after %d = %+v", conv, want[0], after)
+		}
 	}
 }
 
@@ -351,7 +350,7 @@ func TestPublishRestartAndRetry(t *testing.T) {
 		Conversation: "other", From: "alice", To: []string{"bob"},
 		Body: "o", TxID: "k", Time: "2026-10-03T07:00:01Z",
 	})
-	if err != nil || other.Seq != 1 {
+	if err != nil || other.Seq != 2 {
 		t.Fatalf("other conversation seq = %+v err=%v", other, err)
 	}
 	again, _, already, err := st.Publish(ctx, Publish{
@@ -381,7 +380,7 @@ func TestPublishRestartAndRetry(t *testing.T) {
 		Conversation: "job", From: "alice", To: []string{"bob"},
 		Body: "new", TxID: "new", Time: "later",
 	})
-	if err != nil || already || late.Seq != 2 || lateConv.Status != StatusClosed || late.Body != "new" {
+	if err != nil || already || late.Seq != 3 || lateConv.Status != StatusClosed || late.Body != "new" {
 		t.Fatalf("publish after close = %+v status=%s already=%v err=%v", late, lateConv.Status, already, err)
 	}
 	closedConv, already, err = st.Create(ctx, "job", Binding{})
@@ -517,7 +516,7 @@ func TestNewDatabaseSchema(t *testing.T) {
 	if version != SchemaVersion || !containsCol(cols, "txid") || !containsCol(cols, "kind") {
 		t.Fatalf("version=%s cols=%v", version, cols)
 	}
-	if !strings.Contains(tableSQL, "UNIQUE (conversation, sender, txid)") {
+	if !strings.Contains(tableSQL, "UNIQUE (conversation, sender, txid)") || !strings.Contains(tableSQL, "seq INTEGER PRIMARY KEY AUTOINCREMENT") {
 		t.Fatalf("sql=%s", tableSQL)
 	}
 	db, err := sql.Open("sqlite", filepath.Join(dir, FileName))
@@ -898,37 +897,74 @@ func openStore(t *testing.T) *Store {
 	return st
 }
 
-func TestListActivityFollowsHighestSeq(t *testing.T) {
+func TestListOrdersByNewestMessageSeq(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"quiet", "alpha", "beta", "idle"} {
+		if _, _, err := st.Create(ctx, name, Binding{}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, _, err := st.Create(ctx, "quiet", Binding{}); err != nil {
-		t.Fatal(err)
+	publish := func(conv, txid, when string) {
+		t.Helper()
+		if _, _, _, err := st.Publish(ctx, Publish{
+			Conversation: conv, From: "alice", To: []string{}, Body: txid, TxID: txid, Kind: "say", Time: when,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	early := Publish{
-		Conversation: "job", From: "alice", To: []string{}, Body: "early", TxID: "a", Kind: "say",
-		Time: "2020-01-01T00:00:02Z",
-	}
-	late := early
-	late.Body = "late"
-	late.TxID = "b"
-	late.Time = "2020-01-01T00:00:02.5Z"
-	if _, _, _, err := st.Publish(ctx, early); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := st.Publish(ctx, late); err != nil {
-		t.Fatal(err)
-	}
+	publish("alpha", "a1", "2020-01-01T00:00:09Z")
+	publish("beta", "b1", "2020-01-01T00:00:05Z")
+	publish("alpha", "a2", "2020-01-01T00:00:01Z")
 	listed, err := st.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 2 || listed[0].Name != "job" || listed[1].Name != "quiet" {
-		t.Fatalf("order %+v", listed)
+	var names []string
+	for _, c := range listed {
+		names = append(names, c.Name)
 	}
-	if listed[0].Activity != late.Time || listed[1].Activity != "" {
-		t.Fatalf("activity %+v", listed)
+	if got := strings.Join(names, ","); got != "alpha,beta,idle,quiet" {
+		t.Fatalf("order %s", got)
+	}
+}
+
+func TestOpenRejectsVersion1WithCompositeMessageKey(t *testing.T) {
+	dir := writeOldDB(t, true)
+	path := filepath.Join(dir, FileName)
+	db := openRaw(t, dir)
+	for _, stmt := range []string{
+		`PRAGMA journal_mode=WAL`,
+		`CREATE TABLE members (
+			conversation TEXT NOT NULL,
+			name TEXT NOT NULL,
+			launched TEXT NOT NULL,
+			registered TEXT NOT NULL,
+			status TEXT NOT NULL,
+			session TEXT NOT NULL,
+			pid INTEGER,
+			PRIMARY KEY (conversation, name)
+		) STRICT`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); !errors.Is(err, ErrSchema) {
+		t.Fatalf("open = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("database file changed")
 	}
 }
