@@ -11,9 +11,10 @@
 // The top bar searches every conversation by name, task, and ticket, in the
 // list order. Messages, at /, shows the newest 50 messages across
 // every conversation, newest first. A conversation can appear more than
-// once. Conversations, at /conversations,
-// lists the open ones in that order. A conversation named "." or ".." is
-// shown without a link.
+// once. Conversations, at /conversations, shows an Open section and then a
+// Closed section. Each keeps that order and shows the task, ticket, and
+// seat. An empty section stays on the page. A conversation named "." or
+// ".." is shown without a link.
 // Opening /conversations/{name} shows its name, status, task, ticket, seat,
 // and directory, then the newest 50 messages, latest first.
 // The bottom of that group loads the next older 50. The server does not

@@ -44,7 +44,7 @@ func TestWebCommandServesList(t *testing.T) {
 	waitDial(t, webAddr, errCh)
 
 	status, body := httpGet(t, "http://"+webAddr+"/conversations")
-	if status != http.StatusOK || !strings.Contains(body, ">job<") || !strings.Contains(body, `data-status="open">open<`) {
+	if status != http.StatusOK || !strings.Contains(body, `id="open-conversations"`) || !strings.Contains(body, ">job<") {
 		t.Fatalf("list %d %s", status, body)
 	}
 	cancel()

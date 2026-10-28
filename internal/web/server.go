@@ -471,20 +471,23 @@ func (s Server) logCall(op, conv string, res client.Result, start time.Time) {
 	s.logger().Info("call", attrs...)
 }
 
-// applyList fills the index and the open list in the bus order.
+// applyList fills the index, then splits the rows into Open and Closed.
+// Each section keeps the bus order, newest activity first.
 func applyList(p *page, cs *[]client.Conversation) {
 	if cs == nil {
 		return
 	}
 	p.Index = make([]indexEntry, 0, len(*cs))
-	var open []conversationRow
 	for _, c := range *cs {
 		href := conversationHref(c.Name)
 		p.Index = append(p.Index, indexEntry{
 			Name: c.Name, Status: c.Status, Task: c.Task, Ticket: c.Ticket, Href: href,
 		})
+		row := conversationRow{Name: c.Name, Href: href, Task: c.Task, Ticket: c.Ticket, Seat: c.Seat}
 		if c.Status == "open" {
-			open = append(open, conversationRow{Name: c.Name, Status: c.Status, Href: href})
+			p.Open = append(p.Open, row)
+		} else {
+			p.Closed = append(p.Closed, row)
 		}
 		if p.Name != "" && c.Name == p.Name {
 			p.Status = c.Status
@@ -495,7 +498,6 @@ func applyList(p *page, cs *[]client.Conversation) {
 			p.Directory = c.Directory
 		}
 	}
-	p.Conversations = open
 }
 
 // conversationPath is the transcript URL. The name is one path segment.

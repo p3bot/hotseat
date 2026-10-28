@@ -55,7 +55,7 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, logs := newPage(t, addr, "")
 	status, body, hdr := getPage(t, page.URL+"/conversations")
-	if status != http.StatusOK || !strings.Contains(body, `id="empty">No conversations.<`) || !strings.Contains(body, "<title>Hotseat - Conversations</title>") {
+	if status != http.StatusOK || !strings.Contains(body, `id="open-empty">No open conversations.<`) || !strings.Contains(body, `id="closed-empty">No closed conversations.<`) || !strings.Contains(body, "<title>Hotseat - Conversations</title>") {
 		t.Fatalf("empty %d %s", status, body)
 	}
 	_, home, _ := getPage(t, page.URL+"/")
@@ -72,12 +72,12 @@ func TestListShowsOpenAndClosed(t *testing.T) {
 	}
 	_, body, hdr = getPage(t, page.URL+"/conversations")
 	assertNoCookie(t, hdr)
+	openAt := strings.Index(body, `id="open-conversations"`)
 	alpha := strings.Index(body, ">alpha<")
-	if alpha < 0 || strings.Contains(body, ">beta<") || !strings.Contains(body, `data-name="beta"`) {
-		t.Fatalf("open list alpha %d\n%s", alpha, body)
-	}
-	if !strings.Contains(body, `data-status="open">open<`) || strings.Contains(body, `data-status="closed">closed<`) {
-		t.Fatalf("status\n%s", body)
+	closedAt := strings.Index(body, `id="closed-conversations"`)
+	beta := strings.Index(body, ">beta<")
+	if openAt < 0 || alpha < openAt || closedAt < alpha || beta < closedAt {
+		t.Fatalf("open %d alpha %d closed %d beta %d\n%s", openAt, alpha, closedAt, beta, body)
 	}
 	_, body, _ = getPage(t, page.URL+"/conversations/beta")
 	if !strings.Contains(body, `id="conversation-status"`) || !strings.Contains(body, `data-status="closed">closed<`) || !strings.Contains(body, "<title>Hotseat - beta</title>") {
@@ -112,20 +112,17 @@ func TestStoredSendMovesConversationFirst(t *testing.T) {
 	}
 }
 
-func TestEmptyListNamesClosedConversations(t *testing.T) {
+func TestNoOpenConversationsKeepsBothSections(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
-	_, body, _ := getPage(t, page.URL+"/conversations")
-	if !strings.Contains(body, `id="empty">No conversations.<`) {
-		t.Fatalf("fresh\n%s", body)
-	}
 	createConv(t, addr, "", "alpha")
 	closed := busCall(t, addr, "", "close", client.CloseRequest{Conversation: "alpha"})
 	if closed.Outcome != bus.OutcomeOK {
 		t.Fatalf("close %+v", closed)
 	}
-	_, body, _ = getPage(t, page.URL+"/conversations")
-	if !strings.Contains(body, `id="empty">No open conversations.<`) || !strings.Contains(body, `data-name="alpha"`) {
+	_, body, _ := getPage(t, page.URL+"/conversations")
+	closedAt := strings.Index(body, `id="closed-conversations"`)
+	if !strings.Contains(body, `id="open-empty">No open conversations.<`) || closedAt < 0 || strings.Index(body, ">alpha<") < closedAt {
 		t.Fatalf("closed\n%s", body)
 	}
 }
@@ -149,6 +146,9 @@ func TestOpenListFollowsNewestMessage(t *testing.T) {
 	alpha := strings.Index(body, ">alpha<")
 	if beta < 0 || alpha < beta {
 		t.Fatalf("list beta %d alpha %d\n%s", beta, alpha, body)
+	}
+	if !strings.Contains(body, "<dt>Task</dt><dd>tasks:review</dd>") || !strings.Contains(body, "<dt>Ticket</dt><dd>foo-x234</dd>") || !strings.Contains(body, "<dt>Seat</dt><dd>bravo</dd>") {
+		t.Fatalf("list binding\n%s", body)
 	}
 	betaName := strings.Index(body, `data-name="beta"`)
 	alphaName := strings.Index(body, `data-name="alpha"`)
@@ -214,24 +214,34 @@ func TestDotNamesHaveNoPageLink(t *testing.T) {
 	}
 }
 
-func TestListKeepsBusOrder(t *testing.T) {
+func TestListSplitsOpenAndClosedInBusOrder(t *testing.T) {
 	cs := []client.Conversation{
 		{Name: "newest", Status: "open"},
-		{Name: "older", Status: "open"},
+		{Name: "older", Status: "closed"},
 		{Name: "alpha", Status: "open"},
+		{Name: "zed", Status: "closed"},
 	}
 	var p page
 	applyList(&p, &cs)
-	var index, open []string
+	names := func(rows []conversationRow) string {
+		var out []string
+		for _, r := range rows {
+			out = append(out, r.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	var index []string
 	for _, e := range p.Index {
 		index = append(index, e.Name)
 	}
-	for _, c := range p.Conversations {
-		open = append(open, c.Name)
+	if got := strings.Join(index, ","); got != "newest,older,alpha,zed" {
+		t.Fatalf("index %v", got)
 	}
-	want := "newest,older,alpha"
-	if strings.Join(index, ",") != want || strings.Join(open, ",") != want {
-		t.Fatalf("index %v open %v", index, open)
+	if got := names(p.Open); got != "newest,alpha" {
+		t.Fatalf("open %v", got)
+	}
+	if got := names(p.Closed); got != "older,zed" {
+		t.Fatalf("closed %v", got)
 	}
 }
 
@@ -791,7 +801,7 @@ func TestLoopbackWorksWithoutToken(t *testing.T) {
 	page, _ := newPage(t, addr, "")
 	createConv(t, addr, "", "job")
 	_, body, _ := getPage(t, page.URL+"/conversations")
-	if !strings.Contains(body, ">job<") || !strings.Contains(body, `data-status="open">open<`) {
+	if !strings.Contains(body, `id="open-conversations"`) || !strings.Contains(body, ">job<") {
 		t.Fatalf("list\n%s", body)
 	}
 	form := url.Values{}
@@ -847,7 +857,7 @@ func TestTokenStaysOffThePage(t *testing.T) {
 	page, logs := newPage(t, addr, token)
 	createConv(t, addr, token, "job")
 	_, body, hdr = getPage(t, page.URL+"/conversations")
-	if !strings.Contains(body, ">job<") || !strings.Contains(body, `data-status="open">open<`) {
+	if !strings.Contains(body, `id="open-conversations"`) || !strings.Contains(body, ">job<") {
 		t.Fatalf("list\n%s", body)
 	}
 	form := url.Values{}
@@ -1010,7 +1020,7 @@ func TestBusDownIsAnOutcome(t *testing.T) {
 		t.Fatalf("%d %s", status, body)
 	}
 	status, body, _ = getPage(t, page.URL+"/conversations")
-	if status != http.StatusOK || !strings.Contains(body, client.OutcomeConnectionFailure) || strings.Contains(body, `id="empty"`) {
+	if status != http.StatusOK || !strings.Contains(body, client.OutcomeConnectionFailure) || strings.Contains(body, `id="open-section"`) || strings.Contains(body, `id="closed-section"`) {
 		t.Fatalf("list %d %s", status, body)
 	}
 }

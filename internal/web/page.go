@@ -23,7 +23,8 @@ const (
 type page struct {
 	Kind          string
 	Notice        string
-	Conversations []conversationRow
+	Open          []conversationRow
+	Closed        []conversationRow
 	Messages      []messageRow
 	Index         []indexEntry
 	ListOutcome   string
@@ -47,10 +48,13 @@ type page struct {
 	HTTPStatus    int
 }
 
+// conversationRow is one entry in the Open or Closed section.
 type conversationRow struct {
 	Name   string
-	Status string
 	Href   string
+	Task   string
+	Ticket string
+	Seat   string
 }
 
 // messageRow is one message on the messages page.
@@ -174,8 +178,10 @@ input, textarea, #search { width: 100%; box-sizing: border-box; padding: 0.3rem 
 .status[data-status="open"] { color: var(--ok); }
 .status[data-status="closed"] { color: var(--muted); }
 nav { grid-area: nav; min-height: 0; overflow: auto; padding: 0.75rem; border-right: 1px solid var(--line); background: var(--ticket); }
-nav a { display: block; margin: 0 0 0.4rem; padding: 0.5rem 0.7rem; border: 1px solid var(--muted); border-radius: 6px; background: var(--muted); color: #fff; font-weight: 650; text-decoration: none; }
-nav a:hover { background: color-mix(in srgb, var(--muted) 88%, #000); border-color: color-mix(in srgb, var(--muted) 88%, #000); text-decoration: none; }
+nav a { display: block; margin: 0 0 0.4rem; padding: 0.5rem 0.7rem; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 6px; background: color-mix(in srgb, var(--accent) 8%, #fff); color: var(--accent); font-weight: 650; text-decoration: none; }
+nav a:hover { background: color-mix(in srgb, var(--accent) 16%, #fff); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); text-decoration: none; }
+nav a[aria-current="page"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+nav a[aria-current="page"]:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
 main { grid-area: main; min-width: 0; min-height: 0; overflow: auto; padding: 1.25rem 1.5rem 1.5rem; }
 body:not(.has-meta) main { max-width: 46rem; }
 body.has-meta main { display: flex; flex-direction: column; overflow: hidden; }
@@ -218,11 +224,11 @@ dialog::backdrop { background: rgb(28 25 23 / 0.45); }
 .msg-actions .copy.copied .icon-copy { display: none; }
 .msg-actions .copy.copied .icon-check { display: block; }
 .body { margin: 1rem 0 0; overflow-wrap: anywhere; }
-.rendered { overflow-x: auto; }
+.rendered { overflow-x: auto; font-size: 1.125rem; }
 .rendered > :first-child { margin-top: 0; }
 .rendered > :last-child { margin-bottom: 0; }
 .rendered p, .rendered ul, .rendered ol, .rendered pre, .rendered blockquote, .rendered h1, .rendered h2, .rendered h3, .rendered h4, .rendered h5, .rendered h6 { margin: 0.55rem 0; }
-.rendered h1, .rendered h2, .rendered h3, .rendered h4, .rendered h5, .rendered h6 { font-size: 1rem; line-height: 1.4; }
+.rendered h1, .rendered h2, .rendered h3, .rendered h4, .rendered h5, .rendered h6 { font-size: 1.1em; line-height: 1.4; }
 .rendered ul, .rendered ol { padding-left: 1.3rem; }
 .rendered blockquote { margin-left: 0; padding-left: 0.75rem; border-left: 3px solid var(--line); }
 .rendered pre, .rendered code { font-family: ui-monospace, monospace; }
@@ -245,8 +251,22 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 .kind[data-kind="instruction"], .kind[data-kind="instructions"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, #fff); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
 .where { margin: 0 0 0.35rem; font-weight: 650; }
 #messages { list-style: none; margin: 0; padding: 0; }
-#conversations { list-style: none; padding: 0; }
-#conversations li { display: flex; gap: 0.75rem; align-items: baseline; padding: 0.4rem 0; border-bottom: 1px solid var(--line); }
+.conv-group { margin: 0 0 2rem; }
+.conv-group h2 { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; font-size: 1.15rem; }
+.conv-group .count { padding: 0.05rem 0.55rem; border: 1px solid var(--line); border-radius: 999px; background: var(--ticket); color: var(--muted); font-size: 0.75rem; font-weight: 650; line-height: 1.4; font-variant-numeric: tabular-nums; }
+#open-section .count { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.conv-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+.conv { position: relative; padding: 0.6rem 0.85rem; border: 1px solid var(--line); border-radius: 6px; background: var(--ticket); box-shadow: 0 1px 2px rgb(28 25 23 / 0.08), 0 4px 12px rgb(28 25 23 / 0.12); }
+.conv:has(a):hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.conv-name { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+.conv-name a::after { content: ""; position: absolute; inset: 0; border-radius: 6px; }
+.conv-name a:hover { text-decoration: none; }
+.conv-binding { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 0.15rem 1.25rem; margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--muted); }
+.conv-binding div { display: flex; gap: 0.35rem; min-width: 0; }
+.conv-binding dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
+#closed-section .conv { background: transparent; box-shadow: none; }
+#closed-section .conv-name a { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); }
+.conv-empty { margin: 0; color: var(--muted); }
 @media (max-width: 960px) {
   body, body.has-meta { height: auto; min-height: 100vh; overflow: visible; grid-template-columns: 1fr; grid-template-rows: auto; grid-template-areas: "bar" "nav" "meta" "main"; }
   main, body.has-meta main, body.has-meta #transcript-section { display: block; overflow: visible; }
@@ -286,10 +306,14 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{else if eq .Kind "list"}}
 <h1>Conversations</h1>
 {{if .ListOutcome}}<p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p>
-{{else if eq (len .Conversations) 0}}{{if eq (len .Index) 0}}{{if not .Notice}}<p id="empty">No conversations.</p>{{end}}{{else}}<p id="empty">No open conversations.</p>{{end}}
-{{else}}<ul id="conversations">
-{{range .Conversations}}<li>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="name">{{.Name}}</span>{{end}} <span class="status" data-status="{{.Status}}">{{.Status}}</span></li>
-{{end}}</ul>{{end}}
+{{else if not .Notice}}<section class="conv-group" id="open-section">
+<h2>Open <span class="count">{{len .Open}}</span></h2>
+{{if .Open}}<ul class="conv-list" id="open-conversations">{{template "convRows" .Open}}</ul>{{else}}<p class="conv-empty" id="open-empty">No open conversations.</p>{{end}}
+</section>
+<section class="conv-group" id="closed-section">
+<h2>Closed <span class="count">{{len .Closed}}</span></h2>
+{{if .Closed}}<ul class="conv-list" id="closed-conversations">{{template "convRows" .Closed}}</ul>{{else}}<p class="conv-empty" id="closed-empty">No closed conversations.</p>{{end}}
+</section>{{end}}
 {{else if eq .Kind "conversation"}}
 <header class="conv-head">
 <h1>{{.Name}}</h1>
@@ -567,6 +591,8 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 </script>
 </body>
 </html>
+{{define "convRows"}}{{range .}}<li class="conv"><p class="conv-name">{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="name">{{.Name}}</span>{{end}}</p>{{if or .Task .Ticket .Seat}}<dl class="conv-binding">{{if .Task}}<div><dt>Task</dt><dd>{{.Task}}</dd></div>{{end}}{{if .Ticket}}<div><dt>Ticket</dt><dd>{{.Ticket}}</dd></div>{{end}}{{if .Seat}}<div><dt>Seat</dt><dd>{{.Seat}}</dd></div>{{end}}</dl>{{end}}</li>
+{{end}}{{end}}
 {{define "messageMeta"}}<p class="meta"><span class="who">From: <span class="from">{{.From}}</span>{{if .To}} To: <span class="to">{{range $i, $name := .To}}{{if $i}}, {{end}}<span class="addressee">{{$name}}</span>{{end}}</span>{{end}}</span><span class="meta-end"><time class="when" datetime="{{.Time}}">{{viewTime .Time}}</time><span class="msg-actions"><button type="button" class="markdown" aria-pressed="false" aria-label="Markdown" title="Markdown"><svg viewBox="25 22 165 84" aria-hidden="true"><path fill="currentColor" d="M30 98V30h20l20 25 20-25h20v68H90V59L70 84 50 59v39zm125 0-30-33h20V30h20v35h20z"/></svg></button><button type="button" class="copy" aria-label="Copy markdown" title="Copy markdown"><svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></button></span></span></p>{{end}}
 {{define "messageBody"}}<div class="body rendered">{{renderBody .Body}}</div><pre class="body source" hidden>{{.Body}}</pre>{{end}}
 {{define "messageFoot"}}<p class="foot"><span class="seq-n">{{.Seq}}</span><span class="kind" data-kind="{{.Kind}}">{{.Kind}}</span></p>{{end}}
