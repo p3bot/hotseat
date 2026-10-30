@@ -641,3 +641,90 @@ type fakeAddr string
 
 func (a fakeAddr) Network() string { return "tcp" }
 func (a fakeAddr) String() string  { return string(a) }
+
+func TestDroppedWatchIsRetriedOnceWithTheSameRev(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	accepts := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepts++
+			_ = conn.Close()
+		}
+	}()
+
+	rev := uint64(4)
+	res, err := Do(context.Background(), ln.Addr().String(), "watch", "", WatchRequest{Rev: &rev})
+	_ = ln.Close()
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomeConnectionFailure || !strings.HasPrefix(res.Reason, reasonDropped+": "+ln.Addr().String()+":") {
+		t.Fatalf("result %+v", res)
+	}
+	if accepts != 2 {
+		t.Fatalf("accepts = %d, want one retry", accepts)
+	}
+}
+
+func TestWatchSendsOnlySetFieldsAndDecodesMoreAndRev(t *testing.T) {
+	var mu sync.Mutex
+	var got []byte
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		path, got = r.URL.Path, body
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"outcome":"ok","messages":[{"seq":7,"time":"t","from":"a","to":[],"body":"b","txid":"k","kind":"say","conversation":"job"}],"more":true,"rev":0}`)
+	}))
+	defer srv.Close()
+	addr := srv.Listener.Addr().String()
+	posted := func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return path, string(got)
+	}
+
+	if _, err := Do(context.Background(), addr, "watch", "", WatchRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if p, body := posted(); p != bus.PathWatch || body != `{}` {
+		t.Fatalf("rev-only watch posted %s %s", p, body)
+	}
+	cursor, limit := int64(0), int64(5)
+	res, err := Do(context.Background(), addr, "watch", "", WatchRequest{Conversation: "job", Cursor: &cursor, Limit: &limit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, body := posted(); body != `{"conversation":"job","cursor":0,"limit":5}` {
+		t.Fatalf("cursor watch posted %s", body)
+	}
+	if res.More == nil || !*res.More || res.Rev == nil || *res.Rev != 0 {
+		t.Fatalf("more and rev = %v %v", res.More, res.Rev)
+	}
+	zero := int64(0)
+	if _, err := Do(context.Background(), addr, "watch", "", WatchRequest{Cursor: &cursor, Limit: &zero}); err != nil {
+		t.Fatal(err)
+	}
+	if _, body := posted(); body != `{"cursor":0,"limit":0}` {
+		t.Fatalf("zero limit posted %s", body)
+	}
+	if res.Messages == nil || len(*res.Messages) != 1 || (*res.Messages)[0].Conversation != "job" {
+		t.Fatalf("messages = %+v", res.Messages)
+	}
+}

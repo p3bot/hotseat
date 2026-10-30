@@ -32,6 +32,7 @@
 //	POST /publish  {"conversation","from","to","body","txid","kind"}
 //	POST /read     {"conversation","cursor","limit","name"?,"kinds"?}
 //	POST /wait     {"conversation","cursor","name"?,"deadline"?,"kinds"?}
+//	POST /watch    {"cursor"?,"conversation"?,"rev"?,"limit"?,"deadline"?}
 //	POST /close    {"conversation"}
 //	POST /list     {}
 //	POST /messages {"limit"}
@@ -62,6 +63,24 @@
 // /messages uses limit the same way and returns those newest messages
 // across every conversation, highest seq first. Each message includes
 // conversation.
+//
+// /watch returns messages with seq greater than cursor, oldest first, in
+// conversation or every conversation, at most limit, each with
+// conversation. limit is required with cursor. A conversation name with no
+// conversation matches no message and is not refused. more is true when
+// further matching messages follow the last one returned. rev is the current
+// change counter. Omit cursor and the watch returns no messages. A watch
+// returns at once when a matching message exists, when rev is omitted, or
+// when rev differs from the counter. Otherwise it blocks until one of those
+// holds, the deadline passes, the connection drops, or the process stops.
+//
+// rev lives in process memory and starts at a random value below 2^53, so a
+// restarted process does not return a value a caller still holds. Compare it
+// for equality only. It increases on a create that inserted, on a close that
+// changed the status, and on a stored publish to a conversation other than
+// the one holding the newest message, which is the only way a publish changes
+// list order. An idempotent publish and a close of a closed conversation
+// change nothing and wake no watch.
 //
 // /list returns every conversation. The one whose newest message has the
 // highest seq is first. Conversations with no message follow, by name.

@@ -53,7 +53,10 @@ func Serve(ctx context.Context, ln net.Listener, st *store.Store, opt Options) e
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	svc := newService(st, opt)
+	svc, err := newService(ctx, st, opt)
+	if err != nil {
+		return errors.Join(err, ln.Close())
+	}
 	defer svc.stop()
 	httpSrv := &http.Server{
 		Handler:           (&server{svc: svc, token: opt.Token}).routes(),
@@ -101,6 +104,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST "+PathPublish, s.handlePublish)
 	mux.HandleFunc("POST "+PathRead, s.handleRead)
 	mux.HandleFunc("POST "+PathWait, s.handleWait)
+	mux.HandleFunc("POST "+PathWatch, s.handleWatch)
 	mux.HandleFunc("POST "+PathClose, s.handleClose)
 	mux.HandleFunc("POST "+PathList, s.handleList)
 	mux.HandleFunc("POST "+PathMessages, s.handleMessages)
@@ -200,6 +204,8 @@ func opName(path string) string {
 		return "read"
 	case PathWait:
 		return "wait"
+	case PathWatch:
+		return "watch"
 	case PathClose:
 		return "close"
 	case PathList:
@@ -392,6 +398,41 @@ func (s *server) handleWait(w http.ResponseWriter, r *http.Request) {
 	s.finish(w, "wait", conv, start, res, err)
 }
 
+func (s *server) handleWatch(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	var req struct {
+		Conversation *string         `json:"conversation"`
+		Cursor       *int64          `json:"cursor"`
+		Rev          *uint64         `json:"rev"`
+		Limit        *int64          `json:"limit"`
+		Deadline     json.RawMessage `json:"deadline"`
+	}
+	if !s.decode(w, r, "watch", "", start, &req) {
+		return
+	}
+	q := watchQuery{
+		conversation:    deref(req.Conversation),
+		hasConversation: req.Conversation != nil,
+		cursor:          derefInt(req.Cursor),
+		hasCursor:       req.Cursor != nil,
+		limit:           derefInt(req.Limit),
+		hasLimit:        req.Limit != nil,
+		hasRev:          req.Rev != nil,
+	}
+	if req.Rev != nil {
+		q.rev = *req.Rev
+	}
+	deadline, err := parseDeadline(req.Deadline)
+	if err != nil {
+		res, rerr := asRefused(err)
+		s.finish(w, "watch", q.conversation, start, res, rerr)
+		return
+	}
+	q.deadline = deadline
+	res, err := s.svc.Watch(r.Context(), q)
+	s.finish(w, "watch", q.conversation, start, res, err)
+}
+
 func (s *server) handleClose(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
@@ -563,6 +604,13 @@ func optionalName(name *string) (string, bool) {
 	return *name, true
 }
 
+func derefInt(n *int64) int64 {
+	if n == nil {
+		return 0
+	}
+	return *n
+}
+
 func deref(s *string) string {
 	if s == nil {
 		return ""
@@ -592,6 +640,9 @@ func (s *server) finish(w http.ResponseWriter, op, conv string, start time.Time,
 	}
 	if res.MatchSeq != 0 {
 		attrs = append(attrs, "match_seq", res.MatchSeq)
+	}
+	if op == "watch" && res.Outcome == OutcomeOK {
+		attrs = append(attrs, "messages", len(res.Messages), "rev", res.Rev)
 	}
 	if res.Outcome == OutcomeUnavailable {
 		s.svc.log.Error("call", attrs...)
@@ -631,6 +682,8 @@ type wire struct {
 	Members        *[]wireMemberPublic `json:"members,omitempty"`
 	Session        *wireSession        `json:"session,omitempty"`
 	Sessions       *[]wireSession      `json:"sessions,omitempty"`
+	More           *bool               `json:"more,omitempty"`
+	Rev            *uint64             `json:"rev,omitempty"`
 }
 
 type wireMessage struct {
@@ -699,6 +752,12 @@ func toWire(op string, res Result) wire {
 				seq := res.MatchSeq
 				out.MatchSeq = &seq
 			}
+		case "watch":
+			ms := wireMsgs(res.Messages)
+			out.Messages = &ms
+			more, rev := res.More, res.Rev
+			out.More = &more
+			out.Rev = &rev
 		case "register", "member":
 			out.Member = wireOneMember(res.Member)
 		case "members":

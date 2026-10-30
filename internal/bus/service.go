@@ -9,7 +9,9 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -47,13 +49,17 @@ type Result struct {
 	Members        []store.Member
 	Session        *store.MemberSession
 	Sessions       []store.MemberSession
+	More           bool
+	Rev            uint64
 }
 
 type waiter struct {
 	wake chan struct{}
 }
 
-// Service applies the bus rules and wakes blocked waits.
+// Service applies the bus rules and wakes blocked waits and watches.
+// rev and newest live in process memory. A new process starts rev at a
+// random value below 2^53 and reads newest from the store.
 type Service struct {
 	store   *store.Store
 	maxBody int
@@ -63,11 +69,14 @@ type Service struct {
 	schema  func(context.Context) (string, error)
 	mu      sync.Mutex
 	waiters map[string][]*waiter
+	watches []*waiter
+	rev     uint64
+	newest  string
 	cancel  context.CancelFunc
 	done    <-chan struct{}
 }
 
-func newService(st *store.Store, opt Options) *Service {
+func newService(ctx context.Context, st *store.Store, opt Options) (*Service, error) {
 	if opt.MaxBody < 1 {
 		opt.MaxBody = DefaultMaxBody
 	}
@@ -77,8 +86,12 @@ func newService(st *store.Store, opt Options) *Service {
 	if opt.Clock == nil {
 		opt.Clock = time.Now
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Service{
+	newest, err := st.Newest(ctx, 1)
+	if err != nil {
+		return nil, fmt.Errorf("read newest message: %w", err)
+	}
+	life, cancel := context.WithCancel(context.Background())
+	svc := &Service{
 		store:   st,
 		maxBody: opt.MaxBody,
 		clock:   opt.Clock,
@@ -86,9 +99,15 @@ func newService(st *store.Store, opt Options) *Service {
 		onBlock: opt.OnBlock,
 		schema:  opt.schema,
 		waiters: make(map[string][]*waiter),
-		cancel:  cancel,
-		done:    ctx.Done(),
+		// A random start keeps a restarted bus off a value a caller still holds.
+		rev:    rand.Uint64N(1 << 53),
+		cancel: cancel,
+		done:   life.Done(),
 	}
+	if len(newest) == 1 {
+		svc.newest = newest[0].Conversation
+	}
+	return svc, nil
 }
 
 func (s *Service) stop() { s.cancel() }
@@ -103,9 +122,14 @@ func (s *Service) Create(ctx context.Context, name string, b store.Binding) (Res
 	if err := validateBinding(b); err != nil {
 		return asRefused(err)
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	conv, already, err := s.store.Create(ctx, name, b)
 	if err != nil {
 		return s.fail(err, "create")
+	}
+	if !already {
+		s.bump()
 	}
 	return Result{
 		Outcome:        OutcomeOK,
@@ -136,6 +160,11 @@ func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) 
 		return s.fail(err, "publish")
 	}
 	if !already {
+		// A publish changes list order only when another conversation held the newest message.
+		if in.Conversation != s.newest {
+			s.newest = in.Conversation
+			s.rev++
+		}
 		s.notify(in.Conversation)
 	}
 	return Result{
@@ -200,11 +229,14 @@ func (s *Service) CloseConversation(ctx context.Context, name string) (Result, e
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	conv, err := s.store.CloseConversation(ctx, name)
+	conv, already, err := s.store.CloseConversation(ctx, name)
 	if err != nil {
 		return s.fail(err, "close")
 	}
-	// No message was appended, so a blocked wait has nothing new to match.
+	// Only watches wake: no message was appended, so a blocked wait has nothing new to match.
+	if !already {
+		s.bump()
+	}
 	return Result{
 		Outcome:      OutcomeOK,
 		Conversation: &conv,
@@ -352,8 +384,20 @@ func (s *Service) fail(err error, op string) (Result, error) {
 	}
 }
 
+// notify wakes the waits on conv and every watch after a message is appended.
 func (s *Service) notify(conv string) {
-	for _, w := range s.waiters[conv] {
+	wakeAll(s.waiters[conv])
+	wakeAll(s.watches)
+}
+
+// bump records a list change and wakes every watch. The caller holds s.mu.
+func (s *Service) bump() {
+	s.rev++
+	wakeAll(s.watches)
+}
+
+func wakeAll(ws []*waiter) {
+	for _, w := range ws {
 		select {
 		case w.wake <- struct{}{}:
 		default:
@@ -376,6 +420,19 @@ func (s *Service) remove(conv string, w *waiter) {
 	}
 	if len(s.waiters[conv]) == 0 {
 		delete(s.waiters, conv)
+	}
+}
+
+func (s *Service) addWatch(w *waiter) {
+	s.watches = append(s.watches, w)
+}
+
+func (s *Service) removeWatch(w *waiter) {
+	for i, cur := range s.watches {
+		if cur == w {
+			s.watches = append(s.watches[:i], s.watches[i+1:]...)
+			return
+		}
 	}
 }
 

@@ -139,7 +139,7 @@ type Conversation struct {
 // Message is one accepted publish. To keeps the caller's order.
 // Seq is assigned at commit and increases across the whole store. Within one
 // conversation it increases with gaps where other conversations published.
-// Conversation is set by Newest. Other reads leave it empty.
+// Conversation is set by Newest and After. Other reads leave it empty.
 type Message struct {
 	Conversation string
 	Seq          int64
@@ -388,9 +388,11 @@ func (s *Store) Create(ctx context.Context, name string, b Binding) (Conversatio
 }
 
 // CloseConversation sets status to closed and appends nothing.
-// Closing a conversation that is already closed writes nothing and returns that row.
-func (s *Store) CloseConversation(ctx context.Context, name string) (Conversation, error) {
+// already is true when the conversation was closed before this call. That
+// path writes nothing and returns the stored row.
+func (s *Store) CloseConversation(ctx context.Context, name string) (Conversation, bool, error) {
 	var conv Conversation
+	var already bool
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
 		var err error
 		conv, err = conversationByName(ctx, tx, name)
@@ -398,6 +400,7 @@ func (s *Store) CloseConversation(ctx context.Context, name string) (Conversatio
 			return err
 		}
 		if conv.Status == StatusClosed {
+			already = true
 			return errNoChange
 		}
 		_, err = tx.ExecContext(ctx,
@@ -410,9 +413,9 @@ func (s *Store) CloseConversation(ctx context.Context, name string) (Conversatio
 		return nil
 	})
 	if err != nil {
-		return Conversation{}, err
+		return Conversation{}, false, err
 	}
-	return conv, nil
+	return conv, already, nil
 }
 
 // Newest returns the newest messages across every conversation, highest seq first.
@@ -430,25 +433,56 @@ func (s *Store) Newest(ctx context.Context, limit int) ([]Message, error) {
 		if err != nil {
 			return err
 		}
-		for rows.Next() {
-			var m Message
-			var rec string
-			if err := rows.Scan(&m.Conversation, &m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind); err != nil {
-				return joinClose(err, rows.Close())
-			}
-			to, err := unmarshalTo(rec)
-			if err != nil {
-				return joinClose(fmt.Errorf("message %s/%d recipients: %w", m.Conversation, m.Seq, err), rows.Close())
-			}
-			m.To = to
-			out = append(out, m)
-		}
-		if err := rows.Err(); err != nil {
-			return joinClose(err, rows.Close())
-		}
-		return rows.Close()
+		out, err = scanPlaced(rows)
+		return err
 	})
 	return out, err
+}
+
+// After returns at most limit messages with seq greater than after, oldest
+// first, each with its conversation. An empty conversation reads every
+// conversation. A conversation that does not exist yields no messages and
+// no error. more reports a further message after the last one returned.
+func (s *Store) After(ctx context.Context, conversation string, after int64, limit int) (msgs []Message, more bool, err error) {
+	if limit < 1 {
+		return nil, false, errors.New("after limit must be positive")
+	}
+	// One row past the limit answers more without a second count query.
+	probe := int64(limit) + 1
+	if probe < 1 {
+		probe = -1
+	}
+	err = s.withTx(ctx, false, func(tx *sql.Tx) error {
+		var rows *sql.Rows
+		var err error
+		if conversation == "" {
+			rows, err = tx.QueryContext(ctx, `
+				SELECT conversation, seq, time, sender, recipients, body, txid, kind
+				FROM messages
+				WHERE seq > ?
+				ORDER BY seq
+				LIMIT ?`, after, probe)
+		} else {
+			rows, err = tx.QueryContext(ctx, `
+				SELECT conversation, seq, time, sender, recipients, body, txid, kind
+				FROM messages
+				WHERE conversation = ? AND seq > ?
+				ORDER BY seq
+				LIMIT ?`, conversation, after, probe)
+		}
+		if err != nil {
+			return err
+		}
+		msgs, err = scanPlaced(rows)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(msgs) > limit {
+		return msgs[:limit], true, nil
+	}
+	return msgs, false, nil
 }
 
 // List returns every conversation, open and closed.
@@ -799,6 +833,31 @@ func columnExists(ctx context.Context, tx *sql.Tx, table, col string) (bool, err
 	var n int
 	err := tx.QueryRowContext(ctx, q, col).Scan(&n)
 	return n > 0, err
+}
+
+// scanPlaced reads rows that lead with the conversation column, then closes them.
+func scanPlaced(rows *sql.Rows) ([]Message, error) {
+	out := make([]Message, 0)
+	for rows.Next() {
+		var m Message
+		var rec string
+		if err := rows.Scan(&m.Conversation, &m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind); err != nil {
+			return nil, joinClose(err, rows.Close())
+		}
+		to, err := unmarshalTo(rec)
+		if err != nil {
+			return nil, joinClose(fmt.Errorf("message %s/%d recipients: %w", m.Conversation, m.Seq, err), rows.Close())
+		}
+		m.To = to
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, joinClose(err, rows.Close())
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func scanOne(rows *sql.Rows) (Message, error) {

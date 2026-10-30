@@ -86,10 +86,12 @@ type Result struct {
 	Members        *[]Member       `json:"members,omitempty"`
 	Session        *Session        `json:"session,omitempty"`
 	Sessions       *[]Session      `json:"sessions,omitempty"`
+	More           *bool           `json:"more,omitempty"`
+	Rev            *uint64         `json:"rev,omitempty"`
 }
 
 // Message is one transcript entry as the bus returned it.
-// Conversation is set by the messages operation and omitted on the others.
+// Conversation is set by the messages and watch operations and omitted on the others.
 type Message struct {
 	Seq          int64    `json:"seq"`
 	Time         string   `json:"time"`
@@ -173,6 +175,17 @@ type WaitRequest struct {
 	Name         *string   `json:"name,omitempty"`
 	Deadline     *string   `json:"deadline,omitempty"`
 	Kinds        *[]string `json:"kinds,omitempty"`
+}
+
+// WatchRequest is the watch body. An empty Conversation watches every
+// conversation. A nil Cursor watches rev only. A nil Rev, Limit, or
+// Deadline omits that field.
+type WatchRequest struct {
+	Conversation string  `json:"conversation,omitempty"`
+	Cursor       *int64  `json:"cursor,omitempty"`
+	Rev          *uint64 `json:"rev,omitempty"`
+	Limit        *int64  `json:"limit,omitempty"`
+	Deadline     *string `json:"deadline,omitempty"`
 }
 
 // RegisterRequest is the register body.
@@ -375,6 +388,8 @@ func operationPath(op string) (string, error) {
 		return bus.PathRead, nil
 	case "wait":
 		return bus.PathWait, nil
+	case "watch":
+		return bus.PathWatch, nil
 	case "close":
 		return bus.PathClose, nil
 	case "list":

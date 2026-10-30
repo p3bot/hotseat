@@ -32,6 +32,7 @@ A loopback listener ignores credentials. Any other listener requires the token o
 | `/close` | `{"conversation"}` |
 | `/list` | `{}` |
 | `/messages` | `{"limit"}` |
+| `/watch` | `{"cursor"?,"conversation"?,"rev"?,"limit"?,"deadline"?}` |
 | `/register` | `{"conversation","name"}` |
 | `/member` | `{"conversation","name","status"?,"pid"?}` |
 | `/session` | `{"conversation","name"?,"session"?}` |
@@ -40,6 +41,8 @@ A loopback listener ignores credentials. Any other listener requires the token o
 `to` is an array. `[]` is empty. `["all"]` is the single value all. Any other array is an ordered name list and is not sorted or deduplicated. A different order is different content. `kind` uses the same character rules as a name. The bus stores that name and does not check its meaning, so `act` and any other legal name are stored. `kinds`, when present, is an array of those names. Omit it and read and wait match as they do without a kind filter. An empty array is refused. `deadline` is a Go duration such as `30s` or `500ms`, or an RFC3339 end time. Omit it to wait until a match or a dropped connection. A duration is measured from arrival. An end time is absolute on the bus clock. A time already past times out at once when nothing matches, and a retry sends that same time.
 
 An ok `/messages` returns the newest `limit` messages across every conversation, highest `seq` first. Each message includes `conversation`. There is no command for this route.
+
+`/watch` takes `cursor`, `conversation`, `rev`, `limit`, and `deadline`, each optional. `limit` is required with `cursor` and follows the read range rule. `conversation` uses the name grammar. A name with no conversation matches no message and is not refused. `deadline` follows `/wait`. An ok watch returns `messages` with `seq` greater than `cursor`, oldest first, in that conversation or every conversation, at most `limit`, each with `conversation`. It also returns `more`, true when further matching messages follow the last one returned, and `rev`. Omit `cursor` and the watch returns no messages and waits on `rev` alone. It returns at once when a matching message exists, when `rev` is omitted, or when `rev` differs from the current counter. Otherwise it blocks until one of those holds, the deadline passes (`timeout`), the connection drops, or the bus stops. `rev` is a change counter for the conversation list, kept in bus memory. It starts at a random value below 2^53 when the bus starts, so a restarted bus does not return a value a caller still holds. Compare it for equality only. It increases on a create that inserted, on a close that changed the status, and on a stored publish to a conversation other than the one holding the newest message. An idempotent publish and a close of a closed conversation change nothing and wake no watch. Omit `rev` on the first watch. There is no command for this route.
 
 `seq` is assigned at commit. It increases across the whole store and within each conversation, with gaps, so one conversation's messages need not be numbered 1, 2, 3. A cursor is a `seq` the caller has seen. `cursor` `0` means the caller has seen no message. The bus does not store cursors or transaction ids except the txid recorded on an accepted message. The caller passes both on each call.
 

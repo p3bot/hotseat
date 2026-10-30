@@ -179,6 +179,18 @@ func TestTokenGateRefusesBeforeWrite(t *testing.T) {
 	if waited.Outcome != OutcomeRefused || waited.Reason != ReasonTokenRequired {
 		t.Fatalf("wait %+v", waited)
 	}
+	watched, _ := authPost(t, base, PathWatch, "", []byte(`{}`), secrets)
+	if watched.Outcome != OutcomeRefused || watched.Reason != ReasonTokenRequired || watched.Rev != nil {
+		t.Fatalf("watch without token %+v", watched)
+	}
+	wrongWatch, _ := authPost(t, base, PathWatch, "Bearer "+wrong, []byte(`{}`), secrets)
+	if wrongWatch.Outcome != OutcomeRefused || wrongWatch.Reason != ReasonTokenRejected {
+		t.Fatalf("watch with wrong token %+v", wrongWatch)
+	}
+	tokenWatch, _ := authPost(t, base, PathWatch, "Bearer "+token, []byte(`{}`), secrets)
+	if tokenWatch.Outcome != OutcomeOK || tokenWatch.Rev == nil {
+		t.Fatalf("watch with token %+v", tokenWatch)
+	}
 	closed, _ := authPost(t, base, PathClose, "", []byte(`{"conversation":"job"}`), secrets)
 	if closed.Outcome != OutcomeRefused || closed.Reason != ReasonTokenRequired {
 		t.Fatalf("close %+v", closed)

@@ -84,6 +84,7 @@ const (
 	PathPublish  = "/publish"
 	PathRead     = "/read"
 	PathWait     = "/wait"
+	PathWatch    = "/watch"
 	PathClose    = "/close"
 	PathList     = "/list"
 	PathMessages = "/messages"

@@ -35,6 +35,18 @@ func startServer(t *testing.T, opt Options) (base, dir string, st *store.Store, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+	base, stop = serveStore(t, st, opt)
+	return base, dir, st, stop
+}
+
+// serveStore serves st on a fresh loopback port until stop or the end of the test.
+func serveStore(t *testing.T, st *store.Store, opt Options) (base string, stop func()) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -57,13 +69,8 @@ func startServer(t *testing.T, opt Options) (base, dir string, st *store.Store, 
 			}
 		})
 	}
-	t.Cleanup(func() {
-		if err := st.Close(); err != nil {
-			t.Errorf("close store: %v", err)
-		}
-	})
 	t.Cleanup(stop)
-	return "http://" + ln.Addr().String(), dir, st, stop
+	return "http://" + ln.Addr().String(), stop
 }
 
 func waitReady(t *testing.T, addr string, errCh <-chan error) {
@@ -734,25 +741,7 @@ func TestRestartPreservesStore(t *testing.T) {
 			t.Errorf("close: %v", err)
 		}
 	})
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- Serve(ctx, ln, st2, Options{Logger: slog.New(slog.DiscardHandler)})
-	}()
-	waitReady(t, ln.Addr().String(), errCh)
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-errCh:
-		case <-time.After(5 * time.Second):
-			t.Error("restarted server did not stop")
-		}
-	})
-	base = "http://" + ln.Addr().String()
+	base, _ = serveStore(t, st2, Options{Logger: slog.New(slog.DiscardHandler)})
 	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
 	if messageLen(read) != 1 || (*read.Messages)[0].Body != "hello" {
 		t.Fatalf("restart read = %+v", read.Messages)

@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -366,7 +367,7 @@ func TestPublishRestartAndRetry(t *testing.T) {
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("reordered to: %v", err)
 	}
-	if _, err := st.CloseConversation(ctx, "job"); err != nil {
+	if _, _, err := st.CloseConversation(ctx, "job"); err != nil {
 		t.Fatal(err)
 	}
 	closedRetry, closedConv, already, err := st.Publish(ctx, Publish{
@@ -966,5 +967,88 @@ func TestOpenRejectsVersion1WithCompositeMessageKey(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatal("database file changed")
+	}
+}
+
+func TestAfterReadsStoreWideOrOneConversationOldestFirst(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	for _, name := range []string{"alpha", "beta"} {
+		if _, _, err := st.Create(ctx, name, Binding{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, conv := range []string{"alpha", "beta", "alpha", "beta"} {
+		key := fmt.Sprintf("k%d", i)
+		if _, _, _, err := st.Publish(ctx, Publish{
+			Conversation: conv, From: "alice", Body: key, TxID: key, Kind: "say", Time: "t",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, more, err := st.After(ctx, "", 1, 10)
+	if err != nil || more {
+		t.Fatalf("store-wide more=%v err=%v", more, err)
+	}
+	if len(all) != 3 || all[0].Seq != 2 || all[0].Conversation != "beta" || all[2].Seq != 4 {
+		t.Fatalf("store-wide = %+v", all)
+	}
+	one, more, err := st.After(ctx, "alpha", 0, 10)
+	if err != nil || more {
+		t.Fatalf("alpha more=%v err=%v", more, err)
+	}
+	if len(one) != 2 || one[0].Seq != 1 || one[1].Seq != 3 || one[1].Conversation != "alpha" {
+		t.Fatalf("alpha = %+v", one)
+	}
+}
+
+func TestAfterReportsMorePastTheLimit(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"a", "b", "c"} {
+		if _, _, _, err := st.Publish(ctx, Publish{
+			Conversation: "job", From: "alice", Body: key, TxID: key, Kind: "say", Time: "t",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, more, err := st.After(ctx, "job", 0, 2)
+	if err != nil || !more || len(got) != 2 || got[1].Seq != 2 {
+		t.Fatalf("limit 2 = %+v more=%v err=%v", got, more, err)
+	}
+	got, more, err = st.After(ctx, "job", 0, 3)
+	if err != nil || more || len(got) != 3 {
+		t.Fatalf("limit 3 = %+v more=%v err=%v", got, more, err)
+	}
+	got, more, err = st.After(ctx, "", 0, math.MaxInt)
+	if err != nil || more || len(got) != 3 {
+		t.Fatalf("max limit = %+v more=%v err=%v", got, more, err)
+	}
+}
+
+func TestAfterMissingConversationYieldsNothing(t *testing.T) {
+	st := openStore(t)
+	got, more, err := st.After(context.Background(), "ghost", 0, 10)
+	if err != nil || more || len(got) != 0 {
+		t.Fatalf("ghost = %+v more=%v err=%v", got, more, err)
+	}
+}
+
+func TestCloseReportsAlreadyClosed(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	conv, already, err := st.CloseConversation(ctx, "job")
+	if err != nil || already || conv.Status != StatusClosed {
+		t.Fatalf("first close = %+v already=%v err=%v", conv, already, err)
+	}
+	conv, already, err = st.CloseConversation(ctx, "job")
+	if err != nil || !already || conv.Status != StatusClosed {
+		t.Fatalf("second close = %+v already=%v err=%v", conv, already, err)
 	}
 }
