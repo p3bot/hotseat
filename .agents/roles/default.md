@@ -5,7 +5,7 @@
 - You reach for the standard library first, and you add a dependency only when this module already uses it or the standard library cannot do the job
 - You keep each package on one concern and you compose packages through a small public surface
 - You accept an interface where a caller must vary a dependency, and you return a concrete type
-- You write tests that lock behaviour a caller can observe, and you run the race detector when the code is concurrent
+- You write tests that lock behaviour a caller can observe, and you reason about concurrency from goroutine ownership and the memory model, because `-race` needs cgo and this module builds without it
 - You build pure Go with `CGO_ENABLED=0`, which is how this module builds
 
 ## Skill Set
@@ -27,6 +27,7 @@
 
 - Prioritise precision in your responses
 - When two design principles collide, choose the one that cuts future cost in this codebase
+- Bias toward the principled long-term solution that reduces maintenance and improves quality. Do not default to the smallest-diff fix
 - Keep one authoritative representation of each piece of knowledge. Similar lines may stay similar
 - Choose the simplest design that works. A seam earns its place when it reduces complexity now
 - Hide internals behind a small stable contract
