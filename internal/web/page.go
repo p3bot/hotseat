@@ -304,14 +304,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{else if eq .Kind "list"}}
 <h1>Conversations</h1>
 {{if .ListOutcome}}<p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p>
-{{else if not .Notice}}<section class="conv-group" id="open-section">
-<h2>Open <span class="count">{{len .Open}}</span></h2>
-{{if .Open}}<ul class="conv-list" id="open-conversations">{{template "convRows" .Open}}</ul>{{else}}<p class="conv-empty" id="open-empty">No open conversations.</p>{{end}}
-</section>
-<section class="conv-group" id="closed-section">
-<h2>Closed <span class="count">{{len .Closed}}</span></h2>
-{{if .Closed}}<ul class="conv-list" id="closed-conversations">{{template "convRows" .Closed}}</ul>{{else}}<p class="conv-empty" id="closed-empty">No closed conversations.</p>{{end}}
-</section>{{end}}
+{{else if not .Notice}}{{template "convSections" .}}{{end}}
 {{else if eq .Kind "conversation"}}
 <header class="conv-head">
 <h1>{{.Name}}</h1>
@@ -349,20 +342,8 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 </form>
 {{end}}
 </main>
-{{if eq .Kind "conversation"}}<aside id="conversation-meta">
-<dl class="binding">
-{{if .StatusKnown}}<div><dt>Status</dt><dd id="conversation-status"><span class="status" data-status="{{.Status}}">{{.Status}}</span></dd></div>
-{{else if .ListOutcome}}<div><dt>Status</dt><dd id="conversation-status"><p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p></dd></div>
-{{else}}<div><dt>Status</dt><dd id="conversation-status">Not listed.</dd></div>{{end}}
-{{if .Task}}<div><dt>Task</dt><dd id="task">{{.Task}}</dd></div>{{end}}
-{{if .Ticket}}<div><dt>Ticket</dt><dd id="ticket">{{.Ticket}}</dd></div>{{end}}
-{{if .Seat}}<div><dt>Seat</dt><dd id="seat">{{.Seat}}</dd></div>{{end}}
-{{if .Directory}}<div><dt>Directory</dt><dd id="directory">{{.Directory}}</dd></div>{{end}}
-</dl>
-</aside>{{end}}
-<ul id="conversation-index" hidden>
-{{range .Index}}<li data-name="{{.Name}}" data-status="{{.Status}}" data-task="{{.Task}}" data-ticket="{{.Ticket}}" data-href="{{.Href}}"></li>
-{{end}}</ul>
+{{if eq .Kind "conversation"}}{{template "convMeta" .}}{{end}}
+{{template "convIndex" .}}
 <script>
 (function () {
   var box = document.getElementById("search");
@@ -584,7 +565,26 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 </script>
 </body>
 </html>
-{{define "convRows"}}{{range .}}<li class="conv"><p class="conv-name">{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="name">{{.Name}}</span>{{end}}</p>{{if or .Task .Ticket .Seat}}<dl class="conv-binding">{{if .Task}}<div><dt>Task</dt><dd>{{.Task}}</dd></div>{{end}}{{if .Ticket}}<div><dt>Ticket</dt><dd>{{.Ticket}}</dd></div>{{end}}{{if .Seat}}<div><dt>Seat</dt><dd>{{.Seat}}</dd></div>{{end}}</dl>{{end}}</li>
+{{define "convSections"}}<section class="conv-group" id="open-section">
+<h2>Open <span class="count">{{len .Open}}</span></h2>
+{{if .Open}}<ul class="conv-list" id="open-conversations">{{template "convRows" .Open}}</ul>{{else}}<p class="conv-empty" id="open-empty">No open conversations.</p>{{end}}
+</section>
+<section class="conv-group" id="closed-section">
+<h2>Closed <span class="count">{{len .Closed}}</span></h2>
+{{if .Closed}}<ul class="conv-list" id="closed-conversations">{{template "convRows" .Closed}}</ul>{{else}}<p class="conv-empty" id="closed-empty">No closed conversations.</p>{{end}}
+</section>{{end}}{{define "convIndex"}}<ul id="conversation-index" hidden>
+{{range .Index}}<li data-name="{{.Name}}" data-status="{{.Status}}" data-task="{{.Task}}" data-ticket="{{.Ticket}}" data-href="{{.Href}}"></li>
+{{end}}</ul>{{end}}{{define "convMeta"}}<aside id="conversation-meta">
+<dl class="binding">
+{{if .StatusKnown}}<div><dt>Status</dt><dd id="conversation-status"><span class="status" data-status="{{.Status}}">{{.Status}}</span></dd></div>
+{{else if .ListOutcome}}<div><dt>Status</dt><dd id="conversation-status"><p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p></dd></div>
+{{else}}<div><dt>Status</dt><dd id="conversation-status">Not listed.</dd></div>{{end}}
+{{if .Task}}<div><dt>Task</dt><dd id="task">{{.Task}}</dd></div>{{end}}
+{{if .Ticket}}<div><dt>Ticket</dt><dd id="ticket">{{.Ticket}}</dd></div>{{end}}
+{{if .Seat}}<div><dt>Seat</dt><dd id="seat">{{.Seat}}</dd></div>{{end}}
+{{if .Directory}}<div><dt>Directory</dt><dd id="directory">{{.Directory}}</dd></div>{{end}}
+</dl>
+</aside>{{end}}{{define "convRows"}}{{range .}}<li class="conv"><p class="conv-name">{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="name">{{.Name}}</span>{{end}}</p>{{if or .Task .Ticket .Seat}}<dl class="conv-binding">{{if .Task}}<div><dt>Task</dt><dd>{{.Task}}</dd></div>{{end}}{{if .Ticket}}<div><dt>Ticket</dt><dd>{{.Ticket}}</dd></div>{{end}}{{if .Seat}}<div><dt>Seat</dt><dd>{{.Seat}}</dd></div>{{end}}</dl>{{end}}</li>
 {{end}}{{end}}
 {{define "messageItem"}}<li class="message" data-seq="{{.Message.Seq}}" data-conversation="{{.Conversation}}"><p class="where">{{if .Href}}<a href="{{.Href}}">{{.Conversation}}</a>{{else}}{{.Conversation}}{{end}}</p>
 {{template "messageMeta" .Message}}

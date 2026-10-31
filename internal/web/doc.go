@@ -27,8 +27,21 @@
 // generate one.
 // A message body is rendered as Markdown. The stored text stays in the
 // message. Markdown shows that text, and Copy writes it.
-// The capability token is sent to the bus and is not written into the page
-// or the logs. The page listens on
+// GET /events is a Server-Sent Events stream for one view: Messages with no
+// view parameter, a transcript with conversation=<name>, and Conversations
+// with view=list. It starts after query after=<seq> or the Last-Event-ID
+// header, and the header wins. view=list takes neither. Each stream is its
+// own client of the bus and calls watch, not wait. It sends message with
+// id <seq> for each message of its view, conversations with the Open and
+// Closed sections and the search index, and, on a transcript, meta with the
+// side panel at stream start and when it changes. A view that missed more
+// than 50 of its messages gets reset, and the stream ends. A request that can
+// never succeed is answered 400 with a plain-text reason. A bus that is away
+// ends a 200 stream, so the browser reconnects. Event data comes from the
+// same template blocks as the pages. The stream position comes from the tab
+// and is not stored.
+// The capability token is sent to the bus and is not written into the page,
+// the stream, or the logs. The page listens on
 // loopback. Any other socket is closed. It answers for the host it listens
 // on, and localhost with that port is the same host.
 package web

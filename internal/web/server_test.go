@@ -1130,7 +1130,7 @@ func newBus(t *testing.T, token string, remote bool) string {
 		t.Fatalf("addr %T", ln.Addr())
 	}
 	dial := net.JoinHostPort("127.0.0.1", strconv.Itoa(tcp.Port))
-	waitListen(t, dial, errCh)
+	waitHealthy(t, dial, errCh)
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -1168,6 +1168,29 @@ func startPage(t *testing.T, s Server) *httptest.Server {
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// waitHealthy waits until the bus answers pass. The socket accepts before
+// Serve has opened the service, so a dial alone does not show it is serving.
+func waitHealthy(t *testing.T, addr string, errCh <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			t.Fatalf("bus stopped: %v", err)
+		default:
+		}
+		resp, err := pageClient.Get("http://" + addr + bus.PathHealth)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("bus on %s did not pass health", addr)
 }
 
 func waitListen(t *testing.T, addr string, errCh <-chan error) {

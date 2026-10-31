@@ -48,15 +48,25 @@ type Server struct {
 	ListenHost string
 }
 
-// Handler serves the messages page, the conversation list, a transcript, and publish.
-// It calls only list, messages, read, and publish.
+// Handler serves the messages page, the conversation list, a transcript,
+// publish, and the GET /events stream.
+// It calls only list, messages, read, publish, and watch.
 // A request whose host is not ListenHost is refused before any of those calls.
+// A stream ends when its request ends. Serve also ends every stream on shutdown.
 func (s Server) Handler() http.Handler {
+	return s.handler(context.Background())
+}
+
+// handler is Handler with stop, which ends every open stream when it is done.
+func (s Server) handler(stop context.Context) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+routeMessages+"{$}", s.handleMessages)
 	mux.HandleFunc("GET "+routeConversations, s.handleList)
 	mux.HandleFunc("GET "+routeConversations+"/{name}", s.handleConversation)
 	mux.HandleFunc("POST "+routeConversations+"/{name}/messages", s.handlePublish)
+	mux.HandleFunc("GET "+routeEvents, func(w http.ResponseWriter, r *http.Request) {
+		s.handleEvents(stop, w, r)
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.wrongHost(r) {
 			s.logger().Info("call", "op", "page", "outcome", bus.OutcomeRefused, "reason", "wrong host")
@@ -101,7 +111,7 @@ func Serve(ctx context.Context, ln net.Listener, busAddr, token string, log *slo
 			Token:      token,
 			Log:        log,
 			ListenHost: ln.Addr().String(),
-		}.Handler(),
+		}.handler(ctx),
 		ReadHeaderTimeout: 10 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
 	}
