@@ -25,7 +25,6 @@ type page struct {
 	Notice        string
 	Open          []conversationRow
 	Closed        []conversationRow
-	Messages      []messageRow
 	Index         []indexEntry
 	ListOutcome   string
 	ListReason    string
@@ -37,7 +36,7 @@ type page struct {
 	Seat          string
 	Directory     string
 	PublishAction string
-	Read          *readView
+	Group         *messageGroup
 	From          string
 	ToText        string
 	MessageKind   string
@@ -57,8 +56,9 @@ type conversationRow struct {
 	Seat   string
 }
 
-// messageRow is one message on the messages page.
-type messageRow struct {
+// messageItem is one rendered message with the conversation it belongs to.
+// Href is the conversation link. It is empty for a name that has none.
+type messageItem struct {
 	Conversation string
 	Href         string
 	Message      client.Message
@@ -72,10 +72,10 @@ type indexEntry struct {
 	Href   string
 }
 
-type readView struct {
+type messageGroup struct {
 	Outcome  string
 	Reason   string
-	Messages []client.Message
+	Messages []messageItem
 	Full     bool
 	NextPage string
 }
@@ -207,6 +207,7 @@ dialog { border: 1px solid var(--line); border-radius: 8px; background: var(--bg
 dialog input, dialog textarea, dialog button { background: var(--ticket); }
 dialog::backdrop { background: rgb(28 25 23 / 0.45); }
 #transcript { list-style: none; margin: 0; padding: 0; }
+#transcript .where { display: none; }
 .message { background: var(--ticket); border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.75rem; margin: 0 0 1.2rem; box-shadow: 0 1px 2px rgb(28 25 23 / 0.08), 0 4px 12px rgb(28 25 23 / 0.12); }
 #more { height: 1px; }
 #older-error, #list-error, #publish-reason { color: var(--issues); }
@@ -295,14 +296,11 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{if eq .Kind "messages"}}
 <h1>Messages</h1>
 {{if .ListOutcome}}<p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p>
-{{else if .Read}}{{if ne .Read.Outcome "ok"}}<p id="read-outcome">{{.Read.Outcome}}</p>{{if .Read.Reason}}<p id="read-reason">{{.Read.Reason}}</p>{{end}}{{end}}
-{{else if eq (len .Messages) 0}}{{if not .Notice}}<p id="empty">No messages.</p>{{end}}
+{{else if .Group}}{{if ne .Group.Outcome "ok"}}<p id="read-outcome">{{.Group.Outcome}}</p>{{if .Group.Reason}}<p id="read-reason">{{.Group.Reason}}</p>{{end}}
+{{else if eq (len .Group.Messages) 0}}<p id="empty">No messages.</p>
 {{else}}<ol id="messages">
-{{range .Messages}}<li class="message" data-seq="{{.Message.Seq}}"><p class="where">{{if .Href}}<a href="{{.Href}}">{{.Conversation}}</a>{{else}}{{.Conversation}}{{end}}</p>
-{{template "messageMeta" .Message}}
-{{template "messageBody" .Message}}
-{{template "messageFoot" .Message}}
-</li>{{end}}</ol>{{end}}
+{{range .Group.Messages}}{{template "messageItem" .}}{{end}}</ol>
+{{template "olderMarker" .Group}}{{end}}{{end}}
 {{else if eq .Kind "list"}}
 <h1>Conversations</h1>
 {{if .ListOutcome}}<p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p>
@@ -326,18 +324,12 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{if .Publish.Reason}}<p id="publish-reason">{{.Publish.Reason}}</p>{{end}}
 </section>{{end}}
 <section id="transcript-section">
-{{if .Read}}{{if ne .Read.Outcome "ok"}}<p id="read-outcome">{{.Read.Outcome}}</p>
-{{if .Read.Reason}}<p id="read-reason">{{.Read.Reason}}</p>{{end}}
-{{end}}{{if and .Read (eq .Read.Outcome "ok")}}{{if eq (len .Read.Messages) 0}}<p id="transcript-empty">No messages.</p>
+{{if .Group}}{{if ne .Group.Outcome "ok"}}<p id="read-outcome">{{.Group.Outcome}}</p>
+{{if .Group.Reason}}<p id="read-reason">{{.Group.Reason}}</p>{{end}}
+{{end}}{{if and .Group (eq .Group.Outcome "ok")}}{{if eq (len .Group.Messages) 0}}<p id="transcript-empty">No messages.</p>
 {{else}}<ol id="transcript">
-{{range .Read.Messages}}<li class="message" data-seq="{{.Seq}}">
-{{template "messageMeta" .}}
-{{template "messageBody" .}}
-{{template "messageFoot" .}}
-</li>{{end}}</ol>
-{{if .Read.Full}}<p id="older-error"></p>
-<div id="more" data-next="{{.Read.NextPage}}"></div>{{end}}
-{{end}}{{end}}{{end}}
+{{range .Group.Messages}}{{template "messageItem" .}}{{end}}</ol>
+{{template "olderMarker" .Group}}{{end}}{{end}}{{end}}
 </section>
 <form id="send-form" method="post" action="{{.PublishAction}}">
 <dialog id="send-dialog"{{if .SendOpen}} data-send-open{{end}}>
@@ -522,8 +514,9 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     var markdown = ancestor(event.target, "markdown");
     if (markdown) toggleMarkdown(markdown);
   }
+  var emptyIds = { messages: "empty", transcript: "transcript-empty" };
   var more = document.getElementById("more");
-  var list = document.getElementById("transcript");
+  var list = document.getElementById("messages") || document.getElementById("transcript");
   if (!more || !list || !more.getAttribute("data-next")) return;
   var busy = false;
   function visible(el) {
@@ -537,7 +530,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
   function olderOk(doc) {
     var outcome = doc.getElementById("read-outcome");
     if (outcome && outcome.textContent !== "ok") return false;
-    return doc.getElementById("transcript") || doc.getElementById("transcript-empty");
+    return doc.getElementById(list.id) || doc.getElementById(emptyIds[list.id]);
   }
   function olderFailure(doc) {
     var notice = doc.getElementById("notice");
@@ -551,7 +544,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     return "older messages did not load";
   }
   function applyOlder(doc) {
-    var nextList = doc.getElementById("transcript");
+    var nextList = doc.getElementById(list.id);
     if (nextList) {
       var items = nextList.querySelectorAll("li.message");
       for (var i = 0; i < items.length; i++) list.appendChild(document.importNode(items[i], true));
@@ -592,6 +585,14 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 </body>
 </html>
 {{define "convRows"}}{{range .}}<li class="conv"><p class="conv-name">{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="name">{{.Name}}</span>{{end}}</p>{{if or .Task .Ticket .Seat}}<dl class="conv-binding">{{if .Task}}<div><dt>Task</dt><dd>{{.Task}}</dd></div>{{end}}{{if .Ticket}}<div><dt>Ticket</dt><dd>{{.Ticket}}</dd></div>{{end}}{{if .Seat}}<div><dt>Seat</dt><dd>{{.Seat}}</dd></div>{{end}}</dl>{{end}}</li>
+{{end}}{{end}}
+{{define "messageItem"}}<li class="message" data-seq="{{.Message.Seq}}" data-conversation="{{.Conversation}}"><p class="where">{{if .Href}}<a href="{{.Href}}">{{.Conversation}}</a>{{else}}{{.Conversation}}{{end}}</p>
+{{template "messageMeta" .Message}}
+{{template "messageBody" .Message}}
+{{template "messageFoot" .Message}}
+</li>{{end}}
+{{define "olderMarker"}}{{if .Full}}<p id="older-error"></p>
+<div id="more" data-next="{{.NextPage}}"></div>
 {{end}}{{end}}
 {{define "messageMeta"}}<p class="meta"><span class="who">From: <span class="from">{{.From}}</span>{{if .To}} To: <span class="to">{{range $i, $name := .To}}{{if $i}}, {{end}}<span class="addressee">{{$name}}</span>{{end}}</span>{{end}}</span><span class="meta-end"><time class="when" datetime="{{.Time}}">{{viewTime .Time}}</time><span class="msg-actions"><button type="button" class="markdown" aria-pressed="false" aria-label="Markdown" title="Markdown"><svg viewBox="25 22 165 84" aria-hidden="true"><path fill="currentColor" d="M30 98V30h20l20 25 20-25h20v68H90V59L70 84 50 59v39zm125 0-30-33h20V30h20v35h20z"/></svg></button><button type="button" class="copy" aria-label="Copy markdown" title="Copy markdown"><svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></button></span></span></p>{{end}}
 {{define "messageBody"}}<div class="body rendered">{{renderBody .Body}}</div><pre class="body source" hidden>{{.Body}}</pre>{{end}}

@@ -418,18 +418,34 @@ func (s *Store) CloseConversation(ctx context.Context, name string) (Conversatio
 	return conv, already, nil
 }
 
-// Newest returns the newest messages across every conversation, highest seq first.
-func (s *Store) Newest(ctx context.Context, limit int) ([]Message, error) {
+// Newest returns at most limit messages across every conversation, highest
+// seq first, each with its conversation. A before greater than zero keeps
+// only messages whose seq is less than before. A before of zero is no bound.
+func (s *Store) Newest(ctx context.Context, limit int, before int64) ([]Message, error) {
 	if limit < 1 {
 		return nil, errors.New("newest limit must be positive")
 	}
+	if before < 0 {
+		return nil, errors.New("newest before must not be negative")
+	}
 	var out []Message
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `
-			SELECT conversation, seq, time, sender, recipients, body, txid, kind
-			FROM messages
-			ORDER BY seq DESC
-			LIMIT ?`, limit)
+		var rows *sql.Rows
+		var err error
+		if before == 0 {
+			rows, err = tx.QueryContext(ctx, `
+				SELECT conversation, seq, time, sender, recipients, body, txid, kind
+				FROM messages
+				ORDER BY seq DESC
+				LIMIT ?`, limit)
+		} else {
+			rows, err = tx.QueryContext(ctx, `
+				SELECT conversation, seq, time, sender, recipients, body, txid, kind
+				FROM messages
+				WHERE seq < ?
+				ORDER BY seq DESC
+				LIMIT ?`, before, limit)
+		}
 		if err != nil {
 			return err
 		}

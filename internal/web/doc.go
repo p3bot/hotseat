@@ -11,15 +11,17 @@
 // The top bar searches every conversation by name, task, and ticket, in the
 // list order. Messages, at /, shows the newest 50 messages across
 // every conversation, newest first. A conversation can appear more than
-// once. Conversations, at /conversations, shows an Open section and then a
-// Closed section. Each keeps that order and shows the task, ticket, and
-// seat. An empty section stays on the page. A conversation named "." or
-// ".." is shown without a link.
+// once. The bottom of that group loads the next older 50. Conversations,
+// at /conversations, shows an Open section and then a Closed section. Each
+// keeps that order and shows the task, ticket, and seat. An empty section
+// stays on the page. A conversation named "." or ".." is shown without a
+// link.
 // Opening /conversations/{name} shows its name, status, task, ticket, seat,
 // and directory, then the newest 50 messages, latest first.
-// The bottom of that group loads the next older 50. The server does not
-// keep that place. Send posts to /conversations/{name}/messages. A stored
-// send redirects to the conversation. A refused send leaves the form open
+// The bottom of that group loads the next older 50. Loaded groups stay on
+// the page. The page does not ask for a cursor or a limit, and the server
+// does not keep that place. Send posts to /conversations/{name}/messages.
+// A stored send redirects to the conversation. A refused send leaves the form open
 // with the posted values. The page script fills an empty transaction id
 // when Send is submitted. The server forwards the posted id and does not
 // generate one.

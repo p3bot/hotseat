@@ -41,7 +41,7 @@ func TestRenderedMessageShowsLocalTimeKindAndSequence(t *testing.T) {
 		Body: "hello", TxID: "idem", Kind: "say",
 	}
 	p := conversationPage("job")
-	p.Read = &readView{Outcome: "ok", Messages: []client.Message{msg}}
+	p.Group = &messageGroup{Outcome: "ok", Messages: []messageItem{newMessageItem("job", msg)}}
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, p); err != nil {
 		t.Fatal(err)
@@ -63,11 +63,59 @@ func TestRenderedMessageShowsLocalTimeKindAndSequence(t *testing.T) {
 	}
 }
 
+func TestEveryMessageItemNamesItsSeqAndConversation(t *testing.T) {
+	if n := strings.Count(pageSource, `<li class="message"`); n != 1 {
+		t.Fatalf("message item markup appears %d times", n)
+	}
+	messages := page{Kind: kindMessages, Group: &messageGroup{Outcome: "ok", Messages: []messageItem{
+		newMessageItem("beta", client.Message{Seq: 9, From: "alice", Body: "b", Kind: "say"}),
+		newMessageItem("..", client.Message{Seq: 7, From: "alice", Body: "d", Kind: "say"}),
+	}}}
+	transcript := conversationPage("job")
+	transcript.Group = transcriptGroup("job", []client.Message{
+		{Seq: 4, From: "alice", Body: "one", Kind: "say"},
+		{Seq: 6, From: "bob", Body: "two", Kind: "say"},
+	}, false)
+	cases := []struct {
+		name  string
+		page  page
+		items []string
+	}{
+		{name: "messages", page: messages, items: []string{
+			`<li class="message" data-seq="9" data-conversation="beta"><p class="where"><a href="/conversations/beta">beta</a></p>`,
+			`<li class="message" data-seq="7" data-conversation=".."><p class="where">..</p>`,
+		}},
+		{name: "transcript", page: transcript, items: []string{
+			`<li class="message" data-seq="6" data-conversation="job"><p class="where"><a href="/conversations/job">job</a></p>`,
+			`<li class="message" data-seq="4" data-conversation="job"><p class="where"><a href="/conversations/job">job</a></p>`,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			html := renderPage(t, tc.page)
+			if n := strings.Count(html, `<li class="message"`); n != len(tc.items) {
+				t.Fatalf("items %d\n%s", n, html)
+			}
+			at := 0
+			for _, want := range tc.items {
+				i := strings.Index(html[at:], want)
+				if i < 0 {
+					t.Fatalf("missing or out of order %s\n%s", want, html)
+				}
+				at += i + len(want)
+			}
+		})
+	}
+	if !strings.Contains(renderPage(t, transcript), "#transcript .where { display: none; }") {
+		t.Fatal("transcript shows the conversation link on each message")
+	}
+}
+
 func TestMessageFooterKeepsSourceBesideRenderedMarkdown(t *testing.T) {
 	p := conversationPage("job")
-	p.Read = &readView{Outcome: "ok", Messages: []client.Message{{
+	p.Group = &messageGroup{Outcome: "ok", Messages: []messageItem{newMessageItem("job", client.Message{
 		Seq: 4, From: "alice", Body: "**hello**", Kind: "instruction",
-	}}}
+	})}}
 	html := renderPage(t, p)
 	rendered := strings.Index(html, "<strong>hello</strong>")
 	source := strings.Index(html, `class="body source" hidden>**hello**</pre>`)
@@ -454,75 +502,98 @@ function __clickPen() { __pen.onclick(); }
 function __shown() { return String(__shownCount); }
 `
 
-func TestFailedOlderGroupKeepsTheMarker(t *testing.T) {
-	open := bytes.Buffer{}
-	page := conversationPage("job")
-	page.Read = &readView{
+func TestOlderGroupAppendsToEitherListAndAFailureKeepsTheMarker(t *testing.T) {
+	transcript := conversationPage("job")
+	transcript.Group = &messageGroup{
 		Outcome:  "ok",
-		Messages: []client.Message{{Body: "newest"}},
+		Messages: []messageItem{newMessageItem("job", client.Message{Seq: 3, Body: "newest"})},
 		Full:     true,
 		NextPage: "/conversations/job?before=3",
 	}
-	if err := pageTmpl.Execute(&open, page); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(open.String(), `id="older-error"`) {
-		t.Fatal("full group has no place to show a failed load")
-	}
-	script, err := pageScript(open.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	const marker = "/conversations/job?before=3"
-	cases := []struct {
+	messages := page{Kind: kindMessages, Group: &messageGroup{
+		Outcome:  "ok",
+		Messages: []messageItem{newMessageItem("alpha", client.Message{Seq: 3, Body: "newest"})},
+		Full:     true,
+		NextPage: "/?before=3",
+	}}
+	pages := []struct {
 		name    string
-		job     string
+		page    page
+		list    string
+		empty   string
 		marker  string
-		message string
-		added   string
+		further string
 	}{
-		{name: "notice", job: `{ok:true, outcome:"", notice:"bus down", reason:"", next:"", bodies:1}`, marker: marker, message: "bus down", added: "0"},
-		{name: "refused", job: `{ok:true, outcome:"refused", notice:"", reason:"closed", next:"", bodies:1}`, marker: marker, message: "refused closed", added: "0"},
-		{name: "status", job: `{ok:false, outcome:"", notice:"", reason:"", next:"", bodies:0}`, marker: marker, message: "older messages did not load", added: "0"},
-		{name: "network", job: `{network:true}`, marker: marker, message: "older messages did not load", added: "0"},
-		{name: "end", job: `{ok:true, outcome:"ok", notice:"", reason:"", next:"", bodies:1}`, message: "", added: "1"},
-		{name: "empty", job: `{ok:true, outcome:"ok", empty:true, notice:"", reason:"", next:"", bodies:0}`, message: "", added: "0"},
-		{name: "next", job: `{ok:true, outcome:"ok", notice:"", reason:"", next:"/conversations/job?before=1", bodies:1}`, marker: "/conversations/job?before=1", added: "1"},
+		{name: "transcript", page: transcript, list: "transcript", empty: "transcript-empty", marker: "/conversations/job?before=3", further: "/conversations/job?before=1"},
+		{name: "messages", page: messages, list: "messages", empty: "empty", marker: "/?before=3", further: "/?before=1"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			vm := olderLoadVM(t, script)
-			if _, err := vm.RunString("__queue = [" + tc.job + "]; __loadOlder()"); err != nil {
+	for _, pg := range pages {
+		t.Run(pg.name, func(t *testing.T) {
+			html := renderPage(t, pg.page)
+			if !strings.Contains(html, `id="older-error"`) || !strings.Contains(html, `id="`+pg.list+`"`) {
+				t.Fatalf("full group has no place to show a failed load\n%s", html)
+			}
+			script, err := pageScript(html)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if got := scriptString(t, vm, "__marker()"); got != tc.marker {
-				t.Fatalf("marker %q", got)
+			cases := []struct {
+				name    string
+				job     string
+				marker  string
+				message string
+				added   string
+			}{
+				{name: "notice", job: `{ok:true, outcome:"", notice:"bus down", reason:"", next:"", bodies:1}`, marker: pg.marker, message: "bus down", added: "0"},
+				{name: "refused", job: `{ok:true, outcome:"refused", notice:"", reason:"closed", next:"", bodies:1}`, marker: pg.marker, message: "refused closed", added: "0"},
+				{name: "status", job: `{ok:false, outcome:"", notice:"", reason:"", next:"", bodies:0}`, marker: pg.marker, message: "older messages did not load", added: "0"},
+				{name: "network", job: `{network:true}`, marker: pg.marker, message: "older messages did not load", added: "0"},
+				{name: "other list", job: `{ok:true, outcome:"ok", otherList:true, notice:"", reason:"", next:"", bodies:1}`, marker: pg.marker, message: "older messages did not load", added: "0"},
+				{name: "end", job: `{ok:true, outcome:"ok", notice:"", reason:"", next:"", bodies:1}`, message: "", added: "1"},
+				{name: "empty", job: `{ok:true, outcome:"ok", empty:true, notice:"", reason:"", next:"", bodies:0}`, message: "", added: "0"},
+				{name: "next", job: `{ok:true, outcome:"ok", notice:"", reason:"", next:` + quoteJS(pg.further) + `, bodies:1}`, marker: pg.further, added: "1"},
 			}
-			if got := scriptString(t, vm, "__olderError()"); got != tc.message {
-				t.Fatalf("message %q", got)
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					vm := olderLoadVM(t, script, pg.list, pg.empty)
+					if _, err := vm.RunString("__queue = [" + tc.job + "]; __loadOlder()"); err != nil {
+						t.Fatal(err)
+					}
+					if got := scriptString(t, vm, "__marker()"); got != tc.marker {
+						t.Fatalf("marker %q", got)
+					}
+					if got := scriptString(t, vm, "__olderError()"); got != tc.message {
+						t.Fatalf("message %q", got)
+					}
+					if got := scriptString(t, vm, "__added()"); got != tc.added {
+						t.Fatalf("added %q", got)
+					}
+				})
 			}
-			if got := scriptString(t, vm, "__added()"); got != tc.added {
-				t.Fatalf("added %q", got)
+
+			vm := olderLoadVM(t, script, pg.list, pg.empty)
+			if _, err := vm.RunString(`__queue = [
+				{ok:true, outcome:"", notice:"bus down", reason:"", next:"", bodies:0},
+				{ok:true, outcome:"ok", notice:"", reason:"", next:` + quoteJS(pg.further) + `, bodies:2},
+				{ok:true, outcome:"ok", notice:"", reason:"", next:"", bodies:1}
+			]; __loadOlder(); __loadOlder(); __loadOlder()`); err != nil {
+				t.Fatal(err)
+			}
+			if scriptString(t, vm, "__marker()") != "" || scriptString(t, vm, "__olderError()") != "" || scriptString(t, vm, "__added()") != "3" {
+				t.Fatalf("marker %q message %q added %q", scriptString(t, vm, "__marker()"), scriptString(t, vm, "__olderError()"), scriptString(t, vm, "__added()"))
 			}
 		})
 	}
-
-	vm := olderLoadVM(t, script)
-	if _, err := vm.RunString(`__queue = [
-		{ok:true, outcome:"", notice:"bus down", reason:"", next:"", bodies:0},
-		{ok:true, outcome:"ok", notice:"", reason:"", next:"", bodies:1}
-	]; __loadOlder(); __loadOlder()`); err != nil {
-		t.Fatal(err)
-	}
-	if scriptString(t, vm, "__marker()") != "" || scriptString(t, vm, "__olderError()") != "" || scriptString(t, vm, "__added()") != "1" {
-		t.Fatalf("marker %q message %q added %q", scriptString(t, vm, "__marker()"), scriptString(t, vm, "__olderError()"), scriptString(t, vm, "__added()"))
-	}
 }
 
-func olderLoadVM(t *testing.T, script string) *goja.Runtime {
+// olderLoadVM runs script on a page whose message list is listID and whose
+// empty state is emptyID. A fetched page with otherList holds neither.
+func olderLoadVM(t *testing.T, script, listID, emptyID string) *goja.Runtime {
 	t.Helper()
 	vm := goja.New()
+	if _, err := vm.RunString("var __listID = " + quoteJS(listID) + "; var __emptyID = " + quoteJS(emptyID) + ";"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := vm.RunString(olderLoadHarness); err != nil {
 		t.Fatal(err)
 	}
@@ -608,11 +679,11 @@ DOMParser.prototype.parseFromString = function () {
         return textNode(page.outcome);
       }
       if (id === "read-reason") return textNode(page.reason);
-      if (id === "transcript") {
-        if (page.outcome !== "ok" || page.empty) return null;
+      if (id === __listID) {
+        if (page.outcome !== "ok" || page.empty || page.otherList) return null;
         return { querySelectorAll: function () { return items; } };
       }
-      if (id === "transcript-empty") {
+      if (id === __emptyID) {
         if (page.outcome === "ok" && page.empty) return {};
         return null;
       }
@@ -653,9 +724,9 @@ __elements["read-form"].addEventListener = function (type, fn) { this.onsubmit =
 __node("publish-button", {});
 __node("txid", {});
 __elements.txid.value = "kept";
-__node("transcript", {});
+__node(__listID, {});
 __node("older-error", {});
-__node("more", { "data-next": "/conversations/job?before=3" });
+__node("more", { "data-next": __listID === "messages" ? "/?before=3" : "/conversations/job?before=3" });
 var document = {
   getElementById: function (id) { return __elements[id] || null; },
   importNode: function (node) { return node; },
@@ -667,7 +738,7 @@ function __marker() {
   return v === null || v === undefined ? "" : v;
 }
 function __olderError() { return __elements["older-error"].textContent; }
-function __added() { return String(__elements.transcript.children.length); }
+function __added() { return String(__elements[__listID].children.length); }
 `
 
 func TestSearchKeepsListOrder(t *testing.T) {

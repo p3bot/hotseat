@@ -248,6 +248,46 @@ func TestMessagesReturnsTheNewestLimit(t *testing.T) {
 	}
 }
 
+func TestMessagesBeforeReturnsTheNewestBelowThatSeq(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	create(t, base, "beta")
+	create(t, base, "alpha")
+	publish(t, base, "beta", "alice", nil, "b1", "b1")
+	publish(t, base, "alpha", "alice", nil, "a1", "a1")
+	publish(t, base, "alpha", "alice", nil, "a2", "a2")
+	publish(t, base, "beta", "alice", nil, "b2", "b2")
+
+	all := mustPost(t, base, PathMessages, map[string]any{"limit": 10})
+	if all.Messages == nil || len(*all.Messages) != 4 {
+		t.Fatalf("all %+v", all.Messages)
+	}
+	third := (*all.Messages)[1].Seq
+	page := mustPost(t, base, PathMessages, map[string]any{"limit": 2, "before": third})
+	if page.Outcome != OutcomeOK || page.Messages == nil || len(*page.Messages) != 2 {
+		t.Fatalf("page %+v", page)
+	}
+	got := *page.Messages
+	if got[0].Body != "a1" || got[0].Conversation != "alpha" || got[1].Body != "b1" || got[1].Conversation != "beta" {
+		t.Fatalf("order %+v", got)
+	}
+	oldest := mustPost(t, base, PathMessages, map[string]any{"limit": 2, "before": got[1].Seq})
+	if oldest.Outcome != OutcomeOK || oldest.Messages == nil || len(*oldest.Messages) != 0 {
+		t.Fatalf("below the oldest %+v", oldest)
+	}
+}
+
+func TestMessagesRefusesBeforeBelowOne(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	create(t, base, "job")
+	publish(t, base, "job", "alice", nil, "one", "k1")
+	for _, before := range []int64{0, -1} {
+		res := mustPost(t, base, PathMessages, map[string]any{"limit": 1, "before": before})
+		if res.Outcome != OutcomeRefused || res.Reason != ReasonBeforeRange || res.Messages != nil {
+			t.Fatalf("before %d = %+v", before, res)
+		}
+	}
+}
+
 func TestListOrdersByNewestSeqNotClock(t *testing.T) {
 	n := 10
 	base, _, _, _ := startServer(t, Options{Clock: func() time.Time {

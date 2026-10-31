@@ -23,6 +23,7 @@ import (
 )
 
 const (
+	routeMessages      = "/"
 	routeConversations = "/conversations"
 
 	// DefaultListen is the loopback address of the page when the operator does not set one.
@@ -52,7 +53,7 @@ type Server struct {
 // A request whose host is not ListenHost is refused before any of those calls.
 func (s Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.handleMessages)
+	mux.HandleFunc("GET "+routeMessages+"{$}", s.handleMessages)
 	mux.HandleFunc("GET "+routeConversations, s.handleList)
 	mux.HandleFunc("GET "+routeConversations+"/{name}", s.handleConversation)
 	mux.HandleFunc("POST "+routeConversations+"/{name}/messages", s.handlePublish)
@@ -165,7 +166,13 @@ func (s Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	applyList(&p, res.Conversations)
-	if err := s.fillMessages(r.Context(), &p); err != nil {
+	before, newest, ok := queryBefore(r.URL.Query())
+	if !ok {
+		p.Notice = bus.ReasonBeforeRange
+		s.render(w, p)
+		return
+	}
+	if err := s.fillMessages(r.Context(), &p, before, newest); err != nil {
 		if r.Context().Err() != nil {
 			return
 		}
@@ -208,7 +215,7 @@ func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 	}
 	before, newest, ok := queryBefore(q)
 	if !ok {
-		p.Notice = "before must be an integer"
+		p.Notice = bus.ReasonBeforeRange
 		s.render(w, p)
 		return
 	}
@@ -309,8 +316,8 @@ func fillPosted(p *page, r *http.Request) {
 	p.TxID = r.PostForm.Get("txid")
 }
 
-// transcriptLimit is one group. The newest group is the one on screen. The next group is older.
-var transcriptLimit int64 = 50
+// groupLimit is the size of one message group on either page. The next group is older.
+var groupLimit int64 = 50
 
 // queryBefore reads the older-group boundary. An absent value selects the newest group.
 func queryBefore(q url.Values) (before int64, newest, ok bool) {
@@ -348,51 +355,47 @@ func (s Server) fillStatus(ctx context.Context, p *page) error {
 	return nil
 }
 
-type messagesRequest struct {
-	Limit int64 `json:"limit"`
-}
-
-// fillMessages loads the newest transcriptLimit messages across every conversation.
-func (s Server) fillMessages(ctx context.Context, p *page) error {
+// fillMessages shows one group across every conversation, newest message first.
+// A full group may have older messages below it, so it links the next group.
+func (s Server) fillMessages(ctx context.Context, p *page, before int64, newest bool) error {
+	req := client.MessagesRequest{Limit: groupLimit}
+	if !newest {
+		req.Before = &before
+	}
 	start := time.Now()
-	res, err := client.Do(ctx, s.BusAddress, "messages", s.Token, messagesRequest{Limit: transcriptLimit})
+	res, err := client.Do(ctx, s.BusAddress, "messages", s.Token, req)
 	if err != nil {
 		return err
 	}
 	s.logCall("messages", "", res, start)
-	if res.Outcome != bus.OutcomeOK {
-		p.Read = &readView{Outcome: res.Outcome, Reason: res.Reason}
-		p.Messages = nil
+	view := &messageGroup{Outcome: res.Outcome, Reason: res.Reason}
+	p.Group = view
+	if res.Outcome != bus.OutcomeOK || res.Messages == nil {
 		return nil
 	}
-	if res.Messages == nil {
-		p.Messages = nil
-		return nil
+	msgs := *res.Messages
+	for _, m := range msgs {
+		view.Messages = append(view.Messages, newMessageItem(m.Conversation, m))
 	}
-	rows := make([]messageRow, 0, len(*res.Messages))
-	for _, m := range *res.Messages {
-		rows = append(rows, messageRow{
-			Conversation: m.Conversation,
-			Href:         conversationHref(m.Conversation),
-			Message:      m,
-		})
+	if int64(len(msgs)) == groupLimit {
+		view.Full = true
+		view.NextPage = olderHref(routeMessages, msgs[len(msgs)-1].Seq)
 	}
-	p.Messages = rows
 	return nil
 }
 
 // fillRecent shows one group, newest message first.
-// The bus read walks oldest first, so this keeps a window of transcriptLimit.
+// The bus read walks oldest first, so this keeps a window of groupLimit.
 func (s Server) fillRecent(ctx context.Context, p *page, before int64, newest bool) error {
 	view, err := s.recent(ctx, p.Name, before, newest)
 	if err != nil {
 		return err
 	}
-	p.Read = view
+	p.Group = view
 	return nil
 }
 
-func (s Server) recent(ctx context.Context, name string, before int64, newest bool) (*readView, error) {
+func (s Server) recent(ctx context.Context, name string, before int64, newest bool) (*messageGroup, error) {
 	var window []client.Message
 	more := false
 	cursor := int64(0)
@@ -404,13 +407,13 @@ func (s Server) recent(ctx context.Context, name string, before int64, newest bo
 		res, err := client.Do(ctx, s.BusAddress, "read", s.Token, client.ReadRequest{
 			Conversation: name,
 			Cursor:       cursor,
-			Limit:        transcriptLimit,
+			Limit:        groupLimit,
 		})
 		if err != nil {
 			return nil, err
 		}
 		s.logCall("read", name, res, start)
-		view := &readView{Outcome: res.Outcome, Reason: res.Reason}
+		view := &messageGroup{Outcome: res.Outcome, Reason: res.Reason}
 		if res.Outcome != bus.OutcomeOK {
 			return view, nil
 		}
@@ -419,9 +422,9 @@ func (s Server) recent(ctx context.Context, name string, before int64, newest bo
 		}
 		for _, m := range *res.Messages {
 			if !newest && m.Seq >= before {
-				return groupView(name, window, more), nil
+				return transcriptGroup(name, window, more), nil
 			}
-			if int64(len(window)) == transcriptLimit {
+			if int64(len(window)) == groupLimit {
 				copy(window, window[1:])
 				window[len(window)-1] = m
 				more = true
@@ -429,32 +432,30 @@ func (s Server) recent(ctx context.Context, name string, before int64, newest bo
 			}
 			window = append(window, m)
 		}
-		if int64(len(*res.Messages)) < transcriptLimit {
+		if int64(len(*res.Messages)) < groupLimit {
 			break
 		}
 		cursor = (*res.Messages)[len(*res.Messages)-1].Seq
 	}
-	return groupView(name, window, more), nil
+	return transcriptGroup(name, window, more), nil
 }
 
-func groupView(name string, window []client.Message, more bool) *readView {
-	view := &readView{Outcome: bus.OutcomeOK, Messages: newestFirst(window)}
+// transcriptGroup turns an oldest-first window into items, newest first.
+// A read message carries no conversation, so each item takes name.
+func transcriptGroup(name string, window []client.Message, more bool) *messageGroup {
+	view := &messageGroup{Outcome: bus.OutcomeOK}
+	for i := len(window) - 1; i >= 0; i-- {
+		view.Messages = append(view.Messages, newMessageItem(name, window[i]))
+	}
 	if more && len(window) > 0 {
 		view.Full = true
-		view.NextPage = olderHref(name, window[0].Seq)
+		view.NextPage = olderHref(conversationHref(name), window[0].Seq)
 	}
 	return view
 }
 
-func newestFirst(msgs []client.Message) []client.Message {
-	if len(msgs) == 0 {
-		return nil
-	}
-	out := make([]client.Message, len(msgs))
-	for i := range msgs {
-		out[len(msgs)-1-i] = msgs[i]
-	}
-	return out
+func newMessageItem(conversation string, m client.Message) messageItem {
+	return messageItem{Conversation: conversation, Href: conversationHref(conversation), Message: m}
 }
 
 func (s Server) logCall(op, conv string, res client.Result, start time.Time) {
@@ -519,8 +520,8 @@ func conversationHref(name string) string {
 	return conversationPath(name)
 }
 
-func olderHref(name string, before int64) string {
-	href := conversationHref(name)
+// olderHref is the group below before on the page at href. An empty href has no link.
+func olderHref(href string, before int64) string {
 	if href == "" {
 		return ""
 	}

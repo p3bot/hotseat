@@ -64,6 +64,7 @@ const (
 	ReasonCursorRange          = "cursor must be an integer greater than or equal to zero"
 	ReasonLimitRequired        = "limit is required"
 	ReasonLimitRange           = "limit must be a positive integer"
+	ReasonBeforeRange          = "before must be an integer greater than zero"
 	ReasonDeadline             = "deadline must be a non-negative duration such as 30s or 500ms, or an RFC3339 time"
 	ReasonBadJSON              = "request is not valid JSON"
 	ReasonUnknownOp            = "unknown operation"

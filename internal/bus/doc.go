@@ -35,7 +35,7 @@
 //	POST /watch    {"cursor"?,"conversation"?,"rev"?,"limit"?,"deadline"?}
 //	POST /close    {"conversation"}
 //	POST /list     {}
-//	POST /messages {"limit"}
+//	POST /messages {"limit","before"?}
 //	POST /register {"conversation","name"}
 //	POST /member   {"conversation","name","status"?,"pid"?}
 //	POST /session  {"conversation","name"?,"session"?}
@@ -62,7 +62,9 @@
 // limit is the maximum number of messages read returns. Wait has no limit.
 // /messages uses limit the same way and returns those newest messages
 // across every conversation, highest seq first. Each message includes
-// conversation.
+// conversation. With before, only messages whose seq is less than before
+// are returned, so the lowest seq of one result is the next before. A
+// before less than 1 is refused.
 //
 // /watch returns messages with seq greater than cursor, oldest first, in
 // conversation or every conversation, at most limit, each with

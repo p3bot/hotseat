@@ -311,7 +311,8 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Limit *int64 `json:"limit"`
+		Limit  *int64 `json:"limit"`
+		Before *int64 `json:"before"`
 	}
 	if !s.decode(w, r, "messages", "", start, &req) {
 		return
@@ -324,7 +325,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		s.finish(w, "messages", "", start, refused(ReasonLimitRange), nil)
 		return
 	}
-	res, err := s.svc.Messages(r.Context(), int(*req.Limit))
+	res, err := s.svc.Messages(r.Context(), int(*req.Limit), req.Before)
 	s.finish(w, "messages", "", start, res, err)
 }
 

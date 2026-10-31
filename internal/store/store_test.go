@@ -40,7 +40,7 @@ func TestNewestOrdersBySeqNotTime(t *testing.T) {
 	publishAt("beta", "first", "2020-01-02T00:00:05Z")
 	publishAt("alpha", "second", "2020-01-02T00:00:05Z")
 	publishAt("beta", "third", "2020-01-02T00:00:01Z")
-	got, err := st.Newest(ctx, 3)
+	got, err := st.Newest(ctx, 3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -896,6 +896,62 @@ func openStore(t *testing.T) *Store {
 		}
 	})
 	return st
+}
+
+func TestNewestBeforeReturnsTheNewestBelowThatSeq(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	for _, name := range []string{"alpha", "beta"} {
+		if _, _, err := st.Create(ctx, name, Binding{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, conv := range []string{"alpha", "beta", "alpha", "beta", "alpha"} {
+		body := fmt.Sprintf("m%d", i+1)
+		if _, _, _, err := st.Publish(ctx, Publish{
+			Conversation: conv, From: "alice", Body: body, TxID: body, Kind: "say",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seqs := func(msgs []Message) string {
+		var out []string
+		for _, m := range msgs {
+			out = append(out, fmt.Sprintf("%s:%d", m.Conversation, m.Seq))
+		}
+		return strings.Join(out, ",")
+	}
+	got, err := st.Newest(ctx, 2, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := seqs(got); s != "alpha:3,beta:2" {
+		t.Fatalf("before 4 = %s", s)
+	}
+	got, err = st.Newest(ctx, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := seqs(got); s != "alpha:1" {
+		t.Fatalf("before 2 = %s", s)
+	}
+	got, err = st.Newest(ctx, 10, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("before 1 = %s", seqs(got))
+	}
+	got, err = st.Newest(ctx, 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := seqs(got); s != "alpha:5,beta:4" {
+		t.Fatalf("no bound = %s", s)
+	}
+	if _, err := st.Newest(ctx, 2, -1); err == nil {
+		t.Fatal("negative before was accepted")
+	}
 }
 
 func TestListOrdersByNewestMessageSeq(t *testing.T) {

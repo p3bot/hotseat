@@ -190,6 +190,54 @@ func TestMessagesShowsTheNewestAcrossConversations(t *testing.T) {
 	}
 }
 
+func TestMessagesLoadsTheNextOlderGroupByBefore(t *testing.T) {
+	prev := groupLimit
+	groupLimit = 2
+	t.Cleanup(func() { groupLimit = prev })
+
+	addr := newBus(t, "", false)
+	page, _ := newPage(t, addr, "")
+	createConv(t, addr, "", "alpha")
+	createConv(t, addr, "", "beta")
+	publishMsg(t, addr, "", "alpha", "alice", nil, "one", "k1")
+	publishMsg(t, addr, "", "beta", "alice", nil, "two", "k2")
+	publishMsg(t, addr, "", "alpha", "alice", nil, "three", "k3")
+
+	_, first, _ := getPage(t, page.URL+"/")
+	three := strings.Index(first, ">three<")
+	two := strings.Index(first, ">two<")
+	if three < 0 || two < three || strings.Contains(first, ">one<") {
+		t.Fatalf("newest group three %d two %d\n%s", three, two, first)
+	}
+	if !strings.Contains(first, `data-seq="3" data-conversation="alpha"`) || !strings.Contains(first, `data-seq="2" data-conversation="beta"`) {
+		t.Fatalf("items\n%s", first)
+	}
+	href := attr(t, first, `id="more" data-next="`)
+	if href != "/?before=2" {
+		t.Fatalf("href %s", href)
+	}
+	if !strings.Contains(first, `id="older-error"`) {
+		t.Fatalf("no place for a failed load\n%s", first)
+	}
+	_, next, _ := getPage(t, page.URL+href)
+	if strings.Contains(next, ">three<") || strings.Contains(next, ">two<") || !strings.Contains(next, `data-seq="1" data-conversation="alpha"`) || !strings.Contains(next, ">one<") {
+		t.Fatalf("older group\n%s", next)
+	}
+	if strings.Contains(next, `id="more"`) {
+		t.Fatalf("oldest group offered another\n%s", next)
+	}
+	_, past, _ := getPage(t, page.URL+"/?before=1")
+	if !strings.Contains(past, `id="empty">No messages.<`) || strings.Contains(past, `id="more"`) {
+		t.Fatalf("below the oldest\n%s", past)
+	}
+	for _, bad := range []string{"abc", "0", "-3"} {
+		_, body, _ := getPage(t, page.URL+"/?before="+bad)
+		if !strings.Contains(body, `id="notice">`+bus.ReasonBeforeRange+`<`) || strings.Contains(body, `id="messages"`) || strings.Contains(body, `id="empty"`) {
+			t.Fatalf("before %s\n%s", bad, body)
+		}
+	}
+}
+
 func TestDotNamesHaveNoPageLink(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
@@ -246,9 +294,9 @@ func TestListSplitsOpenAndClosedInBusOrder(t *testing.T) {
 }
 
 func TestReadShowsNewestThenOlderGroup(t *testing.T) {
-	prev := transcriptLimit
-	transcriptLimit = 2
-	t.Cleanup(func() { transcriptLimit = prev })
+	prev := groupLimit
+	groupLimit = 2
+	t.Cleanup(func() { groupLimit = prev })
 
 	addr := newBus(t, "", false)
 	page, logs := newPage(t, addr, "")
@@ -281,7 +329,7 @@ func TestReadShowsNewestThenOlderGroup(t *testing.T) {
 		t.Fatalf("href %s", href)
 	}
 	_, next, _ := getPage(t, page.URL+href)
-	if strings.Contains(next, ">three<") || strings.Contains(next, ">two<") || !strings.Contains(next, ">one<") {
+	if strings.Contains(next, ">three<") || strings.Contains(next, ">two<") || !strings.Contains(next, ">one<") || !strings.Contains(next, `data-seq="1" data-conversation="job"`) {
 		t.Fatalf("older group\n%s", next)
 	}
 	if strings.Contains(next, `id="more"`) {
@@ -292,9 +340,11 @@ func TestReadShowsNewestThenOlderGroup(t *testing.T) {
 		t.Fatal("group changed on the server")
 	}
 
-	_, bad, _ := getPage(t, page.URL+"/conversations/job?before=abc")
-	if !strings.Contains(bad, `id="notice">before must be an integer<`) || strings.Contains(bad, `id="transcript"`) {
-		t.Fatalf("bad before\n%s", bad)
+	for _, before := range []string{"abc", "0", "-3"} {
+		_, bad, _ := getPage(t, page.URL+"/conversations/job?before="+before)
+		if !strings.Contains(bad, `id="notice">`+bus.ReasonBeforeRange+`<`) || strings.Contains(bad, `id="transcript"`) {
+			t.Fatalf("before %s\n%s", before, bad)
+		}
 	}
 	if strings.Contains(logs.String(), "cursor=") || strings.Contains(logs.String(), "k1") || strings.Contains(logs.String(), "txid") {
 		t.Fatalf("log %s", logs.String())
@@ -943,7 +993,7 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 	_, body, _ := getPage(t, page.URL+"/")
 	got := take()
 	list := bus.PathList + " " + auth + " {}"
-	messages := bus.PathMessages + " " + auth + ` {"limit":` + strconv.FormatInt(transcriptLimit, 10) + `}`
+	messages := bus.PathMessages + " " + auth + ` {"limit":` + strconv.FormatInt(groupLimit, 10) + `}`
 	if len(got) != 2 || got[0] != list || got[1] != messages {
 		t.Fatalf("messages %#v", got)
 	}
@@ -951,7 +1001,7 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 
 	_, body, _ = getPage(t, page.URL+"/conversations/job?before=4")
 	got = take()
-	readBody := bus.PathRead + " " + auth + ` {"conversation":"job","cursor":0,"limit":` + strconv.FormatInt(transcriptLimit, 10) + `}`
+	readBody := bus.PathRead + " " + auth + ` {"conversation":"job","cursor":0,"limit":` + strconv.FormatInt(groupLimit, 10) + `}`
 	if len(got) != 2 || got[0] != bus.PathList+" "+auth+" {}" || got[1] != readBody {
 		t.Fatalf("read %#v", got)
 	}
@@ -959,6 +1009,17 @@ func TestProtocolIsListReadPublish(t *testing.T) {
 		t.Fatalf("name filter %s", got[1])
 	}
 	assertOmits(t, "read page", body, token)
+
+	_, _, _ = getPage(t, page.URL+"/?before=4")
+	got = take()
+	older := bus.PathMessages + " " + auth + ` {"limit":` + strconv.FormatInt(groupLimit, 10) + `,"before":4}`
+	if len(got) != 2 || got[0] != list || got[1] != older {
+		t.Fatalf("older messages %#v", got)
+	}
+	_, _, _ = getPage(t, page.URL+"/?before=0")
+	if got = take(); len(got) != 1 || got[0] != list {
+		t.Fatalf("bad messages before called %#v", got)
+	}
 
 	_, _, _ = getPage(t, page.URL+"/conversations/job?before=abc")
 	got = take()

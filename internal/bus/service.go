@@ -86,7 +86,7 @@ func newService(ctx context.Context, st *store.Store, opt Options) (*Service, er
 	if opt.Clock == nil {
 		opt.Clock = time.Now
 	}
-	newest, err := st.Newest(ctx, 1)
+	newest, err := st.Newest(ctx, 1, 0)
 	if err != nil {
 		return nil, fmt.Errorf("read newest message: %w", err)
 	}
@@ -176,13 +176,22 @@ func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) 
 }
 
 // Messages returns the newest limit messages across every conversation.
-func (s *Service) Messages(ctx context.Context, limit int) (Result, error) {
+// A non-nil before keeps only messages whose seq is less than it, and a
+// before less than one is refused.
+func (s *Service) Messages(ctx context.Context, limit int, before *int64) (Result, error) {
 	if limit < 1 {
 		return refused(ReasonLimitRange), nil
 	}
+	var bound int64
+	if before != nil {
+		if *before < 1 {
+			return refused(ReasonBeforeRange), nil
+		}
+		bound = *before
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	msgs, err := s.store.Newest(ctx, limit)
+	msgs, err := s.store.Newest(ctx, limit, bound)
 	if err != nil {
 		return s.fail(err, "messages")
 	}

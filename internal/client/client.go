@@ -188,6 +188,12 @@ type WatchRequest struct {
 	Deadline     *string `json:"deadline,omitempty"`
 }
 
+// MessagesRequest is the messages body. A nil Before omits the field.
+type MessagesRequest struct {
+	Limit  int64  `json:"limit"`
+	Before *int64 `json:"before,omitempty"`
+}
+
 // RegisterRequest is the register body.
 type RegisterRequest struct {
 	Conversation string `json:"conversation"`
