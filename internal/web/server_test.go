@@ -216,7 +216,7 @@ func TestMessagesLoadsTheNextOlderGroupByBefore(t *testing.T) {
 	if href != "/?before=2" {
 		t.Fatalf("href %s", href)
 	}
-	if !strings.Contains(first, `id="older-error"`) {
+	if !strings.Contains(first, `id="group-error"`) {
 		t.Fatalf("no place for a failed load\n%s", first)
 	}
 	_, next, _ := getPage(t, page.URL+href)

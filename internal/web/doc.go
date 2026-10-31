@@ -40,6 +40,16 @@
 // ends a 200 stream, so the browser reconnects. Event data comes from the
 // same template blocks as the pages. The stream position comes from the tab
 // and is not stored.
+// Each visible tab holds one stream for its view and updates in place. A new
+// message appears at the top of Messages or its transcript with a brief
+// highlight, and nothing is trimmed. Conversations, the search index, and
+// the side panel follow the list. The open Send form, Markdown toggles, and
+// the search box are kept. A hidden tab closes its stream and catches up
+// from its last seq when it is visible again. On reset the tab reloads the
+// newest group of its view, without before, and opens a new stream from it.
+// A failed reload is retried after 2s, doubling to 30s, while the tab is
+// visible. The stream seq lives only in the tab's script and is not shown
+// or stored.
 // The capability token is sent to the bus and is not written into the page,
 // the stream, or the logs. The page listens on
 // loopback. Any other socket is closed. It answers for the host it listens

@@ -124,8 +124,9 @@ func setPageHeaders(w http.ResponseWriter) {
 }
 
 var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
-	"viewTime":   viewTime,
-	"renderBody": renderBody,
+	"viewTime":    viewTime,
+	"renderBody":  renderBody,
+	"streamRetry": func() int { return streamRetry },
 }).Parse(pageSource))
 
 // viewTime renders a bus timestamp for reading.
@@ -157,6 +158,7 @@ const pageSource = `<!DOCTYPE html>
   --ok: #166534;
   --issues: #9f1239;
   --banner: #fff1f2;
+  --arrived: color-mix(in srgb, var(--accent) 16%, #fff);
 }
 body { margin: 0; height: 100vh; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; line-height: 1.5; background: var(--bg); color: var(--fg); display: grid; grid-template-columns: 13rem minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "bar bar" "nav main"; }
 a { color: var(--accent); text-decoration: none; }
@@ -210,8 +212,8 @@ dialog::backdrop { background: rgb(28 25 23 / 0.45); }
 #transcript .where { display: none; }
 .message { background: var(--ticket); border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.75rem; margin: 0 0 1.2rem; box-shadow: 0 1px 2px rgb(28 25 23 / 0.08), 0 4px 12px rgb(28 25 23 / 0.12); }
 #more { height: 1px; }
-#older-error, #list-error, #publish-reason { color: var(--issues); }
-#older-error:empty { display: none; }
+#group-error, #list-error, #publish-reason { color: var(--issues); }
+#group-error:empty { display: none; }
 #notice, #list-error, #publish-reason { background: var(--banner); padding: 0.35rem 0.55rem; border-radius: 4px; }
 .meta-end { display: flex; align-items: center; gap: 0.75rem; margin-left: auto; flex: none; }
 .msg-actions { display: flex; align-items: center; gap: 0.35rem; flex: none; }
@@ -268,6 +270,12 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 #closed-section .conv { background: transparent; box-shadow: none; }
 #closed-section .conv-name a { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); }
 .conv-empty { margin: 0; color: var(--muted); }
+.arrived { animation: arrived 2.4s ease-out; }
+@keyframes arrived { from { background-color: var(--arrived); } }
+@keyframes arrived-still { from, to { background-color: var(--arrived); } }
+@media (prefers-reduced-motion: reduce) {
+  .arrived { animation-name: arrived-still; animation-timing-function: linear; }
+}
 @media (max-width: 960px) {
   body, body.has-meta { height: auto; min-height: 100vh; overflow: visible; grid-template-columns: 1fr; grid-template-rows: auto; grid-template-areas: "bar" "nav" "meta" "main"; }
   main, body.has-meta main, body.has-meta #transcript-section { display: block; overflow: visible; }
@@ -297,10 +305,11 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 <h1>Messages</h1>
 {{if .ListOutcome}}<p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p>
 {{else if .Group}}{{if ne .Group.Outcome "ok"}}<p id="read-outcome">{{.Group.Outcome}}</p>{{if .Group.Reason}}<p id="read-reason">{{.Group.Reason}}</p>{{end}}
-{{else if eq (len .Group.Messages) 0}}<p id="empty">No messages.</p>
+{{else}}{{if eq (len .Group.Messages) 0}}<p id="empty">No messages.</p>
 {{else}}<ol id="messages">
 {{range .Group.Messages}}{{template "messageItem" .}}{{end}}</ol>
-{{template "olderMarker" .Group}}{{end}}{{end}}
+{{end}}{{template "olderMarker" .Group}}{{end}}{{end}}
+<p id="group-error"></p>
 {{else if eq .Kind "list"}}
 <h1>Conversations</h1>
 {{if .ListOutcome}}<p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p>
@@ -322,7 +331,8 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{end}}{{if and .Group (eq .Group.Outcome "ok")}}{{if eq (len .Group.Messages) 0}}<p id="transcript-empty">No messages.</p>
 {{else}}<ol id="transcript">
 {{range .Group.Messages}}{{template "messageItem" .}}{{end}}</ol>
-{{template "olderMarker" .Group}}{{end}}{{end}}{{end}}
+{{end}}{{template "olderMarker" .Group}}{{end}}{{end}}
+<p id="group-error"></p>
 </section>
 <form id="send-form" method="post" action="{{.PublishAction}}">
 <dialog id="send-dialog"{{if .SendOpen}} data-send-open{{end}}>
@@ -346,54 +356,60 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{template "convIndex" .}}
 <script>
 (function () {
+  var mainEl = document.getElementById("main");
   var box = document.getElementById("search");
   var results = document.getElementById("search-results");
-  var index = document.getElementById("conversation-index");
-  if (box && results && index) {
+  function trim(s) { return s.replace(/^\s+/, "").replace(/\s+$/, ""); }
+  function indexItems() {
+    var index = document.getElementById("conversation-index");
     var items = [];
-    for (var n = 0; n < index.children.length; n++) {
-      var row = index.children[n];
+    if (!index) return items;
+    var rows = index.children;
+    for (var n = 0; n < rows.length; n++) {
       items.push({
-        name: row.getAttribute("data-name") || "",
-        status: row.getAttribute("data-status") || "",
-        task: row.getAttribute("data-task") || "",
-        ticket: row.getAttribute("data-ticket") || "",
-        href: row.getAttribute("data-href") || ""
+        name: rows[n].getAttribute("data-name") || "",
+        status: rows[n].getAttribute("data-status") || "",
+        task: rows[n].getAttribute("data-task") || "",
+        ticket: rows[n].getAttribute("data-ticket") || "",
+        href: rows[n].getAttribute("data-href") || ""
       });
     }
-    function trim(s) { return s.replace(/^\s+/, "").replace(/\s+$/, ""); }
-    function hit(item, q) {
-      return item.name.toLowerCase().indexOf(q) >= 0 || item.task.toLowerCase().indexOf(q) >= 0 || item.ticket.toLowerCase().indexOf(q) >= 0;
+    return items;
+  }
+  function hit(item, q) {
+    return item.name.toLowerCase().indexOf(q) >= 0 || item.task.toLowerCase().indexOf(q) >= 0 || item.ticket.toLowerCase().indexOf(q) >= 0;
+  }
+  function renderSearch() {
+    var q = trim(box.value).toLowerCase();
+    while (results.firstChild) results.removeChild(results.firstChild);
+    if (q === "") { results.hidden = true; return; }
+    var items = indexItems();
+    var shown = 0;
+    for (var i = 0; i < items.length; i++) {
+      if (!hit(items[i], q)) continue;
+      var li = document.createElement("li");
+      var link = document.createElement(items[i].href ? "a" : "span");
+      if (items[i].href) link.href = items[i].href;
+      link.textContent = items[i].name;
+      var st = document.createElement("span");
+      st.className = "status";
+      st.setAttribute("data-status", items[i].status);
+      st.textContent = items[i].status;
+      li.appendChild(link);
+      li.appendChild(st);
+      results.appendChild(li);
+      shown++;
     }
-    function render() {
-      var q = trim(box.value).toLowerCase();
-      while (results.firstChild) results.removeChild(results.firstChild);
-      if (q === "") { results.hidden = true; return; }
-      var shown = 0;
-      for (var i = 0; i < items.length; i++) {
-        if (!hit(items[i], q)) continue;
-        var li = document.createElement("li");
-        var link = document.createElement(items[i].href ? "a" : "span");
-        if (items[i].href) link.href = items[i].href;
-        link.textContent = items[i].name;
-        var st = document.createElement("span");
-        st.className = "status";
-        st.setAttribute("data-status", items[i].status);
-        st.textContent = items[i].status;
-        li.appendChild(link);
-        li.appendChild(st);
-        results.appendChild(li);
-        shown++;
-      }
-      if (shown === 0) {
-        var empty = document.createElement("li");
-        empty.id = "search-empty";
-        empty.textContent = "No matches.";
-        results.appendChild(empty);
-      }
-      results.hidden = false;
+    if (shown === 0) {
+      var empty = document.createElement("li");
+      empty.id = "search-empty";
+      empty.textContent = "No matches.";
+      results.appendChild(empty);
     }
-    box.addEventListener("input", render);
+    results.hidden = false;
+  }
+  if (box && results) {
+    box.addEventListener("input", renderSearch);
     box.addEventListener("keydown", function (event) {
       if (event.key !== "Enter") return;
       var link = results.querySelector("a");
@@ -426,14 +442,13 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     if (!dialog || typeof dialog.showModal !== "function" || dialog.open) return;
     dialog.showModal();
   }
-  if (dialog && typeof dialog.hasAttribute === "function" && dialog.hasAttribute("data-send-open")) openSend();
+  if (dialog && dialog.hasAttribute("data-send-open")) openSend();
   if (pen) pen.addEventListener("click", openSend);
   var cancel = document.getElementById("send-cancel");
   if (cancel && dialog && typeof dialog.close === "function") {
     cancel.addEventListener("click", function () { dialog.close(); });
   }
-  var mainEl = document.getElementById("main");
-  if (mainEl && mainEl.addEventListener) mainEl.addEventListener("click", onMessageClick);
+  if (mainEl) mainEl.addEventListener("click", onMessageClick);
   function hasClass(node, name) {
     return node && node.classList && node.classList.contains(name);
   }
@@ -495,25 +510,51 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     var markdown = ancestor(event.target, "markdown");
     if (markdown) toggleMarkdown(markdown);
   }
-  var emptyIds = { messages: "empty", transcript: "transcript-empty" };
-  var more = document.getElementById("more");
-  var list = document.getElementById("messages") || document.getElementById("transcript");
-  if (!more || !list || !more.getAttribute("data-next")) return;
-  var busy = false;
-  function visible(el) {
-    var r = el.getBoundingClientRect();
-    return r.top < window.innerHeight && r.bottom > 0;
+
+  var view = pageView(location.pathname);
+  if (!view) return;
+  function pageView(path) {
+    if (path === "/") return { list: "messages", empty: "empty", region: "main", url: "/", stream: "/events?", loadNotice: true };
+    if (path === "/conversations") return { sections: true, stream: "/events?view=list", loadNotice: true };
+    var m = /^\/conversations\/([^\/]+)(\/messages)?$/.exec(path);
+    if (!m) return null;
+    var name;
+    try { name = decodeURIComponent(m[1]); } catch (err) { return null; }
+    return {
+      meta: true,
+      list: "transcript",
+      empty: "transcript-empty",
+      region: "transcript-section",
+      url: "/conversations/" + m[1],
+      stream: "/events?conversation=" + encodeURIComponent(name) + "&",
+      // After a failed Send the notice explains the send, which a reload does not undo.
+      loadNotice: !m[2]
+    };
   }
-  function showOlderError(text) {
-    var el = document.getElementById("older-error");
+  var olderFailed = "older messages did not load";
+  var newestFailed = "messages did not load";
+  function parseHTML(html) {
+    return new DOMParser().parseFromString(html, "text/html");
+  }
+  function fetchPage(url) {
+    return fetch(url).then(function (res) {
+      return res.text().then(function (html) { return { ok: res.ok, doc: parseHTML(html) }; });
+    });
+  }
+  function clearLoadNotice() {
+    var notice = document.getElementById("notice");
+    if (view.loadNotice && notice) notice.parentNode.removeChild(notice);
+  }
+  function showGroupError(text) {
+    var el = document.getElementById("group-error");
     if (el) el.textContent = text;
   }
-  function olderOk(doc) {
+  function groupOk(doc) {
     var outcome = doc.getElementById("read-outcome");
     if (outcome && outcome.textContent !== "ok") return false;
-    return doc.getElementById(list.id) || doc.getElementById(emptyIds[list.id]);
+    return !!(doc.getElementById(view.list) || doc.getElementById(view.empty));
   }
-  function olderFailure(doc) {
+  function groupFailure(doc, fallback) {
     var notice = doc.getElementById("notice");
     if (notice && notice.textContent) return notice.textContent;
     var outcome = doc.getElementById("read-outcome");
@@ -522,10 +563,31 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
       if (reason && reason.textContent) return outcome.textContent + " " + reason.textContent;
       return outcome.textContent;
     }
-    return "older messages did not load";
+    return fallback;
   }
-  function applyOlder(doc) {
-    var nextList = doc.getElementById(list.id);
+
+  var older = null;
+  var observed = null;
+  // The marker whose group is loading, so a load for a replaced marker cannot block the new one.
+  var loading = null;
+  function observeMore() {
+    var more = document.getElementById("more");
+    if (!more || !more.getAttribute("data-next") || more === observed) return;
+    if (!older) {
+      older = new IntersectionObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) if (entries[i].isIntersecting) loadOlder();
+      });
+    }
+    if (observed) older.unobserve(observed);
+    observed = more;
+    older.observe(more);
+  }
+  function inView(el) {
+    var r = el.getBoundingClientRect();
+    return r.top < window.innerHeight && r.bottom > 0;
+  }
+  function appendOlder(list, more, doc) {
+    var nextList = doc.getElementById(view.list);
     if (nextList) {
       var items = nextList.querySelectorAll("li.message");
       for (var i = 0; i < items.length; i++) list.appendChild(document.importNode(items[i], true));
@@ -534,33 +596,246 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     if (nextMore && nextMore.getAttribute("data-next")) more.setAttribute("data-next", nextMore.getAttribute("data-next"));
     else more.removeAttribute("data-next");
   }
-  function load() {
-    if (busy) return;
-    var url = more.getAttribute("data-next");
-    if (!url) return;
-    busy = true;
-    fetch(url).then(function (res) {
-      return res.text().then(function (html) { return { ok: res.ok, html: html }; });
-    }).then(function (got) {
-      var doc = new DOMParser().parseFromString(got.html, "text/html");
-      if (!got.ok || !olderOk(doc)) {
-        showOlderError(olderFailure(doc));
-        busy = false;
-        return;
-      }
-      showOlderError("");
-      applyOlder(doc);
-      busy = false;
-      if (more.getAttribute("data-next") && visible(more)) load();
+  function loadOlder() {
+    var more = document.getElementById("more");
+    var list = document.getElementById(view.list);
+    var url = more && more.getAttribute("data-next");
+    if (!url || !list || loading === more) return;
+    loading = more;
+    // A reset reload may have replaced the region, and this result belongs to the old one.
+    function current() {
+      if (loading === more) loading = null;
+      return document.getElementById("more") === more;
+    }
+    fetchPage(url).then(function (got) {
+      if (!current()) return;
+      if (!got.ok || !groupOk(got.doc)) { showGroupError(groupFailure(got.doc, olderFailed)); return; }
+      showGroupError("");
+      appendOlder(list, more, got.doc);
+      if (more.getAttribute("data-next") && inView(more)) loadOlder();
     }).catch(function () {
-      showOlderError("older messages did not load");
-      busy = false;
+      if (current()) showGroupError(olderFailed);
     });
   }
-  var obs = new IntersectionObserver(function (entries) {
-    for (var i = 0; i < entries.length; i++) if (entries[i].isIntersecting) load();
+  if (view.list) observeMore();
+
+  var anchoring = CSS.supports("overflow-anchor", "auto");
+  function scrollerOf(el) {
+    for (var node = el.parentNode; node && node.nodeType === 1; node = node.parentNode) {
+      var y = getComputedStyle(node).overflowY;
+      if (y === "auto" || y === "scroll" || y === "overlay") return node;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+  function markArrived(el) {
+    el.classList.add("arrived");
+    el.addEventListener("animationend", function done(event) {
+      if (event.target !== el) return;
+      el.classList.remove("arrived");
+      el.removeEventListener("animationend", done);
+    });
+  }
+  function seqOf(el) {
+    var n = Number(el.getAttribute("data-seq"));
+    return n > 0 ? n : 0;
+  }
+  function pageSeq() {
+    var list = document.getElementById(view.list);
+    var top = 0;
+    if (!list) return top;
+    var items = list.children;
+    for (var i = 0; i < items.length; i++) if (seqOf(items[i]) > top) top = seqOf(items[i]);
+    return top;
+  }
+  function listed(list, n) {
+    var items = list.children;
+    for (var i = 0; i < items.length; i++) if (seqOf(items[i]) === n) return true;
+    return false;
+  }
+  function insertMessage(list, empty, item) {
+    var scroller = scrollerOf(list || empty);
+    var top = scroller.scrollTop;
+    var height = scroller.scrollHeight;
+    if (!list) {
+      list = document.createElement("ol");
+      list.id = view.list;
+      empty.parentNode.replaceChild(list, empty);
+    }
+    list.insertBefore(item, list.firstChild);
+    markArrived(item);
+    if (!anchoring && top > 0) scroller.scrollTop = top + scroller.scrollHeight - height;
+  }
+
+  var source = null;
+  var seq = view.list ? pageSeq() : 0;
+  var reloading = false;
+  var reloadDue = false;
+  function openStream() {
+    if (source || reloading || document.visibilityState === "hidden") return;
+    source = new EventSource(view.list ? view.stream + "after=" + seq : view.stream);
+    source.addEventListener("conversations", applyConversations);
+    if (view.meta) source.addEventListener("meta", applyMeta);
+    if (view.list) {
+      source.addEventListener("message", applyMessage);
+      source.addEventListener("reset", reset);
+    }
+  }
+  function closeStream() {
+    if (!source) return;
+    source.close();
+    source = null;
+  }
+  // A group that failed at load has neither its list nor its placeholder.
+  function groupMissing() {
+    return !document.getElementById(view.list) && !document.getElementById(view.empty);
+  }
+  function applyMessage(event) {
+    var item = parseHTML(event.data).querySelector("li.message");
+    if (!item) return;
+    var n = seqOf(item);
+    if (n > seq) seq = n;
+    if (groupMissing()) { reset(); return; }
+    var list = document.getElementById(view.list);
+    var empty = document.getElementById(view.empty);
+    if (list && listed(list, n)) return;
+    insertMessage(list, empty, document.importNode(item, true));
+  }
+  function replaceFrom(doc, id) {
+    var old = document.getElementById(id);
+    var fresh = doc.getElementById(id);
+    if (!old || !fresh) return null;
+    fresh = document.importNode(fresh, true);
+    old.parentNode.replaceChild(fresh, old);
+    return fresh;
+  }
+  function rowNames(section) {
+    var names = [];
+    var rows = section ? section.querySelectorAll("li.conv") : [];
+    for (var i = 0; i < rows.length; i++) {
+      var label = rows[i].querySelector(".conv-name");
+      names.push(label ? label.textContent : "");
+    }
+    return names;
+  }
+  function applySection(doc, id) {
+    var before = rowNames(document.getElementById(id));
+    var section = replaceFrom(doc, id);
+    if (!section) return;
+    var rows = section.querySelectorAll("li.conv");
+    var names = rowNames(section);
+    for (var i = 0; i < rows.length; i++) {
+      if (passedOthers(before, names, i)) markArrived(rows[i]);
+    }
+  }
+  // A row arrived when it is new or now sits above a row that was above it,
+  // so a row that only rose because others left is not marked.
+  function passedOthers(before, names, i) {
+    var was = before.indexOf(names[i]);
+    if (was < 0) return true;
+    for (var j = i + 1; j < names.length; j++) {
+      var other = before.indexOf(names[j]);
+      if (other >= 0 && other < was) return true;
+    }
+    return false;
+  }
+  function applySections(doc) {
+    var ids = ["open-section", "closed-section"];
+    if (document.getElementById(ids[0])) {
+      for (var i = 0; i < ids.length; i++) applySection(doc, ids[i]);
+      return;
+    }
+    // A list that failed at load has no sections, only its failure text.
+    var failure = document.getElementById("list-error");
+    var at = failure && failure.parentNode === mainEl ? failure : null;
+    for (var j = 0; j < ids.length; j++) {
+      var fresh = doc.getElementById(ids[j]);
+      if (fresh) mainEl.insertBefore(document.importNode(fresh, true), at);
+    }
+    if (at) mainEl.removeChild(at);
+    clearLoadNotice();
+  }
+  function applyConversations(event) {
+    var doc = parseHTML(event.data);
+    replaceFrom(doc, "conversation-index");
+    if (view.sections && mainEl) applySections(doc);
+    if (box && results && trim(box.value) !== "") renderSearch();
+    // The event follows a watch and a list that worked, so a quiet view can recover too.
+    if (view.list && groupMissing()) reset();
+  }
+  function applyMeta(event) {
+    replaceFrom(parseHTML(event.data), "conversation-meta");
+  }
+  var regionIds = {};
+  var regionList = [view.list, view.empty, "group-error", "more", "list-error", "read-outcome", "read-reason"];
+  for (var r = 0; r < regionList.length; r++) regionIds[regionList[r]] = true;
+  function region(container) {
+    var out = [];
+    var nodes = container ? container.children : [];
+    for (var i = 0; i < nodes.length; i++) if (regionIds[nodes[i].id]) out.push(nodes[i]);
+    return out;
+  }
+  function replaceRegion(doc) {
+    var container = document.getElementById(view.region);
+    var old = region(container);
+    var fresh = region(doc.getElementById(view.region));
+    var at = old.length ? old[0] : null;
+    for (var i = 0; i < fresh.length; i++) container.insertBefore(document.importNode(fresh[i], true), at);
+    for (var j = 0; j < old.length; j++) container.removeChild(old[j]);
+  }
+  // A failed reload backs off from the stream's own reconnect delay, as the browser would.
+  var retryFirst = {{streamRetry}};
+  var retryMax = 30000;
+  var retryDelay = 0;
+  var retryTimer = null;
+  function cancelRetry() {
+    if (retryTimer === null) return;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  function scheduleRetry() {
+    cancelRetry();
+    if (document.visibilityState === "hidden") return;
+    retryDelay = retryDelay ? Math.min(retryDelay * 2, retryMax) : retryFirst;
+    retryTimer = setTimeout(function () { retryTimer = null; reload(); }, retryDelay);
+  }
+  function reloadFailed(text) {
+    reloading = false;
+    reloadDue = true;
+    showGroupError(text);
+    scheduleRetry();
+  }
+  // The stream stays closed until the replace, so a live insert cannot be lost under it.
+  function reload() {
+    if (reloading) return;
+    cancelRetry();
+    reloading = true;
+    reloadDue = false;
+    // The view URL has no before, so an older group cannot reload itself and reset again.
+    fetchPage(view.url).then(function (got) {
+      if (!got.ok || !groupOk(got.doc)) { reloadFailed(groupFailure(got.doc, newestFailed)); return; }
+      replaceRegion(got.doc);
+      clearLoadNotice();
+      reloading = false;
+      retryDelay = 0;
+      seq = pageSeq();
+      if (/[?&]before=/.test(location.search)) history.replaceState(history.state, "", view.url);
+      observeMore();
+      openStream();
+    }).catch(function () {
+      reloadFailed(newestFailed);
+    });
+  }
+  // Closing first keeps the browser from reconnecting with the stale Last-Event-ID.
+  function reset() {
+    closeStream();
+    reload();
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") { closeStream(); cancelRetry(); }
+    else if (reloadDue) reload();
+    else openStream();
   });
-  obs.observe(more);
+  openStream();
 })();
 </script>
 </body>
@@ -591,8 +866,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{template "messageBody" .Message}}
 {{template "messageFoot" .Message}}
 </li>{{end}}
-{{define "olderMarker"}}{{if .Full}}<p id="older-error"></p>
-<div id="more" data-next="{{.NextPage}}"></div>
+{{define "olderMarker"}}{{if .Full}}<div id="more" data-next="{{.NextPage}}"></div>
 {{end}}{{end}}
 {{define "messageMeta"}}<p class="meta"><span class="who">From: <span class="from">{{.From}}</span>{{if .To}} To: <span class="to">{{range $i, $name := .To}}{{if $i}}, {{end}}<span class="addressee">{{$name}}</span>{{end}}</span>{{end}}</span><span class="meta-end"><time class="when" datetime="{{.Time}}">{{viewTime .Time}}</time><span class="msg-actions"><button type="button" class="markdown" aria-pressed="false" aria-label="Markdown" title="Markdown"><svg viewBox="25 22 165 84" aria-hidden="true"><path fill="currentColor" d="M30 98V30h20l20 25 20-25h20v68H90V59L70 84 50 59v39zm125 0-30-33h20V30h20v35h20z"/></svg></button><button type="button" class="copy" aria-label="Copy markdown" title="Copy markdown"><svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></button></span></span></p>{{end}}
 {{define "messageBody"}}<div class="body rendered">{{renderBody .Body}}</div><pre class="body source" hidden>{{.Body}}</pre>{{end}}
