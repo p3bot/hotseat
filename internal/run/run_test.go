@@ -293,6 +293,42 @@ func (h *harness) release(name string) {
 	}
 }
 
+// awaitRegistered waits until name has a registered time and returns its row.
+// A seat that fails before its backup registers finds no backup and halts the run.
+func (h *harness) awaitRegistered(conv, name string) client.Member {
+	h.t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		res := h.do("member", client.MemberRequest{Conversation: conv, Name: name})
+		if res.Member != nil && res.Member.Registered != "" {
+			return *res.Member
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	h.t.Fatalf("%s did not register", name)
+	return client.Member{}
+}
+
+// awaitRelaunchEnd waits until the member in boot has been launched again and that launch has ended, and returns the row.
+// The pid moves only at the relaunch's running write, so a later status is that launch's and not the boot's.
+func (h *harness) awaitRelaunchEnd(conv string, boot client.Member) client.Member {
+	h.t.Helper()
+	if boot.PID == nil {
+		h.t.Fatalf("%s has no boot pid", boot.Name)
+	}
+	var row client.Member
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		row = h.member(conv, boot.Name)
+		if row.PID != nil && *row.PID != *boot.PID && row.Status != statusRunning {
+			return row
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	h.t.Fatalf("%s relaunch did not end: %s", boot.Name, row.Status)
+	return row
+}
+
 // lockedBuffer is safe for a test to read while Execute writes.
 type lockedBuffer struct {
 	mu  sync.Mutex
@@ -639,46 +675,11 @@ func TestFirstLaunchHasNoResumeAndLaterLaunchReusesIt(t *testing.T) {
 }
 
 func TestMissingSessionIDTimesOutOneMember(t *testing.T) {
-	h := newHarness(t)
-	h.plan.Locator = map[string]textFile{
-		"hotseat/grok": {Out: "sessionId\n\n"},
-	}
-	h.plan.Launch = map[string]runFile{
-		"alpha": {JSON: `{"sessionId":"UNIQUEFRAGMENT"}`},
-		"bravo": {Register: true},
-	}
-	cfg := h.base()
-	cfg.TicketSet = false
-	cctx, cancel := ctx()
-	defer cancel()
-	go func() {
-		_, _, _ = h.run(cctx, cfg)
-	}()
-	name := h.waitName()
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		alpha := h.do("member", client.MemberRequest{Conversation: name, Name: "alpha"})
-		bravo := h.do("member", client.MemberRequest{Conversation: name, Name: "bravo"})
-		if alpha.Member != nil && alpha.Member.Status == statusTimedOut && bravo.Member != nil && bravo.Member.Status == statusExited {
-			break
+	missingSessionTimesOutOneMember(t, func(h *harness) {
+		h.plan.Locator = map[string]textFile{
+			"hotseat/grok": {Out: "sessionId\n\n"},
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if h.member(name, "alpha").Status != statusTimedOut || h.member(name, "bravo").Status != statusExited {
-		t.Fatalf("alpha %s bravo %s", h.member(name, "alpha").Status, h.member(name, "bravo").Status)
-	}
-	var errBody string
-	for _, m := range h.messages(name) {
-		if m.Kind == kindError {
-			errBody += m.Body + "\n"
-		}
-	}
-	if !strings.Contains(errBody, "alpha") || !strings.Contains(errBody, classMissingSession) || strings.Contains(errBody, "UNIQUEFRAGMENT") {
-		t.Fatalf("error %q", errBody)
-	}
-	h.publish(name, "bravo", "done", "no", nil)
-	h.publish(name, "alpha", "done", "yes", nil)
-	cancel()
+	})
 }
 
 func TestMissingStartIsNotReportedAsAMissingPermission(t *testing.T) {
@@ -739,6 +740,7 @@ func TestLocatorFailureTextIsShownOnce(t *testing.T) {
 	}
 	cfg := h.base()
 	cfg.TicketSet = false
+	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
 	stdoutCh := make(chan string, 1)
@@ -751,14 +753,9 @@ func TestLocatorFailureTextIsShownOnce(t *testing.T) {
 		errCh <- err
 	}()
 	name := h.waitName()
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		alpha := h.do("member", client.MemberRequest{Conversation: name, Name: "alpha"})
-		if alpha.Member != nil && alpha.Member.Status == statusTimedOut {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	boot := h.awaitRegistered(name, "bravo")
+	h.release("alpha")
+	h.awaitRelaunchEnd(name, boot)
 	if h.member(name, "alpha").Status != statusTimedOut {
 		t.Fatalf("alpha %s", h.member(name, "alpha").Status)
 	}
@@ -798,6 +795,7 @@ func missingSessionTimesOutOneMember(t *testing.T, setup func(*harness)) {
 	setup(h)
 	cfg := h.base()
 	cfg.TicketSet = false
+	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
 	errCh := make(chan error, 1)
@@ -806,17 +804,11 @@ func missingSessionTimesOutOneMember(t *testing.T, setup func(*harness)) {
 		errCh <- err
 	}()
 	name := h.waitName()
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		alpha := h.do("member", client.MemberRequest{Conversation: name, Name: "alpha"})
-		bravo := h.do("member", client.MemberRequest{Conversation: name, Name: "bravo"})
-		if alpha.Member != nil && alpha.Member.Status == statusTimedOut && bravo.Member != nil && bravo.Member.Status == statusExited {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if h.member(name, "alpha").Status != statusTimedOut || h.member(name, "bravo").Status != statusExited {
-		t.Fatalf("alpha %s bravo %s", h.member(name, "alpha").Status, h.member(name, "bravo").Status)
+	boot := h.awaitRegistered(name, "bravo")
+	h.release("alpha")
+	bravo := h.awaitRelaunchEnd(name, boot)
+	if alpha := h.member(name, "alpha"); alpha.Status != statusTimedOut || bravo.Status != statusExited {
+		t.Fatalf("alpha %s bravo %s", alpha.Status, bravo.Status)
 	}
 	var errBody string
 	for _, m := range h.messages(name) {
@@ -854,29 +846,11 @@ func TestMemberStderrIsShownAndSessionTextIsNot(t *testing.T) {
 		errCh <- err
 	}()
 	name := h.waitName()
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		mem := h.do("member", client.MemberRequest{Conversation: name, Name: "bravo"})
-		if mem.Member != nil && mem.Member.Registered != "" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if h.member(name, "bravo").Registered == "" {
-		t.Fatal("bravo did not register")
-	}
+	boot := h.awaitRegistered(name, "bravo")
 	h.release("alpha")
-	deadline = time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		alpha := h.do("member", client.MemberRequest{Conversation: name, Name: "alpha"})
-		bravo := h.do("member", client.MemberRequest{Conversation: name, Name: "bravo"})
-		if alpha.Member != nil && alpha.Member.Status == statusTimedOut && bravo.Member != nil && bravo.Member.Status == statusExited {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if h.member(name, "alpha").Status != statusTimedOut || h.member(name, "bravo").Status != statusExited {
-		t.Fatalf("alpha %s bravo %s", h.member(name, "alpha").Status, h.member(name, "bravo").Status)
+	bravo := h.awaitRelaunchEnd(name, boot)
+	if alpha := h.member(name, "alpha"); alpha.Status != statusTimedOut || bravo.Status != statusExited {
+		t.Fatalf("alpha %s bravo %s", alpha.Status, bravo.Status)
 	}
 	var errBody string
 	for _, m := range h.messages(name) {
@@ -1213,19 +1187,9 @@ func TestDoneFromTrailerAfterTimeoutAndNotFromAnotherName(t *testing.T) {
 		errCh <- err
 	}()
 	name := h.waitName()
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		mem := h.do("member", client.MemberRequest{Conversation: name, Name: "bravo"})
-		if mem.Member != nil && mem.Member.Registered != "" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if h.member(name, "bravo").Registered == "" {
-		t.Fatal("bravo did not register")
-	}
+	h.awaitRegistered(name, "bravo")
 	h.release("alpha")
-	deadline = time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		res := h.do("member", client.MemberRequest{Conversation: name, Name: "alpha"})
 		if res.Outcome == bus.OutcomeOK && res.Member != nil && res.Member.Status == statusTimedOut {
@@ -1307,20 +1271,10 @@ func TestHandoffIsOnlyTheTimeoutFactAndFollowUpStillRuns(t *testing.T) {
 		_, _, _ = h.run(cctx, cfg)
 	}()
 	name := h.waitName()
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		bravo := h.do("member", client.MemberRequest{Conversation: name, Name: "bravo"})
-		charlie := h.do("member", client.MemberRequest{Conversation: name, Name: "charlie"})
-		if bravo.Member != nil && bravo.Member.Registered != "" && charlie.Member != nil && charlie.Member.Registered != "" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if h.member(name, "bravo").Registered == "" || h.member(name, "charlie").Registered == "" {
-		t.Fatal("backup did not register")
-	}
+	h.awaitRegistered(name, "bravo")
+	h.awaitRegistered(name, "charlie")
 	h.release("alpha")
-	deadline = time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	var handoff call
 	for time.Now().Before(deadline) {
 		for _, c := range launches(h.calls(), "charlie") {

@@ -104,7 +104,7 @@ func TestRelativeHomeCreatesNothing(t *testing.T) {
 	t.Chdir(wd)
 	t.Setenv("HOME", "rel")
 	t.Setenv("XDG_DATA_HOME", "")
-	addr := freeLoopbackAddr(t)
+	addr := freeBusAddr(t)
 	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--listen", addr})
 	if err == nil || !strings.Contains(err.Error(), "not absolute") {
 		t.Fatalf("err = %v", err)
@@ -178,7 +178,7 @@ func TestOmittedStoreUsesDataHome(t *testing.T) {
 	})
 
 	t.Run("listening opens the data home", func(t *testing.T) {
-		addr := freeLoopbackAddr(t)
+		addr := freeBusAddr(t)
 		stopWhenListening(t, addr, func(ctx context.Context) error {
 			return runBus(ctx, "", addr, "", bus.DefaultMaxBody, slog.New(slog.DiscardHandler))
 		})
@@ -224,7 +224,7 @@ func TestExplicitStoreIgnoresDataHome(t *testing.T) {
 	})
 
 	t.Run("listening uses the explicit directory", func(t *testing.T) {
-		addr := freeLoopbackAddr(t)
+		addr := freeBusAddr(t)
 		stopWhenListening(t, addr, func(ctx context.Context) error {
 			return runBus(ctx, storeDir, addr, "", bus.DefaultMaxBody, slog.New(slog.DiscardHandler))
 		})
@@ -238,7 +238,7 @@ func TestExplicitStoreIgnoresDataHome(t *testing.T) {
 }
 
 func TestOpenFailureReleasesListener(t *testing.T) {
-	addr := freeLoopbackAddr(t)
+	addr := freeBusAddr(t)
 	storePath := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(storePath, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -347,17 +347,33 @@ func TestLoopbackBindIsAttempted(t *testing.T) {
 	}
 }
 
-func freeLoopbackAddr(t *testing.T) string {
+// freeBusAddr returns a loopback address whose port is free on every interface and whose next port, the page, is free on loopback.
+// A closed connection in TIME-WAIT can refuse that next port with no listener on it.
+func freeBusAddr(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for range 100 {
+		ln, err := net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tcp, ok := ln.Addr().(*net.TCPAddr)
+		if !ok {
+			t.Fatalf("addr %T", ln.Addr())
+		}
+		page, pageErr := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tcp.Port+1)))
+		if err := ln.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if pageErr != nil {
+			continue
+		}
+		if err := page.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return net.JoinHostPort("127.0.0.1", strconv.Itoa(tcp.Port))
 	}
-	addr := ln.Addr().String()
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return addr
+	t.Fatal("no free bus and page ports")
+	return ""
 }
 
 func stopWhenListening(t *testing.T, addr string, start func(context.Context) error) {
@@ -540,14 +556,7 @@ func TestSignalExit(t *testing.T) {
 		{"terminate", syscall.SIGTERM, 143},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ln, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			addr := ln.Addr().String()
-			if err := ln.Close(); err != nil {
-				t.Fatal(err)
-			}
+			addr := freeBusAddr(t)
 			dir := t.TempDir()
 			r, w, err := os.Pipe()
 			if err != nil {
@@ -979,8 +988,8 @@ func TestDetachedBus(t *testing.T) {
 			defer cancel()
 			_ = stopBus(ctx, storeDir)
 		})
-		addr := freeLoopbackAddr(t)
-		other := freeLoopbackAddr(t)
+		addr := freeBusAddr(t)
+		other := freeBusAddr(t)
 		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", addr)
 		if started.code != 0 {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
@@ -1188,7 +1197,7 @@ func TestDetachedBus(t *testing.T) {
 			defer cancel()
 			_ = stopBus(ctx, real)
 		})
-		addr := freeLoopbackAddr(t)
+		addr := freeBusAddr(t)
 		started := runBinCmd(t, bin, "bus", "start", "--store", link, "--listen", addr)
 		if started.code != 0 {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
@@ -1205,7 +1214,7 @@ func TestDetachedBus(t *testing.T) {
 		if health != "pass" || statusPID != pid || statusListen != addr || !sameFile(statusStore, real) {
 			t.Fatalf("status %s pid %d listen %s store %s", health, statusPID, statusListen, statusStore)
 		}
-		again := runBinCmd(t, bin, "bus", "start", "--store", real, "--listen", freeLoopbackAddr(t))
+		again := runBinCmd(t, bin, "bus", "start", "--store", real, "--listen", freeBusAddr(t))
 		if again.code != 0 {
 			t.Fatalf("second start %d\n%s%s", again.code, again.stdout, again.stderr)
 		}
@@ -1240,7 +1249,7 @@ func TestDetachedBus(t *testing.T) {
 		if err := writeRecord(storeDir, os.Getpid(), "127.0.0.1:1", ""); err != nil {
 			t.Fatal(err)
 		}
-		addr := freeLoopbackAddr(t)
+		addr := freeBusAddr(t)
 		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", addr)
 		if started.code == 0 || !strings.Contains(started.stderr, "held") {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
@@ -1264,7 +1273,7 @@ func TestDetachedBus(t *testing.T) {
 			defer cancel()
 			_ = stopBus(ctx, storeDir)
 		})
-		_, port, err := net.SplitHostPort(freeLoopbackAddr(t))
+		_, port, err := net.SplitHostPort(freeBusAddr(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1297,7 +1306,7 @@ func TestDetachedBus(t *testing.T) {
 			defer cancel()
 			_ = stopBus(ctx, storeDir)
 		})
-		addr := freeLoopbackAddr(t)
+		addr := freeBusAddr(t)
 		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", addr)
 		if started.code != 0 {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
@@ -1314,7 +1323,7 @@ func TestDetachedBus(t *testing.T) {
 		if health != "pass" || statusPID != pid || statusListen != listen || !sameFile(statusStore, storeDir) {
 			t.Fatalf("status %s pid %d listen %s store %s", health, statusPID, statusListen, statusStore)
 		}
-		again := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", freeLoopbackAddr(t))
+		again := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", freeBusAddr(t))
 		if again.code != 0 {
 			t.Fatalf("second start %d\n%s%s", again.code, again.stdout, again.stderr)
 		}
@@ -1415,7 +1424,7 @@ func TestStatusReport(t *testing.T) {
 		defer cancel()
 		_ = stopBus(ctx, storeDir)
 	})
-	busAddr := freeLoopbackAddr(t)
+	busAddr := freeBusAddr(t)
 	started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", busAddr)
 	if started.code != 0 {
 		t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
@@ -1468,7 +1477,7 @@ func TestBareStop(t *testing.T) {
 	})
 
 	t.Run("default store on another port", func(t *testing.T) {
-		pid := startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		pid := startManaged(t, bin, env, defaultStore, freeBusAddr(t))
 		stopped := runBinEnv(t, bin, env, "bus", "stop")
 		if stopped.code != 0 {
 			t.Fatalf("stop %d\n%s%s", stopped.code, stopped.stdout, stopped.stderr)
@@ -1481,7 +1490,7 @@ func TestBareStop(t *testing.T) {
 
 	t.Run("both", func(t *testing.T) {
 		other := filepath.Join(t.TempDir(), "other")
-		defaultPID := startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		defaultPID := startManaged(t, bin, env, defaultStore, freeBusAddr(t))
 		otherPID := startManaged(t, bin, env, other, bus.DefaultListen)
 		stopped := runBinEnv(t, bin, env, "bus", "stop")
 		if stopped.code != 0 {
@@ -1496,7 +1505,7 @@ func TestBareStop(t *testing.T) {
 
 	t.Run("store flag leaves the other", func(t *testing.T) {
 		other := filepath.Join(t.TempDir(), "other")
-		defaultPID := startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		defaultPID := startManaged(t, bin, env, defaultStore, freeBusAddr(t))
 		otherPID := startManaged(t, bin, env, other, bus.DefaultListen)
 		stopped := runBinEnv(t, bin, env, "bus", "stop", "--store", other)
 		if stopped.code != 0 {
@@ -1509,7 +1518,7 @@ func TestBareStop(t *testing.T) {
 		if stopped.code != 0 || pidAlive(defaultPID) {
 			t.Fatalf("stop default %d alive %v\n%s%s", stopped.code, pidAlive(defaultPID), stopped.stdout, stopped.stderr)
 		}
-		defaultPID = startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		defaultPID = startManaged(t, bin, env, defaultStore, freeBusAddr(t))
 		otherPID = startManaged(t, bin, env, other, bus.DefaultListen)
 		stopped = runBinEnv(t, bin, env, "bus", "stop", "--store", defaultStore)
 		if stopped.code != 0 || pidAlive(defaultPID) || !pidAlive(otherPID) {
@@ -1541,7 +1550,7 @@ func TestBareStop(t *testing.T) {
 	})
 
 	t.Run("foreign listener and default store", func(t *testing.T) {
-		pid := startManaged(t, bin, env, defaultStore, freeLoopbackAddr(t))
+		pid := startManaged(t, bin, env, defaultStore, freeBusAddr(t))
 		ln, err := net.Listen("tcp", bus.DefaultListen)
 		if err != nil {
 			t.Fatal(err)
@@ -1674,7 +1683,7 @@ func TestLocalServeBoundSkipsOtherNetNS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := freeLoopbackAddr(t)
+	addr := freeBusAddr(t)
 	cmd := exec.Command("unshare", "-Urn", "--", exe, "bus", "serve")
 	cmd.Env = append(os.Environ(), "HOTSEAT_FAKE_SERVE=1", "HOTSEAT_FAKE_LISTEN="+addr)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

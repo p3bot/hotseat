@@ -267,16 +267,8 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 	if err := os.WriteFile(wrongPath, []byte(wrong+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	_, port, err := net.SplitHostPort(freeBusAddr(t))
 	if err != nil {
-		t.Fatal(err)
-	}
-	tcp, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("addr %T", ln.Addr())
-	}
-	port := strconv.Itoa(tcp.Port)
-	if err := ln.Close(); err != nil {
 		t.Fatal(err)
 	}
 	// The listener is not loopback. The client still dials this machine.
