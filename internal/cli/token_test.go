@@ -267,7 +267,7 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 	if err := os.WriteFile(wrongPath, []byte(wrong+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, port, err := net.SplitHostPort(freeBusAddr(t))
+	_, port, err := net.SplitHostPort(freeBusPageAddr(t))
 	if err != nil {
 		t.Fatal(err)
 	}

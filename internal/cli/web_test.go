@@ -181,6 +181,7 @@ func TestWebBadTokenFileDoesNotListen(t *testing.T) {
 	}
 }
 
+// freeAddr returns an ephemeral loopback address for a listener with no page beside it.
 func freeAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
