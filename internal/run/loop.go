@@ -333,7 +333,7 @@ func (e *engine) actTurn(msg client.Message, historical bool, seen int64, later 
 	if err := e.drainHandoff(); err != nil {
 		return err
 	}
-	due := e.due(msg.To, historical, later)
+	due := e.due(msg.To)
 	var err error
 	if mode == modeSerial {
 		err = e.runSerial(due, msg, mode, phase, seen)
@@ -367,29 +367,15 @@ func (e *engine) stopForNewDone(seen int64) error {
 	return nil
 }
 
-func (e *engine) due(to []string, historical bool, later []client.Message) []string {
+// due is every roster recipient that has not timed out. Whether one already answered is checked at launch.
+func (e *engine) due(to []string) []string {
 	var due []string
 	for _, name := range e.rosterTo(to) {
-		st := e.localStatus(name)
-		if st == statusTimedOut {
-			continue
+		if e.localStatus(name) != statusTimedOut {
+			due = append(due, name)
 		}
-		// Startup leaves the same exited row as a finished turn.
-		if historical && st == statusExited && spokeSince(name, later) {
-			continue
-		}
-		due = append(due, name)
 	}
 	return due
-}
-
-func spokeSince(name string, later []client.Message) bool {
-	for _, msg := range later {
-		if msg.From == name {
-			return true
-		}
-	}
-	return false
 }
 
 func (e *engine) rosterTo(to []string) []string {
@@ -410,7 +396,7 @@ func (e *engine) runSerial(due []string, msg client.Message, mode, phase string,
 		if err := e.stopForNewDone(seen); err != nil {
 			return err
 		}
-		if err := e.launchMember(name, launchTurn, e.turnPrompt(name, msg, mode, phase)); err != nil {
+		if err := e.launchForTurn(name, msg, e.turnPrompt(name, msg, mode, phase)); err != nil {
 			return err
 		}
 		if err := e.stopForNewDone(seen); err != nil {
@@ -434,7 +420,7 @@ func (e *engine) runParallel(due []string, msg client.Message, mode, phase strin
 				errCh <- err
 				return
 			}
-			if err := e.launchMember(name, launchTurn, e.turnPrompt(name, msg, mode, phase)); err != nil {
+			if err := e.launchForTurn(name, msg, e.turnPrompt(name, msg, mode, phase)); err != nil {
 				errCh <- err
 				return
 			}

@@ -27,6 +27,13 @@ the bus and it does not open the database. It publishes the task as owner,
 launches each roster member through start, and exits when the acting seat
 posts done or a safety rail trips.
 
+A turn launches each roster member on its to list that has not timed out,
+unless that member has already answered it. Once that member's earlier
+process has ended, run reads the transcript. A member that has published a say or finding after the turn, with
+the turn's sender named on its to list, has answered and is not launched for
+it. A to list of all does not count. Neither does an ask, or a say to someone
+else. A live run and --conversation follow the same rule.
+
 The roster is --agents or HOTSEAT_AGENTS, a space-separated list of
 name=module:model. There is no HOTSEAT_MEMBERS. The flag wins over the
 matching HOTSEAT_* variable. --seat or HOTSEAT_SEAT names the seat. When both

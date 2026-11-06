@@ -26,6 +26,8 @@ const (
 	kindTurn         = "turn"
 	kindDone         = "done"
 	kindError        = "error"
+	kindSay          = "say"
+	kindFinding      = "finding"
 	txInstructions   = "instructions"
 
 	roleMember = "hotseat/member"

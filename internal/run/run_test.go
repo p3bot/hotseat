@@ -2667,3 +2667,193 @@ func TestStderrWritesDoNotOverlap(t *testing.T) {
 		t.Fatalf("text %q", got)
 	}
 }
+
+type note struct {
+	from, kind string
+	to         []string
+}
+
+// turnLaunches runs one turn from alpha to bravo with notes stored before and after it, and returns bravo's turn launches and stdout.
+// Live, bravo's boot holds its slot while the later notes are stored.
+func turnLaunches(t *testing.T, live bool, mode string, before, after []note) (int, string) {
+	t.Helper()
+	h := newHarness(t)
+	cfg := h.base()
+	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
+	cfg.TicketSet = false
+	name := "kept"
+	if live {
+		h.hold("bravo")
+	} else {
+		res := h.do("create", client.CreateRequest{
+			Name: name, Task: "tasks:hotseat/review/ticket", Seat: "alpha",
+			Directory: h.dir, Roster: []string{"alpha", "bravo", "charlie"},
+		})
+		if res.Outcome != bus.OutcomeOK {
+			t.Fatal(res.Reason)
+		}
+		h.publish(name, "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo", "charlie"})
+		launched := statusLaunched
+		exited := statusExited
+		for _, m := range []string{"alpha", "bravo", "charlie"} {
+			h.do("member", client.MemberRequest{Conversation: name, Name: m, Status: &launched})
+			h.do("member", client.MemberRequest{Conversation: name, Name: m, Status: &exited})
+			n := m
+			s := "sess-" + m
+			h.do("session", client.SessionRequest{Conversation: name, Name: &n, Session: &s})
+		}
+		cfg.Conversation = name
+		cfg.ConversationSet = true
+		cfg.TaskSet = false
+	}
+	store := func(notes []note) {
+		for _, n := range notes {
+			h.publish(name, n.from, n.kind, "text", n.to)
+		}
+	}
+	if !live {
+		store(before)
+		h.publish(name, "alpha", kindTurn, "mode: "+mode+"\nreview", []string{"bravo"})
+		store(after)
+	}
+	cctx, cancel := ctx()
+	defer cancel()
+	type result struct {
+		stdout string
+		err    error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		stdout, stderr, err := h.run(cctx, cfg)
+		resCh <- result{stdout + stderr, err}
+	}()
+	if live {
+		name = h.waitName()
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) && len(launches(h.calls(), "bravo")) == 0 {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if len(launches(h.calls(), "bravo")) == 0 {
+			t.Fatal("bravo boot did not start")
+		}
+		store(before)
+		h.publish(name, "alpha", kindTurn, "mode: "+mode+"\nreview", []string{"bravo"})
+		store(after)
+		h.release("bravo")
+	}
+	followed := func() bool {
+		for _, c := range launches(h.calls(), "alpha") {
+			if strings.Contains(c.Stdin, "The set has finished") {
+				return true
+			}
+		}
+		return false
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) && !followed() {
+		select {
+		case r := <-resCh:
+			t.Fatalf("run ended: %v %s", r.err, r.stdout)
+		default:
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !followed() {
+		t.Fatalf("alpha got no follow-up: %+v", h.calls())
+	}
+	h.publish(name, "alpha", kindDone, "yes", nil)
+	r := <-resCh
+	if r.err != nil {
+		t.Fatalf("%v %s", r.err, r.stdout)
+	}
+	all := launches(h.calls(), "bravo")
+	turns := 0
+	for _, c := range all {
+		if strings.Contains(c.Stdin, "mode: "+mode) {
+			turns++
+		}
+	}
+	boots := 0
+	if live {
+		boots = 1
+	}
+	if len(all) != boots+turns {
+		t.Fatalf("bravo launches %d, want %d boot and %d turn", len(all), boots, turns)
+	}
+	return turns, r.stdout
+}
+
+func TestMemberIsLaunchedForATurnOnlyUntilItAnswersTheSender(t *testing.T) {
+	cases := []struct {
+		name          string
+		before, after []note
+		launched      bool
+	}{
+		{name: "say to sender", after: []note{{"bravo", kindSay, []string{"alpha"}}}},
+		{name: "finding to sender", after: []note{{"bravo", kindFinding, []string{"charlie", "alpha"}}}},
+		{name: "ask to owner", after: []note{{"bravo", "ask", []string{"owner"}}}, launched: true},
+		{name: "say to another member", after: []note{{"bravo", kindSay, []string{"charlie"}}}, launched: true},
+		{name: "say to all", after: []note{{"bravo", kindSay, []string{"all"}}}, launched: true},
+		{name: "say to sender before the turn", before: []note{{"bravo", kindSay, []string{"alpha"}}}, launched: true},
+		{name: "say to sender from another member", after: []note{{"charlie", kindSay, []string{"alpha"}}}, launched: true},
+	}
+	for _, live := range []bool{true, false} {
+		for _, mode := range []string{modeSerial, modeParallel} {
+			for _, tc := range cases {
+				label := "conversation"
+				if live {
+					label = "live"
+				}
+				t.Run(label+"/"+mode+"/"+tc.name, func(t *testing.T) {
+					turns, stdout := turnLaunches(t, live, mode, tc.before, tc.after)
+					want := 0
+					if tc.launched {
+						want = 1
+					}
+					if turns != want {
+						t.Fatalf("bravo turn launches %d, want %d\n%s", turns, want, stdout)
+					}
+					if tc.launched {
+						return
+					}
+					// A skipped member adds no status or exit line to its boot's.
+					rows, exits := 0, 0
+					if live {
+						rows, exits = 2, 1
+					}
+					if got := strings.Count(stdout, "member: bravo\n"); got != rows {
+						t.Fatalf("bravo status lines %d, want %d\n%s", got, rows, stdout)
+					}
+					if got := strings.Count(stdout, "exit: bravo\n"); got != exits {
+						t.Fatalf("bravo exit lines %d, want %d\n%s", got, exits, stdout)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestFailedAnswerReadReturnsAnErrorAndDoesNotLaunch(t *testing.T) {
+	h := newHarness(t)
+	h.save()
+	e := &engine{
+		root:     context.Background(),
+		child:    context.Background(),
+		addr:     h.addr,
+		name:     "missing",
+		seat:     "alpha",
+		roster:   []agent{{name: "alpha", module: "hotseat/grok", model: "g1"}, {name: "bravo", module: "hotseat/claude", model: "c1"}},
+		startBin: fakeBin,
+		slots:    map[string]*slot{},
+		status:   map[string]string{},
+		sessions: map[string]string{},
+	}
+	turn := client.Message{Seq: 3, From: "alpha", To: []string{"bravo"}, Kind: kindTurn}
+	err := e.launchForTurn("bravo", turn, "You are bravo in conversation missing.\n")
+	if want := "read: " + bus.ReasonNotFound; err == nil || err.Error() != want {
+		t.Fatalf("err %v, want %s", err, want)
+	}
+	if got := launches(h.calls(), "bravo"); len(got) != 0 {
+		t.Fatalf("launched %+v", got)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +42,38 @@ func (e *engine) bootstrap(a agent) error {
 }
 
 func (e *engine) launchMember(name string, kind launchKind, prompt string) error {
+	return e.launchUnless(name, kind, prompt, nil)
+}
+
+// launchForTurn launches name for turn unless the transcript, read once the slot is held, shows name already answered it.
+// The answer can be stored while a boot launch still holds the slot.
+func (e *engine) launchForTurn(name string, turn client.Message, prompt string) error {
+	return e.launchUnless(name, launchTurn, prompt, func() (bool, error) {
+		return e.answered(name, turn)
+	})
+}
+
+// answered reports whether name published a say or finding after turn that names its sender in to.
+// A named read would also return messages to all, so to is checked here.
+func (e *engine) answered(name string, turn client.Message) (bool, error) {
+	msgs, err := e.readFrom(turn.Seq)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range msgs {
+		if m.From != name || (m.Kind != kindSay && m.Kind != kindFinding) {
+			continue
+		}
+		if slices.Contains(m.To, turn.From) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// launchUnless runs one member process under its slot. skip, when set, is checked inside the slot.
+// A skipped launch writes no member row, no status line, and no exit line.
+func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip func() (bool, error)) error {
 	if !e.canLaunch() {
 		return nil
 	}
@@ -56,6 +89,15 @@ func (e *engine) launchMember(name string, kind launchKind, prompt string) error
 	}
 	if kind != launchBoot && e.localStatus(name) == statusTimedOut {
 		return nil
+	}
+	if skip != nil {
+		skipped, err := skip()
+		if err != nil {
+			return err
+		}
+		if skipped {
+			return nil
+		}
 	}
 	pctx, cancel := e.processCtx()
 	defer cancel()
