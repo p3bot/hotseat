@@ -148,6 +148,9 @@ func (e *engine) watchLocked(proc liveProc) error {
 	if err != nil {
 		return err
 	}
+	if e.shutting() {
+		return e.settleShutdown(proc.name)
+	}
 	return e.exitedForeign(proc.name)
 }
 
@@ -179,26 +182,36 @@ func (e *engine) exitedForeign(name string) error {
 }
 
 // settleCancelled stops a leftover process because the run is ending, and does not record a process-limit failure.
+// The sender of the stopping done first gets its grace period to exit.
 func (e *engine) settleCancelled(proc liveProc) error {
+	if d := e.graceFor(proc.name); d > 0 {
+		waitDead(e.root, proc.pid, d)
+	}
 	if err := e.stopForeign(proc.pid, proc.launched); err != nil && !errors.Is(err, errNotLaunch) && alive(proc.pid) {
 		return err
 	}
 	if !e.shutting() {
 		return nil
 	}
-	id, err := e.readSession(proc.name)
+	return e.settleShutdown(proc.name)
+}
+
+// settleShutdown records a leftover process that ended while the run closes.
+// No stdout was captured, so it is exited only with a session id already stored. It publishes no error and queues no handoff.
+func (e *engine) settleShutdown(name string) error {
+	id, err := e.readSession(name)
 	if err != nil {
 		return err
 	}
 	if id != "" {
-		e.setSession(proc.name, id)
-		return e.writeStatus(proc.name, statusExited, 0, false)
+		e.setSession(name, id)
+		return e.writeStatus(name, statusExited, 0, false)
 	}
-	switch e.localStatus(proc.name) {
+	switch e.localStatus(name) {
 	case statusExited, statusTimedOut:
 		return nil
 	}
-	return e.writeStatus(proc.name, statusTimedOut, 0, false)
+	return e.writeStatus(name, statusTimedOut, 0, false)
 }
 
 // stopForeign ends the process from this launch. The pid is not reported.
@@ -215,7 +228,7 @@ func (e *engine) stopForeign(pid int, launched string) error {
 		if err := signalTree(pid, syscall.SIGKILL); err != nil && alive(pid) {
 			return err
 		}
-		if err := waitDead(pid, 2*time.Second); err != nil && alive(pid) {
+		if !waitDead(context.Background(), pid, 2*time.Second) && alive(pid) {
 			return errors.New(classProcessLimit)
 		}
 		return nil
@@ -223,7 +236,7 @@ func (e *engine) stopForeign(pid int, launched string) error {
 	if err := signalTree(pid, syscall.SIGTERM); err != nil && alive(pid) {
 		return err
 	}
-	if err := e.waitUntilDead(pid, 2*time.Second); err == nil {
+	if waitDead(e.child, pid, 2*time.Second) {
 		return nil
 	}
 	if !alive(pid) {
@@ -235,42 +248,28 @@ func (e *engine) stopForeign(pid int, launched string) error {
 	if err := signalTree(pid, syscall.SIGKILL); err != nil && alive(pid) {
 		return err
 	}
-	if err := e.waitUntilDead(pid, 2*time.Second); err != nil && alive(pid) {
+	if !waitDead(e.child, pid, 2*time.Second) && alive(pid) {
 		return errors.New(classProcessLimit)
 	}
 	return nil
 }
 
-func waitDead(pid int, limit time.Duration) error {
+// waitDead reports whether pid is gone within limit. It returns false at once when ctx ends.
+func waitDead(ctx context.Context, pid int, limit time.Duration) bool {
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	for alive(pid) {
 		select {
+		case <-ctx.Done():
+			return false
 		case <-timer.C:
-			return errLimit
+			return false
 		case <-tick.C:
 		}
 	}
-	return nil
-}
-
-func (e *engine) waitUntilDead(pid int, limit time.Duration) error {
-	tick := time.NewTicker(20 * time.Millisecond)
-	defer tick.Stop()
-	timer := time.NewTimer(limit)
-	defer timer.Stop()
-	for alive(pid) {
-		select {
-		case <-e.child.Done():
-			return e.child.Err()
-		case <-timer.C:
-			return errLimit
-		case <-tick.C:
-		}
-	}
-	return nil
+	return true
 }
 
 func signalTree(pid int, sig syscall.Signal) error {

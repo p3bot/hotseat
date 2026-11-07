@@ -131,7 +131,7 @@ func (e *engine) messages() error {
 				return e.endJob(job, nil, err)
 			}
 			if stop {
-				return e.endJob(job, nil, e.finishDone())
+				return e.endJob(job, nil, e.finishDone(got.msg.From))
 			}
 			pending = append(pending, got.msg)
 			cursor = got.msg.Seq
@@ -227,7 +227,7 @@ func (e *engine) apply(batch []client.Message, historical bool) error {
 				return err
 			}
 			if stop {
-				return e.finishDone()
+				return e.finishDone(msg.From)
 			}
 		case kindTurn:
 			settled, err := e.turnSettled(msg, batch[i+1:])
@@ -238,12 +238,12 @@ func (e *engine) apply(batch []client.Message, historical bool) error {
 				continue
 			}
 			// Launches run inside actTurn, so a done already in hand must close first.
-			stop, err := e.laterDone(batch[i+1:])
+			from, stop, err := e.firstStop(batch[i+1:])
 			if err != nil {
 				return err
 			}
 			if stop {
-				return e.finishDone()
+				return e.finishDone(from)
 			}
 			if err := e.actTurn(msg, historical, batch[len(batch)-1].Seq, batch[i+1:]); err != nil {
 				return err
@@ -355,16 +355,11 @@ func (e *engine) stopForNewDone(seen int64) error {
 	if err != nil {
 		return err
 	}
-	for _, msg := range msgs {
-		stop, err := e.stops(msg)
-		if err != nil {
-			return err
-		}
-		if stop {
-			return e.finishDone()
-		}
+	from, stop, err := e.firstStop(msgs)
+	if err != nil || !stop {
+		return err
 	}
-	return nil
+	return e.finishDone(from)
 }
 
 // due is every roster recipient that has not timed out. Whether one already answered is checked at launch.
@@ -473,17 +468,18 @@ func (e *engine) followUp(msg client.Message, seen int64) error {
 	return e.drainHandoff()
 }
 
-func (e *engine) laterDone(later []client.Message) (bool, error) {
-	for _, msg := range later {
+// firstStop returns the sender of the first done in msgs that stops the run.
+func (e *engine) firstStop(msgs []client.Message) (string, bool, error) {
+	for _, msg := range msgs {
 		stop, err := e.stops(msg)
 		if err != nil {
-			return false, err
+			return "", false, err
 		}
 		if stop {
-			return true, nil
+			return msg.From, true, nil
 		}
 	}
-	return false, nil
+	return "", false, nil
 }
 
 func (e *engine) stops(msg client.Message) (bool, error) {
@@ -503,13 +499,16 @@ func (e *engine) stops(msg client.Message) (bool, error) {
 	return msg.From == backup, nil
 }
 
-func (e *engine) finishDone() error {
+// finishDone closes the conversation and stops the run. from is the sender of the stopping done.
+// No launch starts once closing is set, and from alone keeps running for the grace period.
+func (e *engine) finishDone(from string) error {
 	e.mu.Lock()
 	if e.outcome || e.closing {
 		e.mu.Unlock()
 		return errDone
 	}
 	e.closing = true
+	e.doneFrom = from
 	e.mu.Unlock()
 	res, err := e.call(e.root, "close", client.CloseRequest{Conversation: e.name})
 	if err != nil {

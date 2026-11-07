@@ -51,6 +51,11 @@ const (
 // stdout is key: value status. A usage failure writes nothing there.
 // The token value is not written to stdout, stderr, or a prompt.
 func Execute(ctx context.Context, cfg Config, stdout, stderr io.Writer) error {
+	return executeWithGrace(ctx, cfg, DoneGrace, stdout, stderr)
+}
+
+// executeWithGrace is Execute with the done sender's grace period. Only tests pass a period other than DoneGrace.
+func executeWithGrace(ctx context.Context, cfg Config, grace time.Duration, stdout, stderr io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -60,7 +65,7 @@ func Execute(ctx context.Context, cfg Config, stdout, stderr io.Writer) error {
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	e, err := newEngine(ctx, cfg, stdout, stderr)
+	e, err := newEngine(ctx, cfg, grace, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -82,6 +87,7 @@ type engine struct {
 	tokenFile string
 	perm      string
 	limit     time.Duration
+	grace     time.Duration
 	maxTurns  int
 	dir       string
 	startBin  string
@@ -105,6 +111,7 @@ type engine struct {
 	haltErr     error
 	outcome     bool
 	closing     bool
+	doneFrom    string
 	handoffFrom string
 }
 
@@ -112,7 +119,7 @@ type slot struct {
 	mu sync.Mutex
 }
 
-func newEngine(ctx context.Context, cfg Config, stdout, stderr io.Writer) (*engine, error) {
+func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, stderr io.Writer) (*engine, error) {
 	if cfg.Dir == "" {
 		return nil, errors.New("working directory is required")
 	}
@@ -153,6 +160,7 @@ func newEngine(ctx context.Context, cfg Config, stdout, stderr io.Writer) (*engi
 		tokenFile: cfg.TokenFile,
 		perm:      cfg.permission(),
 		limit:     cfg.timeout(),
+		grace:     grace,
 		maxTurns:  cfg.maxTurns(),
 		startBin:  startBin,
 		tkBin:     tkBin,

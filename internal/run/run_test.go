@@ -64,6 +64,8 @@ type harness struct {
 	addr string
 	dir  string
 	plan planFile
+	// grace is the done sender's grace period for runs from this harness.
+	grace time.Duration
 }
 
 type planFile struct {
@@ -128,9 +130,10 @@ func newHarnessClock(t *testing.T, clock func() time.Time) *harness {
 		}
 	})
 	h := &harness{
-		t:    t,
-		addr: ln.Addr().String(),
-		dir:  dir,
+		t:     t,
+		addr:  ln.Addr().String(),
+		dir:   dir,
+		grace: DoneGrace,
 		plan: planFile{
 			ID:     "tasks:hotseat/review/ticket",
 			Body:   "Review the ticket.\n",
@@ -181,7 +184,7 @@ func (h *harness) run(ctx context.Context, cfg Config) (string, string, error) {
 	h.t.Helper()
 	h.save()
 	var stdout, stderr bytes.Buffer
-	err := Execute(ctx, cfg, &stdout, &stderr)
+	err := executeWithGrace(ctx, cfg, h.grace, &stdout, &stderr)
 	return stdout.String(), stderr.String(), err
 }
 
@@ -1934,6 +1937,7 @@ func TestDoneDuringLivePidWaitStopsBeforeTheLimit(t *testing.T) {
 	cfg.AgentsSet = false
 	cfg.Interactive = true
 	cfg.InteractiveSet = true
+	h.grace = 300 * time.Millisecond
 	cctx, cancel := ctx()
 	defer cancel()
 	errCh := make(chan error, 1)
@@ -2124,6 +2128,7 @@ func TestStoredDoneStopsALivePidWithoutASession(t *testing.T) {
 	cfg.TicketSet = false
 	cfg.Interactive = true
 	cfg.InteractiveSet = true
+	h.grace = 300 * time.Millisecond
 	start := time.Now()
 	stdout, stderr, err := h.run(context.Background(), cfg)
 	if err != nil {
@@ -2192,6 +2197,7 @@ func TestStoredDoneStopsALivePidWithASession(t *testing.T) {
 	cfg.TicketSet = false
 	cfg.Timeout = time.Hour
 	cfg.TimeoutSet = true
+	h.grace = 300 * time.Millisecond
 	start := time.Now()
 	stdout, stderr, err := h.run(context.Background(), cfg)
 	if err != nil {

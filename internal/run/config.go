@@ -19,6 +19,9 @@ const (
 	DefaultProcessLimit = 8 * time.Hour
 	// DefaultPermission is passed to every member launch.
 	DefaultPermission = "auto"
+	// DoneGrace is how long the sender of a stopping done may run before it is killed.
+	// It is not a setting. Other running members are stopped at once.
+	DoneGrace = 30 * time.Second
 )
 
 // Config is one run invocation.

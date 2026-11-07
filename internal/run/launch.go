@@ -87,6 +87,9 @@ func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip 
 	if err := e.stopped(); err != nil {
 		return err
 	}
+	if e.shutting() {
+		return nil
+	}
 	if kind != launchBoot && e.localStatus(name) == statusTimedOut {
 		return nil
 	}
@@ -99,12 +102,13 @@ func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip 
 			return nil
 		}
 	}
-	pctx, cancel := e.processCtx()
-	defer cancel()
+	pctx, release := e.processCtx(name)
+	defer release()
 	var stdout bytes.Buffer
 	cmd := e.agentCmd(pctx, a, prompt)
 	cmd.Stdout = &stdout
-	if err := cmd.Start(); err != nil {
+	started, err := e.startUnlessStopping(cmd)
+	if err != nil || !started {
 		return err
 	}
 	pid := cmd.Process.Pid
@@ -207,11 +211,72 @@ func (e *engine) agentCmd(ctx context.Context, a agent, prompt string) *exec.Cmd
 	return cmd
 }
 
-func (e *engine) processCtx() (context.Context, context.CancelFunc) {
-	if e.limit <= 0 {
-		return e.child, func() {}
+// startUnlessStopping starts cmd unless the run halted, a stopping done was seen, or the run context ended.
+// noteHalt and finishDone set those under the same lock, so no process starts after them.
+func (e *engine) startUnlessStopping(cmd *exec.Cmd) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.haltErr != nil {
+		return false, e.haltErr
 	}
-	return context.WithTimeout(e.child, e.limit)
+	if e.closing {
+		return false, nil
+	}
+	// The process context derives from root so the done sender can outlive the stop, so it cannot refuse this start.
+	if e.child.Err() != nil {
+		return false, errStopped
+	}
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// processCtx returns the context of one member process and its release, which the caller calls after the process is waited.
+// The run's stop cancels it at once, except for the sender of the stopping done, which gets graceFor(name) to exit.
+// It derives from the caller's context, so a signal still kills the process at once.
+func (e *engine) processCtx(name string) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(e.root)
+	pctx, limitCancel := ctx, context.CancelFunc(func() {})
+	if e.limit > 0 {
+		pctx, limitCancel = context.WithTimeout(ctx, e.limit)
+	}
+	exited := make(chan struct{})
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		select {
+		case <-exited:
+			return
+		case <-e.child.Done():
+		}
+		if d := e.graceFor(name); d > 0 {
+			timer := time.NewTimer(d)
+			defer timer.Stop()
+			select {
+			case <-exited:
+			case <-pctx.Done():
+			case <-timer.C:
+			}
+		}
+		cancel()
+	}()
+	return pctx, func() {
+		close(exited)
+		<-watched
+		limitCancel()
+		cancel()
+	}
+}
+
+// graceFor is how long name may keep running once the run stops. Only the sender of the stopping done gets a period.
+func (e *engine) graceFor(name string) time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.closing || name != e.doneFrom {
+		return 0
+	}
+	return e.grace
 }
 
 // markStopped records a member the run killed while stopping. The stop is not a member failure.
@@ -238,6 +303,7 @@ func (e *engine) markTimeout(name, class string) error {
 }
 
 // drainHandoff runs outside the failed member's lock. A backup who times out is handed off again.
+// A closing run has no seat to hand off, so a pending handoff is dropped.
 func (e *engine) drainHandoff() error {
 	for {
 		from, ok := e.takeHandoff()
@@ -246,6 +312,9 @@ func (e *engine) drainHandoff() error {
 		}
 		if err := e.stopped(); err != nil {
 			return err
+		}
+		if e.shutting() {
+			return nil
 		}
 		next, err := e.backup()
 		if err != nil {
