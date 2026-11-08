@@ -45,6 +45,8 @@ const (
 	classBadTurn        = "bad turn"
 	classTurnCap        = "turn cap"
 	classNoBackup       = "no backup"
+	classBelowMinimum   = "below minimum"
+	classLaunchCap      = "launch cap"
 )
 
 // Execute runs one conversation.
@@ -89,6 +91,7 @@ type engine struct {
 	limit     time.Duration
 	grace     time.Duration
 	maxTurns  int
+	maxLaunch int
 	dir       string
 	startBin  string
 	tkBin     string
@@ -97,6 +100,8 @@ type engine struct {
 
 	roster []agent
 	seat   string
+	// minimum is the task's min_members. It is set before any launch, and zero adds no check.
+	minimum int
 
 	name       string
 	binding    client.Conversation
@@ -113,6 +118,13 @@ type engine struct {
 	closing     bool
 	doneFrom    string
 	handoffFrom string
+	launches    int
+	// inFlight counts member processes this run started or watches and has not yet recorded.
+	inFlight  int
+	windClass string
+	// idle is closed once windClass is set and inFlight is zero.
+	idle       chan struct{}
+	idleClosed bool
 }
 
 type slot struct {
@@ -125,6 +137,9 @@ func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, std
 	}
 	if cfg.MaxTurnsSet && cfg.MaxTurns < 1 {
 		return nil, errors.New("max turns must be a positive integer")
+	}
+	if cfg.MaxLaunchesSet && cfg.MaxLaunches < 1 {
+		return nil, errors.New("max launches must be a positive integer")
 	}
 	if cfg.TimeoutSet && cfg.Timeout <= 0 {
 		return nil, errors.New("timeout must be positive")
@@ -162,6 +177,7 @@ func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, std
 		limit:     cfg.timeout(),
 		grace:     grace,
 		maxTurns:  cfg.maxTurns(),
+		maxLaunch: cfg.maxLaunches(),
 		startBin:  startBin,
 		tkBin:     tkBin,
 		stderr:    &lockedWriter{w: stderr},
@@ -169,6 +185,7 @@ func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, std
 		status:    make(map[string]string),
 		sessions:  make(map[string]string),
 		slots:     make(map[string]*slot),
+		idle:      make(chan struct{}),
 	}
 	return e, nil
 }
@@ -255,6 +272,9 @@ func (e *engine) createConversation(suffix bool) error {
 		if err != nil {
 			return err
 		}
+	}
+	if err := e.requireMinimum(id); err != nil {
+		return err
 	}
 	ticket := ""
 	if e.cfg.TicketSet {
@@ -414,6 +434,19 @@ func (e *engine) ensureRoster(stored []string) error {
 	for i, name := range stored {
 		e.roster[i] = agent{name: name}
 	}
+	return nil
+}
+
+// requireMinimum reads the task's min_members and refuses a roster smaller than it.
+func (e *engine) requireMinimum(task string) error {
+	n, err := e.minMembers(task)
+	if err != nil {
+		return err
+	}
+	if len(e.roster) < n {
+		return fmt.Errorf("roster has %d members and task %s requires %d", len(e.roster), task, n)
+	}
+	e.minimum = n
 	return nil
 }
 

@@ -19,44 +19,15 @@ import (
 func (e *engine) drive() error {
 	e.out.line("conversation", e.name)
 	var wg sync.WaitGroup
+	var err error
 	if e.continuing {
-		live, err := e.reapDead()
-		if err != nil {
-			return err
-		}
-		// The slot is held before the transcript watch, so a launch cannot pass a live process.
-		for _, proc := range live {
-			sl := e.slot(proc.name)
-			sl.mu.Lock()
-			wg.Add(1)
-			go func(proc liveProc, sl *slot) {
-				defer wg.Done()
-				defer sl.mu.Unlock()
-				if err := e.watchLocked(proc); err != nil {
-					if herr := e.noteHalt(err); herr != nil {
-						return
-					}
-				}
-			}(proc, sl)
-		}
+		err = e.resume(&wg)
 	} else {
-		for _, a := range e.roster {
-			wg.Add(1)
-			go func(a agent) {
-				defer wg.Done()
-				err := e.bootstrap(a)
-				if herr := e.drainHandoff(); herr != nil {
-					err = herr
-				}
-				if err != nil {
-					if herr := e.noteHalt(err); herr != nil {
-						return
-					}
-				}
-			}(a)
-		}
+		e.boot(&wg)
 	}
-	err := e.messages()
+	if err == nil {
+		err = e.messages()
+	}
 	e.cancel()
 	wg.Wait()
 	e.mu.Lock()
@@ -70,6 +41,71 @@ func (e *engine) drive() error {
 		return nil
 	}
 	return err
+}
+
+func (e *engine) boot(wg *sync.WaitGroup) {
+	for _, a := range e.roster {
+		wg.Add(1)
+		go func(a agent) {
+			defer wg.Done()
+			err := e.bootstrap(a)
+			if herr := e.drainHandoff(); herr != nil {
+				err = herr
+			}
+			if err != nil {
+				if herr := e.noteHalt(err); herr != nil {
+					return
+				}
+			}
+		}(a)
+	}
+}
+
+// resume settles dead leftovers, stops on a stored stopping done, and only then checks the task minimum.
+// Settling comes first because whether a backup's done stops the run depends on the seat being timed-out.
+// A roster below the minimum leaves a live leftover unwatched and running.
+func (e *engine) resume(wg *sync.WaitGroup) error {
+	live, err := e.reapDead()
+	if err != nil {
+		return err
+	}
+	msgs, err := e.readFrom(0)
+	if err != nil {
+		return err
+	}
+	from, stop, err := e.firstStop(msgs)
+	if err != nil {
+		return err
+	}
+	if stop {
+		e.watchLeftovers(wg, live)
+		return e.finishDone(from)
+	}
+	if err := e.requireMinimum(e.binding.Task); err != nil {
+		return err
+	}
+	e.watchLeftovers(wg, live)
+	return e.enforceMinimum()
+}
+
+// watchLeftovers holds each slot before the transcript watch, so a launch cannot pass a live process.
+func (e *engine) watchLeftovers(wg *sync.WaitGroup, live []liveProc) {
+	for _, proc := range live {
+		sl := e.slot(proc.name)
+		sl.mu.Lock()
+		e.addInFlight()
+		wg.Add(1)
+		go func(proc liveProc, sl *slot) {
+			defer wg.Done()
+			defer sl.mu.Unlock()
+			defer e.doneInFlight()
+			if err := e.watchLocked(proc); err != nil {
+				if herr := e.noteHalt(err); herr != nil {
+					return
+				}
+			}
+		}(proc, sl)
+	}
 }
 
 // messages keeps the transcript watch. Member work runs outside this loop.
@@ -142,8 +178,36 @@ func (e *engine) messages() error {
 			if err != nil {
 				return err
 			}
+		case <-e.idle:
+			return e.endWindDown(job, eye, cursor, pending)
 		}
 	}
+}
+
+// endWindDown ends the watch once a wind-down has no member process in flight.
+// No process can start by then, so the job in hand returns without one. A stopping done stored by then still closes.
+func (e *engine) endWindDown(job chan error, eye *busEye, cursor int64, pending []client.Message) error {
+	e.dropEye(eye)
+	if job != nil {
+		if err := <-job; err != nil {
+			return err
+		}
+	}
+	if e.shutting() {
+		return errDone
+	}
+	rest, err := e.readFrom(cursor)
+	if err != nil {
+		return e.busErr(err)
+	}
+	from, stop, err := e.firstStop(append(pending, rest...))
+	if err != nil {
+		return err
+	}
+	if stop {
+		return e.finishDone(from)
+	}
+	return e.windErr()
 }
 
 type busEye struct {
@@ -219,6 +283,10 @@ func (e *engine) apply(batch []client.Message, historical bool) error {
 	for i, msg := range batch {
 		if err := e.stopped(); err != nil {
 			return err
+		}
+		// A wind-down acts only on a stopping done. A turn is not counted and launches nothing.
+		if e.windingDown() && msg.Kind != kindDone {
+			continue
 		}
 		switch msg.Kind {
 		case kindDone:
@@ -303,13 +371,15 @@ func (e *engine) actTurn(msg client.Message, historical bool, seen int64, later 
 	if historical && badTurnReported(later) {
 		return nil
 	}
-	if e.actedCount() >= e.maxTurns {
+	switch e.takeTurn() {
+	case turnWindingDown:
+		return nil
+	case turnCapped:
 		if err := e.publishErr("", classTurnCap); err != nil {
 			return err
 		}
 		return e.noteHalt(errors.New(classTurnCap))
 	}
-	e.addActed()
 	mode, phase, ok := parseMode(msg.Body)
 	if !ok {
 		return e.publishErr("", classBadTurn)
@@ -447,6 +517,9 @@ func (e *engine) followUp(msg client.Message, seen int64) error {
 	}
 	if err := e.stopForNewDone(seen); err != nil {
 		return err
+	}
+	if e.windingDown() {
+		return nil
 	}
 	target := msg.From
 	if e.localStatus(target) == statusTimedOut || !nameIn(e.roster, target) {

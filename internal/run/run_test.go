@@ -69,17 +69,19 @@ type harness struct {
 }
 
 type planFile struct {
-	ID       string              `json:"id"`
-	IDExit   int                 `json:"idExit"`
-	IDStderr string              `json:"idStderr"`
-	Body     string              `json:"body"`
-	BodyExit int                 `json:"bodyExit"`
-	DenyPerm map[string]bool     `json:"denyPerm,omitempty"`
-	Locator  map[string]textFile `json:"locator,omitempty"`
-	Launch   map[string]runFile  `json:"launch,omitempty"`
-	Scopes   string              `json:"scopes"`
-	TkExit   int                 `json:"tkExit"`
-	TkStderr string              `json:"tkStderr"`
+	ID       string          `json:"id"`
+	IDExit   int             `json:"idExit"`
+	IDStderr string          `json:"idStderr"`
+	Body     string          `json:"body"`
+	BodyExit int             `json:"bodyExit"`
+	DenyPerm map[string]bool `json:"denyPerm,omitempty"`
+	// MinMembers is the min_members output, newline included. Empty is a task that omits it.
+	MinMembers string              `json:"minMembers,omitempty"`
+	Locator    map[string]textFile `json:"locator,omitempty"`
+	Launch     map[string]runFile  `json:"launch,omitempty"`
+	Scopes     string              `json:"scopes"`
+	TkExit     int                 `json:"tkExit"`
+	TkStderr   string              `json:"tkStderr"`
 }
 
 type textFile struct {

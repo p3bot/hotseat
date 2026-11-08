@@ -92,7 +92,7 @@ func (e *engine) loadMembers() error {
 	return nil
 }
 
-// reapDead settles a member whose process is already gone.
+// reapDead settles a member whose process is already gone. It does not apply the task minimum, which resume checks once.
 // A live process from this launch is returned so the transcript can be watched while it runs.
 func (e *engine) reapDead() ([]liveProc, error) {
 	var live []liveProc
@@ -118,7 +118,7 @@ func (e *engine) reapDead() ([]liveProc, error) {
 		}
 		if pid > 0 && alive(pid) {
 			if !sameLaunch(pid, row.Launched) {
-				if err := e.markTimeout(a.name, classProcessExit); err != nil {
+				if err := e.recordTimeout(a.name, classProcessExit); err != nil {
 					return nil, err
 				}
 				continue
@@ -126,7 +126,7 @@ func (e *engine) reapDead() ([]liveProc, error) {
 			live = append(live, liveProc{name: a.name, pid: pid, launched: row.Launched})
 			continue
 		}
-		if err := e.markTimeout(a.name, classProcessExit); err != nil {
+		if err := e.recordTimeout(a.name, classProcessExit); err != nil {
 			return nil, err
 		}
 	}
@@ -468,9 +468,12 @@ func (e *engine) hasHandoff() bool {
 	return e.handoffFrom != ""
 }
 
+// noteHandoff queues a backup launch for name. A winding-down run starts no backup, so it queues none.
 func (e *engine) noteHandoff(name string) {
 	e.mu.Lock()
-	e.handoffFrom = name
+	if e.windClass == "" {
+		e.handoffFrom = name
+	}
 	e.mu.Unlock()
 }
 
@@ -557,16 +560,27 @@ func (e *engine) sessionOf(name string) string {
 	return e.sessions[name]
 }
 
-func (e *engine) actedCount() int {
+type turnTake int
+
+const (
+	turnTaken turnTake = iota
+	turnWindingDown
+	turnCapped
+)
+
+// takeTurn counts one turn unless the run is winding down or at the turn cap.
+// It decides under the lock windDown takes, so a turn counted here was accepted before the stop.
+func (e *engine) takeTurn() turnTake {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.acted
-}
-
-func (e *engine) addActed() {
-	e.mu.Lock()
+	if e.windClass != "" {
+		return turnWindingDown
+	}
+	if e.acted >= e.maxTurns {
+		return turnCapped
+	}
 	e.acted++
-	e.mu.Unlock()
+	return turnTaken
 }
 
 func (e *engine) noteHalt(err error) error {
@@ -592,4 +606,79 @@ func (e *engine) shutting() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.closing || e.outcome
+}
+
+// windDown stops new launches for class and reports whether this call began it.
+// Unlike noteHalt it cancels nothing, so running members finish and are recorded.
+func (e *engine) windDown(class string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.windDownLocked(class)
+}
+
+func (e *engine) windDownLocked(class string) bool {
+	if e.windClass != "" {
+		return false
+	}
+	e.windClass = class
+	e.idleIfQuietLocked()
+	return true
+}
+
+func (e *engine) windingDown() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.windClass != ""
+}
+
+func (e *engine) windErr() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return errors.New(e.windClass)
+}
+
+// addInFlight counts a leftover process this run watches. A launch is counted where it starts.
+func (e *engine) addInFlight() {
+	e.mu.Lock()
+	e.inFlight++
+	e.mu.Unlock()
+}
+
+// doneInFlight is called once the process is waited and recorded.
+func (e *engine) doneInFlight() {
+	e.mu.Lock()
+	e.inFlight--
+	e.idleIfQuietLocked()
+	e.mu.Unlock()
+}
+
+func (e *engine) idleIfQuietLocked() {
+	if e.windClass != "" && e.inFlight == 0 && !e.idleClosed {
+		close(e.idle)
+		e.idleClosed = true
+	}
+}
+
+// enforceMinimum winds the run down and publishes below minimum when fewer roster members than the task minimum are live.
+func (e *engine) enforceMinimum() error {
+	if !e.windBelowMinimum() {
+		return nil
+	}
+	return e.publishErr("", classBelowMinimum)
+}
+
+// windBelowMinimum winds the run down when fewer roster members than the task minimum are live, and reports whether this call began it.
+// A minimum of 1 adds nothing, since no live member already stops on the no backup rule.
+// A stop the run made itself is not a member failure, so it is not checked.
+func (e *engine) windBelowMinimum() bool {
+	if e.minimum <= 1 || !e.canLaunch() || e.shutting() || e.stopped() != nil {
+		return false
+	}
+	live := 0
+	for _, a := range e.roster {
+		if e.localStatus(a.name) != statusTimedOut {
+			live++
+		}
+	}
+	return live < e.minimum && e.windDown(classBelowMinimum)
 }

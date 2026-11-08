@@ -14,6 +14,8 @@ import (
 const (
 	// DefaultMaxTurns is the number of turn messages one process acts on.
 	DefaultMaxTurns = 500
+	// DefaultMaxLaunches is the number of member processes one run process starts.
+	DefaultMaxLaunches = 300
 	// DefaultProcessLimit is the limit for one member process.
 	// It is not a limit on the conversation. Interactive mode disables it.
 	DefaultProcessLimit = 8 * time.Hour
@@ -28,8 +30,15 @@ const (
 // A Set field is false when the caller omitted that setting.
 // Omitted settings are not compared on --conversation.
 // An omitted roster continues, and a launch needs the roster passed again.
-// Timeout, MaxTurns, Interactive, Permission, Address, and TokenFile are
-// settings of this process. They are not stored and they are not compared.
+// Timeout, MaxTurns, MaxLaunches, Interactive, Permission, Address, and
+// TokenFile are settings of this process. They are not stored and they are not
+// compared.
+//
+// MaxLaunches counts every member process this process starts, of any kind.
+// At the cap, and when a member failure leaves fewer live members than the
+// task's min_members, run starts no further launch, lets running members
+// finish, and returns an error with the conversation open. A stopping done
+// still closes it.
 type Config struct {
 	Task    string
 	TaskSet bool
@@ -51,6 +60,9 @@ type Config struct {
 
 	MaxTurns    int
 	MaxTurnsSet bool
+
+	MaxLaunches    int
+	MaxLaunchesSet bool
 
 	Interactive    bool
 	InteractiveSet bool
@@ -91,6 +103,13 @@ func (c Config) maxTurns() int {
 		return c.MaxTurns
 	}
 	return DefaultMaxTurns
+}
+
+func (c Config) maxLaunches() int {
+	if c.MaxLaunchesSet {
+		return c.MaxLaunches
+	}
+	return DefaultMaxLaunches
 }
 
 func (c Config) permission() string {

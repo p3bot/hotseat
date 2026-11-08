@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -33,6 +34,32 @@ func (e *engine) moduleText(id string) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// minMembers is the task's min_members. A task that omits it prints nothing, which is 1.
+func (e *engine) minMembers(id string) (int, error) {
+	out, err := e.tool(e.startBin, "--quiet", "get", id, "--field", "min_members")
+	if err != nil {
+		return 0, err
+	}
+	text := strings.TrimSuffix(out, "\n")
+	if text == "" {
+		return 1, nil
+	}
+	n, err := strconv.Atoi(text)
+	if !allDigits(text) || err != nil || n < 1 {
+		return 0, fmt.Errorf("%s min_members %q is not a positive integer", id, text)
+	}
+	return n, nil
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *engine) checkPermissions() error {

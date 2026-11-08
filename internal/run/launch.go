@@ -31,7 +31,11 @@ const (
 	launchFollow
 )
 
-var errStopped = errors.New("stopped")
+var (
+	errStopped = errors.New("stopped")
+	// errLaunchCap is returned by the start that reached the cap, so that caller alone reports it.
+	errLaunchCap = errors.New(classLaunchCap)
+)
 
 func (e *engine) bootstrap(a agent) error {
 	err := e.launchMember(a.name, launchBoot, e.bootPrompt(a))
@@ -108,9 +112,13 @@ func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip 
 	cmd := e.agentCmd(pctx, a, prompt)
 	cmd.Stdout = &stdout
 	started, err := e.startUnlessStopping(cmd)
+	if errors.Is(err, errLaunchCap) {
+		return e.publishErr("", classLaunchCap)
+	}
 	if err != nil || !started {
 		return err
 	}
+	defer e.doneInFlight()
 	pid := cmd.Process.Pid
 	row, err := e.memberRow(name)
 	if err != nil {
@@ -211,8 +219,10 @@ func (e *engine) agentCmd(ctx context.Context, a agent, prompt string) *exec.Cmd
 	return cmd
 }
 
-// startUnlessStopping starts cmd unless the run halted, a stopping done was seen, or the run context ended.
-// noteHalt and finishDone set those under the same lock, so no process starts after them.
+// startUnlessStopping starts cmd unless the run halted, a stopping done was seen, the run is winding down, or the run context ended.
+// noteHalt, finishDone, and windDown set those under the same lock, so no process starts after them.
+// The launch cap is counted here so parallel launches cannot pass it. The start that reaches it returns errLaunchCap.
+// A started process is in flight until the caller calls doneInFlight.
 func (e *engine) startUnlessStopping(cmd *exec.Cmd) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -226,9 +236,18 @@ func (e *engine) startUnlessStopping(cmd *exec.Cmd) (bool, error) {
 	if e.child.Err() != nil {
 		return false, errStopped
 	}
+	if e.windClass != "" {
+		return false, nil
+	}
+	if e.launches >= e.maxLaunch {
+		e.windDownLocked(classLaunchCap)
+		return false, errLaunchCap
+	}
 	if err := cmd.Start(); err != nil {
 		return false, err
 	}
+	e.launches++
+	e.inFlight++
 	return true, nil
 }
 
@@ -284,14 +303,32 @@ func (e *engine) markStopped(name string) error {
 	return e.writeStatus(name, statusTimedOut, 0, false)
 }
 
+// markTimeout records a member failure and applies the task minimum.
 func (e *engine) markTimeout(name, class string) error {
+	return e.timeout(name, class, true)
+}
+
+// recordTimeout records a member failure without the task minimum, which resume applies once after reapDead.
+func (e *engine) recordTimeout(name, class string) error {
+	return e.timeout(name, class, false)
+}
+
+// timeout writes timed-out, publishes the error, and notes a handoff when name was acting.
+// With floor set, the wind-down is decided before the publish and the handoff, so nothing they wake can launch past it.
+func (e *engine) timeout(name, class string, floor bool) error {
 	// The acting check has to see the old status. A failed read still records the death.
 	acting, actErr := e.isActing(name)
 	if err := e.writeStatus(name, statusTimedOut, 0, false); err != nil {
 		return err
 	}
+	below := floor && e.windBelowMinimum()
 	if err := e.publishErr(name, class); err != nil {
 		return err
+	}
+	if below {
+		if err := e.publishErr("", classBelowMinimum); err != nil {
+			return err
+		}
 	}
 	if actErr != nil {
 		return actErr
@@ -303,7 +340,7 @@ func (e *engine) markTimeout(name, class string) error {
 }
 
 // drainHandoff runs outside the failed member's lock. A backup who times out is handed off again.
-// A closing run has no seat to hand off, so a pending handoff is dropped.
+// A closing or winding-down run starts no backup, so a pending handoff is dropped.
 func (e *engine) drainHandoff() error {
 	for {
 		from, ok := e.takeHandoff()
@@ -313,7 +350,7 @@ func (e *engine) drainHandoff() error {
 		if err := e.stopped(); err != nil {
 			return err
 		}
-		if e.shutting() {
+		if e.shutting() || e.windingDown() {
 			return nil
 		}
 		next, err := e.backup()

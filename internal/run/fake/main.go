@@ -28,11 +28,13 @@ type plan struct {
 	Body     string          `json:"body"`
 	BodyExit int             `json:"bodyExit"`
 	DenyPerm map[string]bool `json:"denyPerm"`
-	Locator  map[string]text `json:"locator"`
-	Launch   map[string]run  `json:"launch"`
-	Scopes   string          `json:"scopes"`
-	TkExit   int             `json:"tkExit"`
-	TkStderr string          `json:"tkStderr"`
+	// MinMembers is printed verbatim for the min_members field. Empty prints nothing, as a task that omits it.
+	MinMembers string          `json:"minMembers"`
+	Locator    map[string]text `json:"locator"`
+	Launch     map[string]run  `json:"launch"`
+	Scopes     string          `json:"scopes"`
+	TkExit     int             `json:"tkExit"`
+	TkStderr   string          `json:"tkStderr"`
 }
 
 type text struct {
@@ -128,6 +130,10 @@ func start(dir string, p plan, args []string) {
 				os.Exit(1)
 			}
 			fmt.Fprintln(os.Stdout, "defined")
+			return
+		}
+		if field == "min_members" {
+			fmt.Fprint(os.Stdout, p.MinMembers)
 			return
 		}
 		spec := p.Locator[module]

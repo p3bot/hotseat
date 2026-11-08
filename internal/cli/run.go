@@ -45,6 +45,19 @@ limit on the conversation. --interactive or a non-empty HOTSEAT_INTERACTIVE
 disables that process limit and leaves the turn cap. --permission or
 HOTSEAT_PERMISSION defaults to auto.
 
+--max-launches or HOTSEAT_MAX_LAUNCHES defaults to 300 member processes in
+this run process, of every launch kind. A continuation counts from zero, and
+--interactive keeps it. A task's min_members, read through start, is the
+smallest roster run accepts. A smaller roster creates nothing, and a
+continuation with a stored roster below it exits with an error and leaves a
+process still running from an earlier run alone. When a member times out and
+fewer than min_members are not timed-out, or a launch would pass the cap, run
+publishes error to owner with class below minimum or launch cap and starts no
+further launch. Running members finish and keep their session ids. run then
+exits non-zero with outcome: error and the conversation open. A stopping done
+still closes it. A stored stopping done is reported before the minimum is
+read.
+
 --ticket or HOTSEAT_TICKET selects the code-root members launch in.
 --conversation or HOTSEAT_CONVERSATION continues that exact conversation.
 A resume launches a member only when --agents or HOTSEAT_AGENTS is passed
@@ -79,6 +92,7 @@ not on the bus, the task argument is required.`,
 	cmd.Flags().StringVar(&f.instructions, "instructions", "", "custom instruction text (env HOTSEAT_INSTRUCTIONS)")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", run.DefaultProcessLimit, "limit for one member process (env HOTSEAT_TIMEOUT)")
 	cmd.Flags().IntVar(&f.maxTurns, "max-turns", run.DefaultMaxTurns, "turn messages this process acts on (env HOTSEAT_MAX_TURNS)")
+	cmd.Flags().IntVar(&f.maxLaunches, "max-launches", run.DefaultMaxLaunches, "member processes this process starts (env HOTSEAT_MAX_LAUNCHES)")
 	cmd.Flags().BoolVar(&f.interactive, "interactive", false, "disable the process limit and keep the turn cap (env HOTSEAT_INTERACTIVE)")
 	cmd.Flags().StringVar(&f.ticket, "ticket", "", "ticket id scope-short (env HOTSEAT_TICKET)")
 	cmd.Flags().StringVar(&f.conversation, "conversation", "", "exact conversation name to continue (env HOTSEAT_CONVERSATION)")
@@ -95,6 +109,7 @@ type runFlags struct {
 	instructions string
 	timeout      time.Duration
 	maxTurns     int
+	maxLaunches  int
 	interactive  bool
 	ticket       string
 	conversation string
@@ -141,6 +156,10 @@ func (f runFlags) config(cmd *cobra.Command, args []string) (run.Config, error) 
 		return run.Config{}, err
 	}
 	cfg.MaxTurns, cfg.MaxTurnsSet, err = pickInt(cmd, "max-turns", "HOTSEAT_MAX_TURNS", f.maxTurns)
+	if err != nil {
+		return run.Config{}, err
+	}
+	cfg.MaxLaunches, cfg.MaxLaunchesSet, err = pickInt(cmd, "max-launches", "HOTSEAT_MAX_LAUNCHES", f.maxLaunches)
 	if err != nil {
 		return run.Config{}, err
 	}
