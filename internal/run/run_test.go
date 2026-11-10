@@ -91,12 +91,27 @@ type textFile struct {
 }
 
 type runFile struct {
-	Exit     int    `json:"exit"`
-	ExitOn   string `json:"exitOn,omitempty"`
-	Sleep    string `json:"sleep"`
-	JSON     string `json:"json"`
-	Stderr   string `json:"stderr,omitempty"`
-	Register bool   `json:"register"`
+	Exit     int        `json:"exit"`
+	ExitOn   string     `json:"exitOn,omitempty"`
+	Sleep    string     `json:"sleep"`
+	JSON     string     `json:"json"`
+	Stderr   string     `json:"stderr,omitempty"`
+	Register bool       `json:"register"`
+	Steps    []stepFile `json:"steps,omitempty"`
+}
+
+// stepFile is one scripted launch. The first unused step whose On text is in the prompt runs.
+type stepFile struct {
+	On      string        `json:"on"`
+	Publish []messageFile `json:"publish,omitempty"`
+	Sleep   string        `json:"sleep,omitempty"`
+	Exit    int           `json:"exit,omitempty"`
+}
+
+type messageFile struct {
+	Kind string   `json:"kind"`
+	To   []string `json:"to"`
+	Body string   `json:"body"`
 }
 
 func newHarness(t *testing.T) *harness {
@@ -1053,9 +1068,43 @@ func TestTimeoutIsStoredWhenActingSeatReadFails(t *testing.T) {
 	if wrote.Outcome != bus.OutcomeOK {
 		t.Fatal(wrote.Reason)
 	}
+	addr := h.proxy(func(w http.ResponseWriter, path string, body []byte) bool {
+		if strings.HasSuffix(path, "/member") && bytes.Contains(body, []byte(`"name":"bravo"`)) && !bytes.Contains(body, []byte(`"status"`)) {
+			http.Error(w, "read failed", http.StatusBadGateway)
+			return true
+		}
+		return false
+	})
+	e := &engine{
+		root:   context.Background(),
+		addr:   addr,
+		name:   "kept",
+		seat:   "alpha",
+		roster: []agent{{name: "alpha"}, {name: "bravo"}},
+		status: map[string]string{"alpha": statusTimedOut},
+		out:    &statusWriter{w: io.Discard},
+	}
+	err := e.markTimeout("bravo", classProcessLimit)
+	if err == nil {
+		t.Fatal("read error was dropped")
+	}
+	if _, ok := e.takeHandoff(); ok {
+		t.Fatal("handed off")
+	}
+	if h.member("kept", "bravo").Status != statusTimedOut {
+		t.Fatalf("bravo %s", h.member("kept", "bravo").Status)
+	}
+	if countBody(h.messages("kept"), classProcessLimit) != 1 {
+		t.Fatalf("msgs %+v", h.messages("kept"))
+	}
+}
+
+// proxy forwards bus calls to the harness bus. intercept sees each call first and reports whether it answered it.
+func (h *harness) proxy(intercept func(w http.ResponseWriter, path string, body []byte) bool) string {
+	h.t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatal(err)
+		h.t.Fatal(err)
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -1063,8 +1112,7 @@ func TestTimeoutIsStoredWhenActingSeatReadFails(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "/member") && bytes.Contains(body, []byte(`"name":"bravo"`)) && !bytes.Contains(body, []byte(`"status"`)) {
-			http.Error(w, "read failed", http.StatusBadGateway)
+		if intercept(w, r.URL.Path, body) {
 			return
 		}
 		req, err := http.NewRequestWithContext(r.Context(), r.Method, "http://"+h.addr+r.URL.RequestURI(), bytes.NewReader(body))
@@ -1087,34 +1135,13 @@ func TestTimeoutIsStoredWhenActingSeatReadFails(t *testing.T) {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 	})}
-	t.Cleanup(func() {
+	h.t.Cleanup(func() {
 		_ = srv.Close()
 	})
 	go func() {
 		_ = srv.Serve(ln)
 	}()
-	e := &engine{
-		root:   context.Background(),
-		addr:   ln.Addr().String(),
-		name:   "kept",
-		seat:   "alpha",
-		roster: []agent{{name: "alpha"}, {name: "bravo"}},
-		status: map[string]string{"alpha": statusTimedOut},
-		out:    &statusWriter{w: io.Discard},
-	}
-	err = e.markTimeout("bravo", classProcessLimit)
-	if err == nil {
-		t.Fatal("read error was dropped")
-	}
-	if _, ok := e.takeHandoff(); ok {
-		t.Fatal("handed off")
-	}
-	if h.member("kept", "bravo").Status != statusTimedOut {
-		t.Fatalf("bravo %s", h.member("kept", "bravo").Status)
-	}
-	if countBody(h.messages("kept"), classProcessLimit) != 1 {
-		t.Fatalf("msgs %+v", h.messages("kept"))
-	}
+	return ln.Addr().String()
 }
 
 func TestBackupSkipsAMissingRowAndUsesTheNextRegisteredName(t *testing.T) {
@@ -2689,6 +2716,10 @@ func turnLaunches(t *testing.T, live bool, mode string, before, after []note) (i
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
 	cfg.TicketSet = false
+	// A finding note opens a discussion, which settles and is fixed.
+	h.script("alpha", on(promptDiscussion, says(kindAgree, "alpha", "bravo", "charlie")))
+	h.script("charlie", on(promptDiscussion, says(kindAgree, "alpha", "bravo", "charlie")))
+	h.script("bravo", on(promptFix, says(kindFixed, "alpha", "bravo", "charlie")))
 	name := "kept"
 	if live {
 		h.hold("bravo")
@@ -2775,18 +2806,21 @@ func turnLaunches(t *testing.T, live bool, mode string, before, after []note) (i
 		t.Fatalf("%v %s", r.err, r.stdout)
 	}
 	all := launches(h.calls(), "bravo")
-	turns := 0
+	turns, fixes := 0, 0
 	for _, c := range all {
 		if strings.Contains(c.Stdin, "mode: "+mode) {
 			turns++
+		}
+		if strings.Contains(c.Stdin, promptFix) {
+			fixes++
 		}
 	}
 	boots := 0
 	if live {
 		boots = 1
 	}
-	if len(all) != boots+turns {
-		t.Fatalf("bravo launches %d, want %d boot and %d turn", len(all), boots, turns)
+	if len(all) != boots+turns+fixes {
+		t.Fatalf("bravo launches %d, want %d boot, %d turn, and %d fix", len(all), boots, turns, fixes)
 	}
 	return turns, r.stdout
 }
@@ -2824,10 +2858,13 @@ func TestMemberIsLaunchedForATurnOnlyUntilItAnswersTheSender(t *testing.T) {
 					if tc.launched {
 						return
 					}
-					// A skipped member adds no status or exit line to its boot's.
+					// A skipped member adds no status or exit line to its boot's. A finding adds bravo's fix launch.
 					rows, exits := 0, 0
 					if live {
 						rows, exits = 2, 1
+					}
+					if strings.Contains(tc.name, "finding") {
+						rows, exits = rows+2, exits+1
 					}
 					if got := strings.Count(stdout, "member: bravo\n"); got != rows {
 						t.Fatalf("bravo status lines %d, want %d\n%s", got, rows, stdout)

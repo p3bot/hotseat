@@ -16,6 +16,8 @@ const (
 	DefaultMaxTurns = 500
 	// DefaultMaxLaunches is the number of member processes one run process starts.
 	DefaultMaxLaunches = 300
+	// DefaultMaxSays is the number of discussion launches each member has per finding.
+	DefaultMaxSays = 4
 	// DefaultProcessLimit is the limit for one member process.
 	// It is not a limit on the conversation. Interactive mode disables it.
 	DefaultProcessLimit = 8 * time.Hour
@@ -30,9 +32,12 @@ const (
 // A Set field is false when the caller omitted that setting.
 // Omitted settings are not compared on --conversation.
 // An omitted roster continues, and a launch needs the roster passed again.
-// Timeout, MaxTurns, MaxLaunches, Interactive, Permission, Address, and
-// TokenFile are settings of this process. They are not stored and they are not
+// Timeout, MaxTurns, MaxLaunches, MaxSays, Interactive, Permission, Address,
+// and TokenFile are settings of this process. They are not stored and they are not
 // compared.
+//
+// MaxSays is each member's discussion launches per finding. When the speaker
+// order finds nobody and the finding has not settled, the acting seat decides.
 //
 // MaxLaunches counts every member process this process starts, of any kind.
 // At the cap, and when a member failure leaves fewer live members than the
@@ -63,6 +68,9 @@ type Config struct {
 
 	MaxLaunches    int
 	MaxLaunchesSet bool
+
+	MaxSays    int
+	MaxSaysSet bool
 
 	Interactive    bool
 	InteractiveSet bool
@@ -110,6 +118,13 @@ func (c Config) maxLaunches() int {
 		return c.MaxLaunches
 	}
 	return DefaultMaxLaunches
+}
+
+func (c Config) maxSays() int {
+	if c.MaxSaysSet {
+		return c.MaxSays
+	}
+	return DefaultMaxSays
 }
 
 func (c Config) permission() string {

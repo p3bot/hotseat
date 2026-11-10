@@ -417,10 +417,15 @@ func (e *engine) backup() (string, error) {
 }
 
 func (e *engine) followTarget(sender string) (string, error) {
+	return e.followVia(sender, e.backup)
+}
+
+// followVia is the follow-up target of sender: the sender while it is a live roster member, otherwise the backup.
+func (e *engine) followVia(sender string, backup func() (string, error)) (string, error) {
 	if e.localStatus(sender) != statusTimedOut && nameIn(e.roster, sender) {
 		return sender, nil
 	}
-	return e.backup()
+	return backup()
 }
 
 func (e *engine) bootPrompt(a agent) string {
@@ -462,10 +467,11 @@ func (e *engine) isActing(name string) (bool, error) {
 	return backup == name, nil
 }
 
+// hasHandoff reports a queued handoff that may launch now. One held during a set's discussions waits.
 func (e *engine) hasHandoff() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.handoffFrom != ""
+	return e.handoffFrom != "" && !e.holding
 }
 
 // noteHandoff queues a backup launch for name. A winding-down run starts no backup, so it queues none.
@@ -477,10 +483,11 @@ func (e *engine) noteHandoff(name string) {
 	e.mu.Unlock()
 }
 
+// takeHandoff leaves a handoff queued while a set's discussions run, so a free-form backup prompt cannot land mid-discussion.
 func (e *engine) takeHandoff() (string, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.handoffFrom == "" {
+	if e.handoffFrom == "" || e.holding {
 		return "", false
 	}
 	from := e.handoffFrom
@@ -496,10 +503,12 @@ func (e *engine) handoffPrompt(from, name string) string {
 	return b.String()
 }
 
-func (e *engine) followPrompt(name string) string {
+// followPrompt carries the number of fixed messages stored since the set's turn.
+func (e *engine) followPrompt(name string, fixed int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
 	b.WriteString("The set has finished.\n")
+	fmt.Fprintf(&b, "fixed: %d\n", fixed)
 	b.WriteString("Read what was addressed to you and post the next turn, or done if you are the acting seat.\n")
 	b.WriteString(e.busNote())
 	return b.String()

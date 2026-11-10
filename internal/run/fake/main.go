@@ -50,6 +50,22 @@ type run struct {
 	JSON     string `json:"json"`
 	Stderr   string `json:"stderr"`
 	Register bool   `json:"register"`
+	// Steps script launches. A launch takes the first unused step whose On text is in its prompt.
+	Steps []step `json:"steps"`
+}
+
+// step is one scripted launch: the messages it publishes, then a pause and an exit code.
+type step struct {
+	On      string    `json:"on"`
+	Publish []message `json:"publish"`
+	Sleep   string    `json:"sleep"`
+	Exit    int       `json:"exit"`
+}
+
+type message struct {
+	Kind string   `json:"kind"`
+	To   []string `json:"to"`
+	Body string   `json:"body"`
 }
 
 type line struct {
@@ -177,6 +193,20 @@ func launch(dir string, p plan, stdin string) {
 			time.Sleep(d)
 		}
 	}
+	code := spec.Exit
+	if spec.ExitOn != "" && !strings.Contains(stdin, spec.ExitOn) {
+		code = 0
+	}
+	if st, ok := takeStep(dir, name, spec.Steps, stdin); ok {
+		conv := between(stdin, "in conversation ", ".\n")
+		for i, m := range st.Publish {
+			publish(conv, name, fmt.Sprintf("%s-%d-%d", name, os.Getpid(), i), m)
+		}
+		if d, err := time.ParseDuration(st.Sleep); err == nil {
+			time.Sleep(d)
+		}
+		code = st.Exit
+	}
 	out := spec.JSON
 	if out == "" {
 		out = `{"sessionId":"sess-` + name + `"}`
@@ -186,11 +216,58 @@ func launch(dir string, p plan, stdin string) {
 		fmt.Fprint(os.Stderr, spec.Stderr)
 	}
 	record(dir, line{Time: time.Now().UTC().Format(time.RFC3339Nano), Kind: "launch-exit", Argv: []string{name}})
-	code := spec.Exit
-	if spec.ExitOn != "" && !strings.Contains(stdin, spec.ExitOn) {
-		code = 0
-	}
 	os.Exit(code)
+}
+
+// takeStep marks and returns the first unused step for this prompt. One member's launches never overlap.
+func takeStep(dir, name string, steps []step, stdin string) (step, bool) {
+	used := filepath.Join(dir, "steps")
+	if err := os.MkdirAll(used, 0o700); err != nil {
+		return step{}, false
+	}
+	for i, st := range steps {
+		if !strings.Contains(stdin, st.On) {
+			continue
+		}
+		mark := filepath.Join(used, fmt.Sprintf("%s.%d", name, i))
+		f, err := os.OpenFile(mark, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			continue
+		}
+		if err := f.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		return st, true
+	}
+	return step{}, false
+}
+
+func publish(conv, from, txid string, m message) {
+	bus := os.Getenv("HOTSEAT_FAKE_BUS")
+	to := m.To
+	if to == nil {
+		to = []string{}
+	}
+	body, err := json.Marshal(map[string]any{
+		"conversation": conv, "from": from, "to": to, "body": m.Body, "txid": txid, "kind": m.Kind,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	resp, err := http.Post("http://"+bus+"/publish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if cerr := resp.Body.Close(); cerr != nil {
+		fmt.Fprintln(os.Stderr, cerr)
+	}
+	if err != nil || !bytes.Contains(raw, []byte(`"outcome":"ok"`)) {
+		fmt.Fprintf(os.Stderr, "publish %s: %v %s\n", m.Kind, err, raw)
+		os.Exit(1)
+	}
 }
 
 func postRegister(stdin, name string) {

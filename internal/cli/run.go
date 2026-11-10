@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"time"
@@ -58,6 +59,21 @@ exits non-zero with outcome: error and the conversation open. A stopping done
 still closes it. A stored stopping done is reported before the minimum is
 read.
 
+A finding from a recipient of a set that has not finished opens a discussion.
+When the set's recipients have exited or timed out, run publishes discuss,
+runs one discussion at a time, and then the follow-up. Members publish one
+stance per discussion launch: propose, dismiss, agree, object, or stand. A
+finding settles when every live member but the proposer agrees, and the
+finder applies a settled change and publishes fixed. --max-says or
+HOTSEAT_MAX_SAYS defaults to 4 discussion launches per member per finding.
+When nobody can speak, the acting seat publishes extend or deadlock. A
+deadlock stops the run and the seat reports with done.
+
+The stop result is read from the messages stored before the stopping done.
+An unsettled finding prints unsettled, a settled change with no fixed prints
+unfixed, and run exits non-zero with outcome: deadlock after a deadlock or
+outcome: unsettled otherwise. outcome: done is the only zero exit.
+
 --ticket or HOTSEAT_TICKET selects the code-root members launch in.
 --conversation or HOTSEAT_CONVERSATION continues that exact conversation.
 A resume launches a member only when --agents or HOTSEAT_AGENTS is passed
@@ -83,7 +99,7 @@ not on the bus, the task argument is required.`,
 			if err != nil {
 				return err
 			}
-			return run.Execute(cmd.Context(), cfg, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runExit(run.Execute(cmd.Context(), cfg, cmd.OutOrStdout(), cmd.ErrOrStderr()))
 		},
 	}
 	cmd.Flags().StringVar(&f.agents, "agents", "", "roster as name=module:model, space-separated (env HOTSEAT_AGENTS)")
@@ -93,6 +109,7 @@ not on the bus, the task argument is required.`,
 	cmd.Flags().DurationVar(&f.timeout, "timeout", run.DefaultProcessLimit, "limit for one member process (env HOTSEAT_TIMEOUT)")
 	cmd.Flags().IntVar(&f.maxTurns, "max-turns", run.DefaultMaxTurns, "turn messages this process acts on (env HOTSEAT_MAX_TURNS)")
 	cmd.Flags().IntVar(&f.maxLaunches, "max-launches", run.DefaultMaxLaunches, "member processes this process starts (env HOTSEAT_MAX_LAUNCHES)")
+	cmd.Flags().IntVar(&f.maxSays, "max-says", run.DefaultMaxSays, "discussion launches per member per finding (env HOTSEAT_MAX_SAYS)")
 	cmd.Flags().BoolVar(&f.interactive, "interactive", false, "disable the process limit and keep the turn cap (env HOTSEAT_INTERACTIVE)")
 	cmd.Flags().StringVar(&f.ticket, "ticket", "", "ticket id scope-short (env HOTSEAT_TICKET)")
 	cmd.Flags().StringVar(&f.conversation, "conversation", "", "exact conversation name to continue (env HOTSEAT_CONVERSATION)")
@@ -100,6 +117,14 @@ not on the bus, the task argument is required.`,
 	addAddress(cmd, &f.address)
 	addTokenFile(cmd)
 	return cmd
+}
+
+// runExit makes an unresolved stop exit 1 with no stderr line. Its report is already on stdout.
+func runExit(err error) error {
+	if errors.Is(err, run.ErrUnresolved) {
+		return reportedFailure{}
+	}
+	return err
 }
 
 type runFlags struct {
@@ -110,6 +135,7 @@ type runFlags struct {
 	timeout      time.Duration
 	maxTurns     int
 	maxLaunches  int
+	maxSays      int
 	interactive  bool
 	ticket       string
 	conversation string
@@ -160,6 +186,10 @@ func (f runFlags) config(cmd *cobra.Command, args []string) (run.Config, error) 
 		return run.Config{}, err
 	}
 	cfg.MaxLaunches, cfg.MaxLaunchesSet, err = pickInt(cmd, "max-launches", "HOTSEAT_MAX_LAUNCHES", f.maxLaunches)
+	if err != nil {
+		return run.Config{}, err
+	}
+	cfg.MaxSays, cfg.MaxSaysSet, err = pickInt(cmd, "max-says", "HOTSEAT_MAX_SAYS", f.maxSays)
 	if err != nil {
 		return run.Config{}, err
 	}

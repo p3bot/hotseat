@@ -16,6 +16,7 @@ import (
 	"io"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,10 @@ const (
 	launchBoot launchKind = iota
 	launchTurn
 	launchFollow
+	launchDiscussion
+	launchStall
+	launchFix
+	launchReport
 )
 
 var (
@@ -46,15 +51,17 @@ func (e *engine) bootstrap(a agent) error {
 }
 
 func (e *engine) launchMember(name string, kind launchKind, prompt string) error {
-	return e.launchUnless(name, kind, prompt, nil)
+	_, err := e.launchUnless(name, kind, prompt, nil)
+	return err
 }
 
 // launchForTurn launches name for turn unless the transcript, read once the slot is held, shows name already answered it.
 // The answer can be stored while a boot launch still holds the slot.
 func (e *engine) launchForTurn(name string, turn client.Message, prompt string) error {
-	return e.launchUnless(name, launchTurn, prompt, func() (bool, error) {
+	_, err := e.launchUnless(name, launchTurn, prompt, func() (bool, error) {
 		return e.answered(name, turn)
 	})
+	return err
 }
 
 // answered reports whether name published a say or finding after turn that names its sender in to.
@@ -75,35 +82,35 @@ func (e *engine) answered(name string, turn client.Message) (bool, error) {
 	return false, nil
 }
 
-// launchUnless runs one member process under its slot. skip, when set, is checked inside the slot.
+// launchUnless runs one member process under its slot and reports whether it started one. skip, when set, is checked inside the slot.
 // A skipped launch writes no member row, no status line, and no exit line.
-func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip func() (bool, error)) error {
+func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip func() (bool, error)) (bool, error) {
 	if !e.canLaunch() {
-		return nil
+		return false, nil
 	}
 	a, ok := e.agent(name)
 	if !ok || a.module == "" || a.model == "" {
-		return errors.New("roster is required to launch")
+		return false, errors.New("roster is required to launch")
 	}
 	sl := e.slot(name)
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
 	if err := e.stopped(); err != nil {
-		return err
+		return false, err
 	}
 	if e.shutting() {
-		return nil
+		return false, nil
 	}
 	if kind != launchBoot && e.localStatus(name) == statusTimedOut {
-		return nil
+		return false, nil
 	}
 	if skip != nil {
 		skipped, err := skip()
 		if err != nil {
-			return err
+			return false, err
 		}
 		if skipped {
-			return nil
+			return false, nil
 		}
 	}
 	pctx, release := e.processCtx(name)
@@ -113,12 +120,17 @@ func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip 
 	cmd.Stdout = &stdout
 	started, err := e.startUnlessStopping(cmd)
 	if errors.Is(err, errLaunchCap) {
-		return e.publishErr("", classLaunchCap)
+		return false, e.publishErr("", classLaunchCap)
 	}
 	if err != nil || !started {
-		return err
+		return false, err
 	}
 	defer e.doneInFlight()
+	return true, e.recordLaunch(pctx, name, kind, a, cmd, &stdout)
+}
+
+// recordLaunch writes the started process's rows, waits for it, and records how it ended.
+func (e *engine) recordLaunch(pctx context.Context, name string, kind launchKind, a agent, cmd *exec.Cmd, stdout *bytes.Buffer) error {
 	pid := cmd.Process.Pid
 	row, err := e.memberRow(name)
 	if err != nil {
@@ -400,11 +412,35 @@ func mintTx() (string, error) {
 }
 
 func (e *engine) publishErr(member, class string) error {
+	return e.publish(kindError, fromRun, []string{fromOwner}, errBody(member, class, 0))
+}
+
+// errBody is the error layout: the member, the class, and the seq of the one message that caused it, each line only when present.
+func errBody(member, class string, seq int64) string {
 	body := class
 	if member != "" {
 		body = member + "\n" + class
 	}
-	return e.publish(kindError, fromRun, []string{fromOwner}, body)
+	if seq > 0 {
+		body += "\n" + strconv.FormatInt(seq, 10)
+	}
+	return body
+}
+
+// protocolErr publishes a finding-protocol error to owner and prints its error group.
+func (e *engine) protocolErr(member, class string, seq int64) error {
+	if err := e.publish(kindError, fromRun, []string{fromOwner}, errBody(member, class, seq)); err != nil {
+		return err
+	}
+	group := [][2]string{{"error", class}}
+	if member != "" {
+		group = append(group, [2]string{"from", member})
+	}
+	if seq > 0 {
+		group = append(group, [2]string{"seq", strconv.FormatInt(seq, 10)})
+	}
+	e.out.record(group...)
+	return nil
 }
 
 func (e *engine) publish(kind, from string, to []string, body string) error {

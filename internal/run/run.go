@@ -28,7 +28,21 @@ const (
 	kindError        = "error"
 	kindSay          = "say"
 	kindFinding      = "finding"
+	kindAsk          = "ask"
 	txInstructions   = "instructions"
+
+	kindPropose  = "propose"
+	kindDismiss  = "dismiss"
+	kindAgree    = "agree"
+	kindObject   = "object"
+	kindStand    = "stand"
+	kindPass     = "pass"
+	kindExtend   = "extend"
+	kindDeadlock = "deadlock"
+	kindFixed    = "fixed"
+	kindDiscuss  = "discuss"
+	kindSettled  = "settled"
+	kindHalted   = "halted"
 
 	roleMember = "hotseat/member"
 	contextBus = "hotseat/bus"
@@ -47,7 +61,22 @@ const (
 	classNoBackup       = "no backup"
 	classBelowMinimum   = "below minimum"
 	classLaunchCap      = "launch cap"
+
+	classBadFinding  = "bad finding"
+	classNoStance    = "no stance"
+	classExtraStance = "extra stance"
+	classBadStance   = "bad stance"
+	classBadPass     = "bad pass"
+	classBadExtend   = "bad extend"
+	classBadDeadlock = "bad deadlock"
+	classNoDecision  = "no decision"
+	classNoFix       = "no fix"
+	classNoReport    = "no report"
+	classUnsettled   = "unsettled"
 )
+
+// stanceKinds are the kinds a discussion launch publishes one of. Prompts read them with findings on an unnamed read.
+var stanceKinds = []string{kindPropose, kindDismiss, kindAgree, kindObject, kindStand}
 
 // Execute runs one conversation.
 // stdout is key: value status. A usage failure writes nothing there.
@@ -92,6 +121,7 @@ type engine struct {
 	grace     time.Duration
 	maxTurns  int
 	maxLaunch int
+	maxSays   int
 	dir       string
 	startBin  string
 	tkBin     string
@@ -108,15 +138,17 @@ type engine struct {
 	continuing bool
 	started    bool
 
-	mu          sync.Mutex
-	status      map[string]string
-	sessions    map[string]string
-	slots       map[string]*slot
-	acted       int
-	haltErr     error
-	outcome     bool
-	closing     bool
-	doneFrom    string
+	mu       sync.Mutex
+	status   map[string]string
+	sessions map[string]string
+	slots    map[string]*slot
+	acted    int
+	haltErr  error
+	outcome  bool
+	closing  bool
+	doneFrom string
+	// doneSeq is the stopping done. Only messages stored before it count toward the stop result.
+	doneSeq     int64
 	handoffFrom string
 	launches    int
 	// inFlight counts member processes this run started or watches and has not yet recorded.
@@ -125,6 +157,23 @@ type engine struct {
 	// idle is closed once windClass is set and inFlight is zero.
 	idle       chan struct{}
 	idleClosed bool
+
+	// judged holds the seqs a live launch window already ruled on, so the transcript loop does not report them again.
+	judged map[int64]bool
+	// holding keeps a queued handoff from launching while a set's discussions run.
+	holding bool
+	// leftovers is closed once every process left from an earlier run has exited and been recorded.
+	leftovers chan struct{}
+	// historyHead is the newest seq stored when a continuation started. Every message at or before it is history.
+	historyHead int64
+	// leftoverEnds maps each leftover to the newest seq stored once its exit was recorded, or MaxInt64 while it runs.
+	leftoverEnds map[string]int64
+	// seen is the newest seq this process has read.
+	seen int64
+	// backlog is the newest seq judgeBacklog has checked.
+	backlog int64
+	// protocol holds the ledger kinds read so far, in seq order. A stored message never changes, so a build reads only later ones.
+	protocol []client.Message
 }
 
 type slot struct {
@@ -140,6 +189,9 @@ func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, std
 	}
 	if cfg.MaxLaunchesSet && cfg.MaxLaunches < 1 {
 		return nil, errors.New("max launches must be a positive integer")
+	}
+	if cfg.MaxSaysSet && cfg.MaxSays < 1 {
+		return nil, errors.New("max says must be a positive integer")
 	}
 	if cfg.TimeoutSet && cfg.Timeout <= 0 {
 		return nil, errors.New("timeout must be positive")
@@ -166,26 +218,30 @@ func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, std
 	}
 	child, cancel := context.WithCancel(ctx)
 	e := &engine{
-		root:      ctx,
-		child:     child,
-		cancel:    cancel,
-		cfg:       cfg,
-		addr:      addr,
-		token:     token,
-		tokenFile: cfg.TokenFile,
-		perm:      cfg.permission(),
-		limit:     cfg.timeout(),
-		grace:     grace,
-		maxTurns:  cfg.maxTurns(),
-		maxLaunch: cfg.maxLaunches(),
-		startBin:  startBin,
-		tkBin:     tkBin,
-		stderr:    &lockedWriter{w: stderr},
-		out:       &statusWriter{w: stdout},
-		status:    make(map[string]string),
-		sessions:  make(map[string]string),
-		slots:     make(map[string]*slot),
-		idle:      make(chan struct{}),
+		root:         ctx,
+		child:        child,
+		cancel:       cancel,
+		cfg:          cfg,
+		addr:         addr,
+		token:        token,
+		tokenFile:    cfg.TokenFile,
+		perm:         cfg.permission(),
+		limit:        cfg.timeout(),
+		grace:        grace,
+		maxTurns:     cfg.maxTurns(),
+		maxLaunch:    cfg.maxLaunches(),
+		maxSays:      cfg.maxSays(),
+		startBin:     startBin,
+		tkBin:        tkBin,
+		stderr:       &lockedWriter{w: stderr},
+		out:          &statusWriter{w: stdout},
+		status:       make(map[string]string),
+		sessions:     make(map[string]string),
+		slots:        make(map[string]*slot),
+		idle:         make(chan struct{}),
+		judged:       make(map[int64]bool),
+		leftovers:    make(chan struct{}),
+		leftoverEnds: make(map[string]int64),
 	}
 	return e, nil
 }
