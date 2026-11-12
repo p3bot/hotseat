@@ -60,8 +60,13 @@ still closes it. A stored stopping done is reported before the minimum is
 read.
 
 A finding from a recipient of a set that has not finished opens a discussion.
-When the set's recipients have exited or timed out, run publishes discuss,
-runs one discussion at a time, and then the follow-up. Members publish one
+When the set's recipients have exited or timed out, run reports each live
+recipient that did not reply with error class no reply, and publishes discuss.
+A set with two or more findings gets one acting-seat launch that publishes
+aggregate: one line per issue, the kept finding first and its dropped
+duplicates after. run publishes issues with that grouping, or each finding
+alone when the aggregate is missing or invalid. run then discusses each kept
+finding one at a time, and then runs the follow-up. Members publish one
 stance per discussion launch: propose, dismiss, agree, object, or stand. A
 finding settles when every live member but the proposer agrees, and the
 finder applies a settled change and publishes fixed. --max-says or

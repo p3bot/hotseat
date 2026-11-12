@@ -503,12 +503,16 @@ func (e *engine) handoffPrompt(from, name string) string {
 	return b.String()
 }
 
-// followPrompt carries the number of fixed messages stored since the set's turn.
-func (e *engine) followPrompt(name string, fixed int) string {
+// followPrompt names what the set left for the report: the fixed count, recipients that did not reply, dropped duplicates, and timed-out members.
+func (e *engine) followPrompt(name string, fixed int, noReply []string, dropped []int64) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
 	b.WriteString("The set has finished.\n")
 	fmt.Fprintf(&b, "fixed: %d\n", fixed)
+	fmt.Fprintf(&b, "no reply: %s\ndropped: %s\ntimed-out: %s\n", nameList(noReply), listOrNone(dropped), nameList(e.timedOut()))
+	if len(noReply) > 0 {
+		b.WriteString("A member under no reply published no say or finding for this set. Do not report its verdicts.\n")
+	}
 	b.WriteString("Read what was addressed to you and post the next turn, or done if you are the acting seat.\n")
 	b.WriteString(e.busNote())
 	return b.String()

@@ -331,7 +331,7 @@ func (e *engine) apply(batch []client.Message, historical bool) error {
 			if err := e.judgeFinding(msg); err != nil {
 				return err
 			}
-		case kindPass, kindExtend, kindDeadlock, kindPropose, kindDismiss, kindAgree, kindObject, kindStand:
+		case kindAggregate, kindPass, kindExtend, kindDeadlock, kindPropose, kindDismiss, kindAgree, kindObject, kindStand:
 			if err := e.judgeStray(msg); err != nil {
 				return err
 			}
@@ -608,7 +608,13 @@ func (e *engine) followUp(msg client.Message, seen int64) error {
 	if err != nil {
 		return e.busErr(err)
 	}
-	if err := e.launchMember(target, launchFollow, e.followPrompt(target, l.fixedSince(msg.Seq))); err != nil {
+	var noReply []string
+	for _, name := range l.unanswered(msg) {
+		if e.localStatus(name) != statusTimedOut {
+			noReply = append(noReply, name)
+		}
+	}
+	if err := e.launchMember(target, launchFollow, e.followPrompt(target, l.fixedSince(msg.Seq), noReply, l.droppedOf(msg.Seq))); err != nil {
 		return err
 	}
 	return e.drainHandoff()

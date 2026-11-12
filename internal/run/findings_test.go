@@ -35,6 +35,7 @@ const (
 	promptStall      = "This is a stall launch"
 	promptFix        = "This is a fix launch"
 	promptReport     = "This is a report launch"
+	promptAggregate  = "This is an aggregate launch"
 )
 
 // script appends launch steps for name. Every scripted member registers on each launch.
@@ -189,6 +190,7 @@ func TestTwoFindingsAreDiscussedInOrderAndFixedBeforeTheFollowUp(t *testing.T) {
 	h.review("alpha", "alpha", "bravo", "charlie")
 	h.script("alpha",
 		on(promptTurn, says(kindSay, "alpha")),
+		on(promptAggregate, messageFile{Kind: kindAggregate, To: abcRoster, Body: "$lines:findings"}),
 		on(promptDiscussion, says(kindAgree, abcRoster...)),
 		on(promptDiscussion, says(kindAgree, abcRoster...)),
 		stepFile{On: promptFollow, Publish: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nstub"}}},
@@ -211,6 +213,7 @@ func TestTwoFindingsAreDiscussedInOrderAndFixedBeforeTheFollowUp(t *testing.T) {
 	msgs := h.messages(name)
 	found := ofKind(msgs, kindFinding)
 	discuss := first(msgs, fromRun, kindDiscuss)
+	issues := first(msgs, fromRun, kindIssues)
 	settled := ofKind(msgs, kindSettled)
 	fixed := ofKind(msgs, kindFixed)
 	if len(found) != 2 || len(settled) != 2 || len(fixed) != 2 {
@@ -229,7 +232,7 @@ func TestTwoFindingsAreDiscussedInOrderAndFixedBeforeTheFollowUp(t *testing.T) {
 	}
 	// Each prompt names where its own discussion begins, so the first discussion's stances are history in the second.
 	if c := h.launchesWith("charlie", promptDiscussion); len(c) != 2 ||
-		promptStart(t, c[0].Stdin) != discuss.Seq || promptStart(t, c[1].Stdin) != fixed[0].Seq {
+		promptStart(t, c[0].Stdin) != issues.Seq || promptStart(t, c[1].Stdin) != fixed[0].Seq {
 		t.Fatalf("charlie discussion prompts %+v", c)
 	}
 	follow := h.launchesWith("alpha", promptFollow)
@@ -1382,4 +1385,180 @@ func TestAcceptedPassAndExtendCountTowardTheTurnCap(t *testing.T) {
 		msgs := h.messages(name)
 		wantErrors(t, msgs, errBody("zulu", classBadExtend, first(msgs, "alpha", kindExtend).Seq), classTurnCap)
 	})
+}
+
+func TestSeatAggregateDropsADuplicateFindingBeforeDiscussion(t *testing.T) {
+	h := newHarness(t)
+	h.review("alpha", "alpha", "bravo", "charlie")
+	h.script("alpha",
+		on(promptTurn, says(kindSay, "alpha")),
+		on(promptAggregate, messageFile{Kind: kindAggregate, To: abcRoster, Body: "$line:findings"}),
+		on(promptDiscussion, says(kindAgree, abcRoster...)),
+		on(promptFollow, says(kindDone, "owner")),
+	)
+	// The parallel launches race, so either finding can be first and either finder can own the kept issue.
+	for _, name := range []string{"bravo", "charlie"} {
+		h.script(name,
+			on(promptTurn, says(kindFinding, abcRoster...), says(kindSay, "alpha")),
+			on(promptDiscussion, says(kindAgree, abcRoster...)),
+			on(promptFix, says(kindFixed, abcRoster...)),
+		)
+	}
+	res, name := h.play(h.team("alpha", abcRoster...))
+	if res.err != nil || !strings.HasSuffix(res.stdout, "outcome: done\n") {
+		t.Fatalf("%v\n%s", res.err, res.stdout)
+	}
+	msgs := h.messages(name)
+	turn := first(msgs, "alpha", kindTurn)
+	found := ofKind(msgs, kindFinding)
+	if len(found) != 2 {
+		t.Fatalf("findings %+v", found)
+	}
+	kept, dup := found[0], found[1]
+	discuss := first(msgs, fromRun, kindDiscuss)
+	issues := first(msgs, fromRun, kindIssues)
+	if issues.Body != seqOf(turn)+"\n"+seqOf(kept)+" "+seqOf(dup) || len(issues.To) != 0 || issues.Seq < discuss.Seq {
+		t.Fatalf("issues %+v discuss %d", issues, discuss.Seq)
+	}
+	settled := ofKind(msgs, kindSettled)
+	if len(settled) != 1 || settled[0].Body != settledBody(kept.Seq, kept.Seq) || len(ofKind(msgs, kindFixed)) != 1 {
+		t.Fatalf("settled %+v", settled)
+	}
+	if a := h.launchesWith("alpha", promptAggregate); len(a) != 1 || !strings.Contains(a[0].Stdin, "findings: "+seqOf(kept)+" "+seqOf(dup)+"\n") {
+		t.Fatalf("aggregate launches %+v", a)
+	}
+	for _, c := range h.launchesWith("alpha", promptDiscussion) {
+		if !strings.Contains(c.Stdin, "duplicates: "+seqOf(dup)+"\n") || promptStart(t, c.Stdin) != issues.Seq {
+			t.Fatalf("discussion prompt %q", c.Stdin)
+		}
+	}
+	if f := h.launchesWith("alpha", promptFollow); len(f) != 1 || !strings.Contains(f[0].Stdin, "no reply: none\ndropped: "+seqOf(dup)+"\n") {
+		t.Fatalf("follow-up %+v", f)
+	}
+	if !strings.Contains(res.stdout, "issue: "+seqOf(kept)+"\ndropped: "+seqOf(dup)+"\n") {
+		t.Fatalf("stdout has no issue group\n%s", res.stdout)
+	}
+	wantErrors(t, msgs)
+}
+
+func TestFailedAggregateDiscussesEveryFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		step  stepFile
+		class string
+		atSeq bool
+	}{
+		{"no aggregate", on(promptAggregate), classNoAggregate, false},
+		{"bad aggregate", on(promptAggregate, messageFile{Kind: kindAggregate, To: abcRoster, Body: "999"}), classBadAggregate, true},
+		{"two aggregates", on(promptAggregate,
+			messageFile{Kind: kindAggregate, To: abcRoster, Body: "$line:findings"},
+			messageFile{Kind: kindAggregate, To: abcRoster, Body: "$line:findings"},
+		), classBadAggregate, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.review("alpha", "alpha", "bravo", "charlie")
+			h.script("alpha",
+				on(promptTurn, says(kindSay, "alpha")),
+				tc.step,
+				on(promptDiscussion, says(kindAgree, abcRoster...)),
+				on(promptDiscussion, says(kindAgree, abcRoster...)),
+				on(promptFollow, says(kindDone, "owner")),
+			)
+			h.script("bravo",
+				on(promptTurn, says(kindFinding, abcRoster...), says(kindFinding, abcRoster...), says(kindSay, "alpha")),
+				on(promptFix, says(kindFixed, abcRoster...)),
+				on(promptFix, says(kindFixed, abcRoster...)),
+			)
+			h.script("charlie",
+				on(promptTurn, says(kindSay, "alpha")),
+				on(promptDiscussion, says(kindAgree, abcRoster...)),
+				on(promptDiscussion, says(kindAgree, abcRoster...)),
+			)
+			res, name := h.play(h.team("alpha", abcRoster...))
+			if res.err != nil || !strings.HasSuffix(res.stdout, "outcome: done\n") {
+				t.Fatalf("%v\n%s", res.err, res.stdout)
+			}
+			msgs := h.messages(name)
+			turn := first(msgs, "alpha", kindTurn)
+			found := ofKind(msgs, kindFinding)
+			if len(found) != 2 {
+				t.Fatalf("findings %+v", found)
+			}
+			if issues := first(msgs, fromRun, kindIssues); issues.Body != seqOf(turn)+"\n"+seqOf(found[0])+"\n"+seqOf(found[1]) {
+				t.Fatalf("issues %q", issues.Body)
+			}
+			if settled := ofKind(msgs, kindSettled); len(settled) != 2 {
+				t.Fatalf("settled %+v", settled)
+			}
+			// Each aggregate the seat stored is reported on its own seq. A missing aggregate is reported once with no seq.
+			want := []string{errBody("alpha", tc.class, 0)}
+			if tc.atSeq {
+				want = nil
+				for _, a := range ofKind(msgs, kindAggregate) {
+					want = append(want, errBody("alpha", tc.class, a.Seq))
+				}
+			}
+			wantErrors(t, msgs, want...)
+		})
+	}
+}
+
+func TestContinueAfterDiscussWithoutIssuesAggregatesAgain(t *testing.T) {
+	h := newHarness(t)
+	h.keptMembers(abcRoster...)
+	turn := h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
+	kept := h.publish("kept", "bravo", kindFinding, "foo", abcRoster)
+	dup := h.publish("kept", "charlie", kindFinding, "foo again", abcRoster)
+	h.publish("kept", "bravo", kindSay, "found one", []string{"alpha"})
+	h.publish("kept", "charlie", kindSay, "found one", []string{"alpha"})
+	h.marker(kindDiscuss, seqOf(turn))
+	h.script("alpha", on(promptAggregate, messageFile{Kind: kindAggregate, To: abcRoster, Body: "$line:findings"}))
+	finishes(h)
+	res := h.playKept()
+	if res.err != nil || !strings.HasSuffix(res.stdout, "outcome: done\n") {
+		t.Fatalf("%v\n%s", res.err, res.stdout)
+	}
+	msgs := h.messages("kept")
+	if a := h.launchesWith("alpha", promptAggregate); len(a) != 1 || !strings.Contains(a[0].Stdin, "findings: "+seqOf(kept)+" "+seqOf(dup)+"\n") {
+		t.Fatalf("aggregate launches %+v", a)
+	}
+	issues := ofKind(msgs, kindIssues)
+	if len(issues) != 1 || issues[0].Body != seqOf(turn)+"\n"+seqOf(kept)+" "+seqOf(dup) {
+		t.Fatalf("issues %+v", issues)
+	}
+	if d := h.callIndex("charlie", promptDiscussion); d < 0 || h.callIndex("alpha", promptAggregate) > d {
+		t.Fatalf("aggregate after the first discussion launch %+v", h.calls())
+	}
+	if settled := ofKind(msgs, kindSettled); len(settled) != 1 || settled[0].Body != settledBody(kept.Seq, kept.Seq) {
+		t.Fatalf("settled %+v", settled)
+	}
+	wantErrors(t, msgs)
+}
+
+func TestRecipientThatPublishesNothingIsReportedAndNamedInTheFollowUp(t *testing.T) {
+	h := newHarness(t)
+	h.review("alpha", "alpha", "bravo", "charlie")
+	h.script("alpha",
+		on(promptTurn, says(kindSay, "alpha")),
+		on(promptFollow, says(kindDone, "owner")),
+	)
+	h.script("bravo", on(promptTurn, says(kindSay, "alpha")))
+	h.script("charlie", on(promptTurn))
+	res, name := h.play(h.team("alpha", abcRoster...))
+	if res.err != nil || !strings.HasSuffix(res.stdout, "outcome: done\n") {
+		t.Fatalf("%v\n%s", res.err, res.stdout)
+	}
+	msgs := h.messages(name)
+	turn := first(msgs, "alpha", kindTurn)
+	wantErrors(t, msgs, errBody("charlie", classNoReply, turn.Seq))
+	if e := first(msgs, fromRun, kindError); e.Seq > first(msgs, fromRun, kindDiscuss).Seq {
+		t.Fatalf("no reply %d after discuss", e.Seq)
+	}
+	if f := h.launchesWith("alpha", promptFollow); len(f) != 1 || !strings.Contains(f[0].Stdin, "no reply: charlie\n") {
+		t.Fatalf("follow-up %+v", f)
+	}
+	if !strings.Contains(res.stdout, "error: no reply\nfrom: charlie\nseq: "+seqOf(turn)+"\n") {
+		t.Fatalf("stdout\n%s", res.stdout)
+	}
 }

@@ -34,6 +34,7 @@ const (
 	launchStall
 	launchFix
 	launchReport
+	launchAggregate
 )
 
 var (
@@ -72,14 +73,17 @@ func (e *engine) answered(name string, turn client.Message) (bool, error) {
 		return false, err
 	}
 	for _, m := range msgs {
-		if m.From != name || (m.Kind != kindSay && m.Kind != kindFinding) {
-			continue
-		}
-		if slices.Contains(m.To, turn.From) {
+		if replies(m, name, turn) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// replies reports whether m is name's answer to turn: a say or finding from name that names the turn's sender in to.
+// all does not count.
+func replies(m client.Message, name string, turn client.Message) bool {
+	return m.From == name && (m.Kind == kindSay || m.Kind == kindFinding) && slices.Contains(m.To, turn.From)
 }
 
 // launchUnless runs one member process under its slot and reports whether it started one. skip, when set, is checked inside the slot.

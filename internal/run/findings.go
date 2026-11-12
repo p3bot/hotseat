@@ -213,6 +213,8 @@ func (e *engine) judgeStray(m client.Message) error {
 	}
 	class := classBadStance
 	switch m.Kind {
+	case kindAggregate:
+		class = classBadAggregate
 	case kindPass:
 		class = classBadPass
 	case kindExtend:
@@ -225,7 +227,7 @@ func (e *engine) judgeStray(m client.Message) error {
 }
 
 // strayKinds are the protocol kinds judged against a live launch window.
-var strayKinds = append([]string{kindPass, kindExtend, kindDeadlock}, stanceKinds...)
+var strayKinds = append([]string{kindAggregate, kindPass, kindExtend, kindDeadlock}, stanceKinds...)
 
 // judgeBacklog reports each finding and stray protocol message stored since the last check.
 // The transcript loop sees them only after the job, and a job often ends on a stopping done.
@@ -264,6 +266,9 @@ func (e *engine) finishSet(turn client.Message, seen int64) error {
 		return nil
 	}
 	if err := e.stopForNewDone(seen); err != nil {
+		return err
+	}
+	if err := e.judgeReplies(turn); err != nil {
 		return err
 	}
 	e.holdHandoffs(true)
@@ -306,6 +311,89 @@ func (e *engine) resumeSet(turn client.Message, seen int64) error {
 	return e.followUp(turn, seen)
 }
 
+// judgeReplies reports each live recipient of the set that published no say or finding to the turn's sender.
+// A recipient that timed out already has its failure published. A stored report is not repeated.
+func (e *engine) judgeReplies(turn client.Message) error {
+	if !e.canLaunch() {
+		return nil
+	}
+	l, err := e.ledgerOn(e.child)
+	if err != nil {
+		return e.busErr(err)
+	}
+	for _, name := range l.unanswered(turn) {
+		if e.localStatus(name) == statusTimedOut || l.reported(errBody(name, classNoReply, turn.Seq)) {
+			continue
+		}
+		if err := e.protocolErr(name, classNoReply, turn.Seq); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// aggregateSet launches the acting seat to drop duplicate findings, then publishes the set's issues marker.
+// A seat that leaves no single valid aggregate makes each finding its own issue, so duplicates cost discussions and nothing is lost.
+func (e *engine) aggregateSet(turn client.Message, findings []client.Message) error {
+	if !e.canLaunch() {
+		return nil
+	}
+	seqs := make([]int64, len(findings))
+	for i, f := range findings {
+		seqs[i] = f.Seq
+	}
+	seat, err := e.actingOrStop()
+	if err != nil {
+		return err
+	}
+	w, err := e.launchWindow(seat, launchAggregate, e.aggregatePrompt(seat, turn, seqs))
+	if err != nil {
+		return err
+	}
+	if !w.started && e.quiet() {
+		return e.halting()
+	}
+	groups := singles(seqs)
+	aggs := w.of(kindAggregate)
+	e.judge(aggs...)
+	failed := e.localStatus(seat) == statusTimedOut
+	switch {
+	case len(aggs) == 1:
+		if g, ok := aggregate(aggs[0].Body, seqs); ok {
+			groups = g
+		} else if err := e.protocolErr(seat, classBadAggregate, aggs[0].Seq); err != nil {
+			return err
+		}
+	case len(aggs) > 1:
+		for _, m := range aggs {
+			if err := e.protocolErr(seat, classBadAggregate, m.Seq); err != nil {
+				return err
+			}
+		}
+	case w.started && !failed:
+		if err := e.protocolErr(seat, classNoAggregate, 0); err != nil {
+			return err
+		}
+	}
+	if err := e.judgeBacklog(); err != nil {
+		return err
+	}
+	if e.quiet() {
+		return e.halting()
+	}
+	if err := e.publish(kindIssues, fromRun, []string{}, issuesBody(turn.Seq, groups)); err != nil {
+		return err
+	}
+	for _, g := range groups {
+		group := [][2]string{{"issue", seqText(g[0])}}
+		for _, dup := range g[1:] {
+			group = append(group, [2]string{"dropped", seqText(dup)})
+		}
+		e.out.record(group...)
+	}
+	return nil
+}
+
 // settleFindings runs the set's discussions one at a time in seq order.
 // A set with findings waits until every leftover has exited and reads the transcript again, so a fixed a leftover published counts.
 func (e *engine) settleFindings(turn client.Message, resumed bool) error {
@@ -321,6 +409,14 @@ func (e *engine) settleFindings(turn client.Message, resumed bool) error {
 	}
 	if l, err = e.ledgerOn(e.child); err != nil {
 		return e.busErr(err)
+	}
+	if l.needsAggregate(turn.Seq) {
+		if err := e.aggregateSet(turn, l.findingsOf(turn.Seq)); err != nil {
+			return err
+		}
+		if l, err = e.ledgerOn(e.child); err != nil {
+			return e.busErr(err)
+		}
 	}
 	restart := resumed
 	for _, f := range l.findingsOf(turn.Seq) {
@@ -354,11 +450,12 @@ func (e *engine) syncDead(d *discussion) {
 // discuss runs one finding until it settles and is fixed, or the run stops.
 func (e *engine) discuss(f client.Message, restarted bool) error {
 	d := newDiscussion(rosterNames(e.roster), e.maxSays, f.Seq, f.From)
-	start, err := e.discussionStart(f.Seq)
+	start, dups, err := e.discussionStart(f.Seq)
 	if err != nil {
 		return err
 	}
 	d.start = start
+	d.duplicates = dups
 	e.out.record([2]string{"finding", seqText(f.Seq)}, [2]string{"from", f.From})
 	pass := ""
 	for {
@@ -408,11 +505,11 @@ func (e *engine) discuss(f client.Message, restarted bool) error {
 }
 
 // discussionStart is the seq a discussion of finding begins after: the transcript's start, raised past every message
-// a continuation treats as history. Stances at or before it do not count.
-func (e *engine) discussionStart(finding int64) (int64, error) {
+// a continuation treats as history. Stances at or before it do not count. It also returns the finding's dropped duplicates.
+func (e *engine) discussionStart(finding int64) (int64, []int64, error) {
 	l, err := e.ledgerOn(e.child)
 	if err != nil {
-		return 0, e.busErr(err)
+		return 0, nil, e.busErr(err)
 	}
 	start, ok := l.discussionStart(finding)
 	if !ok {
@@ -426,7 +523,7 @@ func (e *engine) discussionStart(finding int64) (int64, error) {
 			start = max(start, end)
 		}
 	}
-	return start, nil
+	return start, l.duplicatesOf(finding), nil
 }
 
 // judgeTurn rules on one discussion launch and returns the member its accepted pass names.
@@ -771,8 +868,9 @@ func (e *engine) discussionPrompt(name string, d *discussion, restarted bool) st
 	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
 	fmt.Fprintf(&b, "This is a discussion launch for finding %d.\n", d.finding)
 	fmt.Fprintf(&b, "finding: %d\nproposal: %d\nproposer: %s\n", d.finding, d.proposal, d.proposer)
+	duplicatesNote(&b, d.duplicates)
 	startNote(&b, d)
-	e.readCommands(&b, name, d.finding-1)
+	e.readCommands(&b, name, slices.Min(append([]int64{d.finding}, d.duplicates...))-1)
 	if restarted {
 		b.WriteString("This discussion restarted. Stances published before the restart do not count.\n")
 	}
@@ -786,6 +884,30 @@ func (e *engine) discussionPrompt(name string, d *discussion, restarted bool) st
 	}
 	fmt.Fprintf(&b, "Address the stance to every roster name: %s.\n", strings.Join(d.roster, " "))
 	b.WriteString("When you need one member's answer next, also publish one pass addressed to that one member. Do not use turn for this.\n")
+	b.WriteString(e.busNote())
+	return b.String()
+}
+
+// duplicatesNote names the findings the seat dropped as the same issue. They are read for what they add and get no discussion of their own.
+func duplicatesNote(b *strings.Builder, dups []int64) {
+	if len(dups) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "duplicates: %s\n", seqList(dups))
+	b.WriteString("The acting seat dropped each duplicate as the same issue as this finding. Read them. A proposal covers every location they name.\n")
+}
+
+func (e *engine) aggregatePrompt(name string, turn client.Message, findings []int64) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
+	fmt.Fprintf(&b, "This is an aggregate launch for the set opened by turn %d. You are the acting seat. Discussion has not started.\n", turn.Seq)
+	fmt.Fprintf(&b, "turn: %d\nfindings: %s\n", turn.Seq, seqList(findings))
+	e.readCommands(&b, name, turn.Seq)
+	b.WriteString("Read every finding. Two findings are duplicates when they describe the same issue, even when one names more locations than the other.\n")
+	fmt.Fprintf(&b, "Publish exactly one aggregate addressed to every roster name: %s.\n", strings.Join(rosterNames(e.roster), " "))
+	b.WriteString("The body has one line per issue: the seq of the finding to keep, then the seq of each duplicate it drops, separated by spaces. Keep the most complete finding.\n")
+	b.WriteString("Every finding listed above is on exactly one line. A finding with no duplicate is a line of its own. Nothing else is in the body.\n")
+	b.WriteString("Do not rewrite a finding, take a stance, pass, or edit the document. Each kept finding is discussed in seq order.\n")
 	b.WriteString(e.busNote())
 	return b.String()
 }
@@ -854,13 +976,13 @@ func (e *engine) reportPrompt(name string, d *discussion, l ledger) string {
 	} else {
 		b.WriteString("The discussion state before the restart is in the transcript.\n")
 	}
-	fmt.Fprintf(&b, "settled: %s\nfixed: %s\nundiscussed: %s\ntimed-out: %s\n",
-		listOrNone(settled), listOrNone(fixed), listOrNone(undiscussed), nameList(e.timedOut()))
+	fmt.Fprintf(&b, "settled: %s\nfixed: %s\nundiscussed: %s\ndropped: %s\ntimed-out: %s\n",
+		listOrNone(settled), listOrNone(fixed), listOrNone(undiscussed), listOrNone(l.droppedAll()), nameList(e.timedOut()))
 	for _, seq := range l.asksOf(finding) {
 		fmt.Fprintf(&b, "ask: %d\n", seq)
 	}
 	e.readCommands(&b, name, finding-1)
-	b.WriteString("Publish done addressed to owner. The body starts with outcome: hold and then a report that lists the deadlocked finding, who disagrees, the settled and fixed findings, each undiscussed finding, the timed-out members, and each ask.\n")
+	b.WriteString("Publish done addressed to owner. The body starts with outcome: hold and then a report that lists the deadlocked finding, who disagrees, the settled and fixed findings, each undiscussed finding, each dropped duplicate, the timed-out members, and each ask.\n")
 	b.WriteString(e.busNote())
 	return b.String()
 }

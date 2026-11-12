@@ -200,6 +200,7 @@ func launch(dir string, p plan, stdin string) {
 	if st, ok := takeStep(dir, name, spec.Steps, stdin); ok {
 		conv := between(stdin, "in conversation ", ".\n")
 		for i, m := range st.Publish {
+			m.Body = fromPrompt(m.Body, stdin)
 			publish(conv, name, fmt.Sprintf("%s-%d-%d", name, os.Getpid(), i), m)
 		}
 		if d, err := time.ParseDuration(st.Sleep); err == nil {
@@ -217,6 +218,17 @@ func launch(dir string, p plan, stdin string) {
 	}
 	record(dir, line{Time: time.Now().UTC().Format(time.RFC3339Nano), Kind: "launch-exit", Argv: []string{name}})
 	os.Exit(code)
+}
+
+// fromPrompt fills a body that names a prompt line. "$line:key" is that line's value. "$lines:key" puts each of its fields on its own line.
+func fromPrompt(body, stdin string) string {
+	if key, ok := strings.CutPrefix(body, "$line:"); ok {
+		return between(stdin, "\n"+key+": ", "\n")
+	}
+	if key, ok := strings.CutPrefix(body, "$lines:"); ok {
+		return strings.Join(strings.Fields(between(stdin, "\n"+key+": ", "\n")), "\n")
+	}
+	return body
 }
 
 // takeStep marks and returns the first unused step for this prompt. One member's launches never overlap.

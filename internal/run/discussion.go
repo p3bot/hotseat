@@ -18,6 +18,8 @@ type discussion struct {
 	finder  string
 	// start is the seq this discussion began after. Stances at or before it belong to an earlier discussion or a run before a restart.
 	start int64
+	// duplicates are the findings the aggregate dropped as this finding's issue. They get no discussion of their own.
+	duplicates []int64
 
 	// proposal is the seq of the current proposal and kind is its message kind: finding, propose, or dismiss.
 	proposal int64

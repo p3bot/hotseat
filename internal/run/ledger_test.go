@@ -225,3 +225,101 @@ func TestDiscussionStartsAfterTheSetsEarlierFindingsAndItsAsksEndAtItsMarker(t *
 		t.Fatalf("second asks %v", got)
 	}
 }
+
+func TestAggregateRequiresEveryFindingOnExactlyOneLine(t *testing.T) {
+	findings := []int64{3, 4, 5}
+	for _, tc := range []struct {
+		name string
+		body string
+		want [][]int64
+	}{
+		{"each alone", "3\n4\n5", [][]int64{{3}, {4}, {5}}},
+		{"kept first, groups by kept seq, duplicates sorted", "5 4\n3\n", [][]int64{{3}, {5, 4}}},
+		{"duplicates sorted after the kept finding", "4 5 3", [][]int64{{4, 3, 5}}},
+		{"missing finding", "3 4", nil},
+		{"finding twice", "3 4\n4 5", nil},
+		{"not a finding of the set", "3 4 5 6", nil},
+		{"empty line", "3\n\n4 5", nil},
+		{"not a seq", "3 x\n4 5", nil},
+		{"empty body", "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := aggregate(tc.body, findings)
+			if ok != (tc.want != nil) || !slices.EqualFunc(got, tc.want, slices.Equal) {
+				t.Fatalf("aggregate %q = %v %v, want %v", tc.body, got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestDroppedFindingIsNeitherDiscussedNorUnresolved(t *testing.T) {
+	l := newLedger(tx(
+		msg("a", kindTurn, "mode: parallel\nr", "a", "b", "c"),        // 1
+		msg("b", kindFinding, "narrow", abc...),                       // 2
+		msg("c", kindFinding, "wide", abc...),                         // 3
+		msg("a", kindFinding, "other", abc...),                        // 4
+		msg("run", kindDiscuss, "1"),                                  // 5
+		msg("a", kindAggregate, "3 2\n4", abc...),                     // 6
+		msg("run", kindIssues, issuesBody(1, [][]int64{{3, 2}, {4}})), // 7
+		msg("run", kindSettled, "3 3"),                                // 8
+	), abc, selfTargets())
+	if got := seqs(l.findingsOf(1)); slices.Compare(got, []int64{3, 4}) != 0 {
+		t.Fatalf("kept %v", got)
+	}
+	if !l.valid(2) || slices.Compare(l.duplicatesOf(3), []int64{2}) != 0 || slices.Compare(l.droppedOf(1), []int64{2}) != 0 {
+		t.Fatalf("dropped 2: valid %v duplicates %v", l.valid(2), l.duplicatesOf(3))
+	}
+	if start, ok := l.discussionStart(3); !ok || start != 7 {
+		t.Fatalf("first discussion starts after %d %v, want the issues marker 7", start, ok)
+	}
+	unsettled, unfixed := l.unresolved()
+	if slices.Compare(unsettled, []int64{4}) != 0 || slices.Compare(unfixed, []int64{3}) != 0 {
+		t.Fatalf("unsettled %v unfixed %v", unsettled, unfixed)
+	}
+	if l.needsAggregate(1) {
+		t.Fatal("a set with an issues marker aggregates again")
+	}
+}
+
+func TestSetAggregatesOnlyAfterDiscussWithTwoFindingsAndNothingSettled(t *testing.T) {
+	base := []client.Message{
+		msg("a", kindTurn, "mode: parallel\nr", "b", "c"), // 1
+		msg("b", kindFinding, "f", abc...),                // 2
+		msg("c", kindFinding, "g", abc...),                // 3
+	}
+	for _, tc := range []struct {
+		name string
+		more []client.Message
+		want bool
+	}{
+		{"before discuss", nil, false},
+		{"after discuss", []client.Message{msg("run", kindDiscuss, "1")}, true},
+		{"discussion began before markers existed", []client.Message{msg("run", kindDiscuss, "1"), msg("run", kindSettled, "2 2")}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := append(slices.Clone(base), tc.more...)
+			l := newLedger(tx(msgs...), abc, selfTargets())
+			if got := l.needsAggregate(1); got != tc.want {
+				t.Fatalf("needsAggregate %v, want %v", got, tc.want)
+			}
+		})
+	}
+	one := newLedger(tx(base[0], base[1], msg("run", kindDiscuss, "1")), abc, selfTargets())
+	if one.needsAggregate(1) {
+		t.Fatal("a set with one finding aggregates")
+	}
+}
+
+func TestRecipientIsUnansweredWithoutASayOrFindingToTheTurnSender(t *testing.T) {
+	l := newLedger(tx(
+		msg("a", kindTurn, "mode: parallel\nr", "a", "b", "c", "x"), // 1
+		msg("a", kindSay, "verdicts", "a"),                          // 2
+		msg("b", kindSay, "to all", "all"),                          // 3
+		msg("c", kindFinding, "f", abc...),                          // 4
+		msg("run", kindDiscuss, "1"),                                // 5
+		msg("b", kindSay, "late", "a"),                              // 6
+	), abc, selfTargets())
+	if got := l.unanswered(l.sets[0]); slices.Compare(got, []string{"b"}) != 0 {
+		t.Fatalf("unanswered %v, want b", got)
+	}
+}

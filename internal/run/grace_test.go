@@ -426,7 +426,7 @@ func TestLaunchThatFindsTheRunClosingStartsNothing(t *testing.T) {
 		launch func(e *engine) error
 	}{
 		{"follow-up", func(e *engine) error {
-			return e.launchMember("bravo", launchFollow, e.followPrompt("bravo", 0))
+			return e.launchMember("bravo", launchFollow, e.followPrompt("bravo", 0, nil, nil))
 		}},
 		{"handoff", func(e *engine) error {
 			return e.launchMember("bravo", launchFollow, e.handoffPrompt("alpha", "bravo"))
@@ -454,7 +454,7 @@ func TestLaunchThatFindsTheRunClosingStartsNothing(t *testing.T) {
 func TestDoneSeenDuringLaunchSetupStartsNothing(t *testing.T) {
 	h := newHarness(t)
 	e, stdout := h.closingEngine()
-	started, err := e.launchUnless("bravo", launchFollow, e.followPrompt("bravo", 0), func() (bool, error) {
+	started, err := e.launchUnless("bravo", launchFollow, e.followPrompt("bravo", 0, nil, nil), func() (bool, error) {
 		if err := e.finishDone(client.Message{Seq: 1, From: "alpha", Kind: kindDone}); err != errDone {
 			return false, err
 		}
@@ -470,7 +470,7 @@ func TestLaunchAfterTheRunStoppedWithoutDoneStartsNothing(t *testing.T) {
 	h := newHarness(t)
 	e, stdout := h.closingEngine()
 	e.cancel()
-	err := e.launchMember("bravo", launchFollow, e.followPrompt("bravo", 0))
+	err := e.launchMember("bravo", launchFollow, e.followPrompt("bravo", 0, nil, nil))
 	if !errors.Is(err, errStopped) {
 		t.Fatalf("launch %v", err)
 	}
