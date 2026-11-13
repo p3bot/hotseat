@@ -1,28 +1,52 @@
 # hotseat
 
-One process hosts named conversations in SQLite. Callers publish into a transcript and block until a matching message exists or a deadline passes. Module `github.com/p3bot/hotseat`. The bus does not launch agents.
+## Purpose
 
-`hotseat run` drives one conversation on a bus that is already up. `hotseat attend` waits as `owner` and prints `ask`, `error`, and `done`. See Runner.
+hotseat takes the owner out of the loop on work they would otherwise drive turn by turn: reading, choosing between options, discussing changes, and applying them. Three or four agents, from different vendors where possible, each prompted to have agency, work through the task together in one conversation and reach the best outcome they can agree on. The owner sets the task and is reached only through `ask` and `done`.
 
-Operator contract: `README.md` and the package doc comments. A behaviour those texts state changes in the same edit as the code.
+A task module defines the work. Reviews are the commonest: ticket triage, ticket review, and pre-commit review. hotseat also runs design discussions, ticket decomposition, code reviews, deployments, and single-member work such as implementation. Parallel members cover more ground in one sweep than one agent run several times, and members from different vendors catch what one model misses.
+
+The parts, in the order they were built:
+
+- The bus is a durable, ordered log of conversations. It stores speech and knows no kind's meaning. It was built first and stays general.
+- A member is an agent process. `run` starts it for one step, it publishes and exits, and a later step resumes it by session id. Members do not wait on the bus.
+- `run` is the conductor: a deterministic engine that drives the task's parallel and serial turns, and stops and continues from what the bus holds. For a task whose members publish `finding`s, it also runs the finding protocol: one finding discussed at a time, settled by agreement, fixed by the finder, then a satisfaction pass.
+- A chief session conducts runs and answers `ask`. `attend` and the page are how the owner watches.
+
+Rules that follow from the purpose:
+
+- `run` enforces mechanics: who launches, in what order, when the run stops, and how it resumes. Members decide judgement: what the work needs, whether a finding holds, and which option wins.
+- New kinds of work arrive as task modules in `library/`, not as code in the bus. `run` gains a mechanism only when several tasks need the same structure, as the finding protocol serves every review.
+- The conversation is speech. After a run, it shows a reader who was not there how the work went. `run`'s own bookkeeping is not speech.
+- A message is identified by its `seq`. A body is never only an id.
+- Findings are discussed one at a time because a fix can make a later finding obsolete.
+
+Note: `run` still publishes its finding markers (`discuss`, `issues`, `settled`, `halted`) as messages. hotseat-vn53 moves them out of the transcript.
+
+## Contract
+
+`README.md`, each command's `--help`, and the package doc comments state what the program does. A behaviour they state changes in the same edit as the code. This file holds only what working on the code needs beyond them. `.agents/roles/default.md` is the start role for this module and carries the same constraints.
 
 ## Layout
+
+Module `github.com/p3bot/hotseat`.
 
 | Path | Owns |
 | --- | --- |
 | `cmd/hotseat` | `main`. Runs `cli.Execute`, then the signal code, then a reported failure, then any other error on stderr |
 | `internal/bus` | Listener, routes, rules, token, `GET /health`. Opens no connections to clients |
 | `internal/store` | `hotseat.db`, schema, `hotseat.db.lock`. The only writer |
-| `internal/client` | One HTTP call to a bus that is already running. Does not open the store |
+| `internal/client` | One HTTP call to a running bus |
 | `internal/cli` | Cobra tree, detached bus, text results |
-| `internal/run` | `hotseat run`. Client of a running bus. Shells out to `start` and `tk` |
-| `internal/web` | Loopback page. Client of a running bus. Does not open the store |
+| `internal/run` | `hotseat run`. Shells out to `start` and `tk` |
+| `internal/run/fake` | Fake agent binary for the run tests |
+| `internal/web` | Loopback page |
 
-`.agents/roles/default.md` is the start role for this module and carries the same constraints.
+Only `internal/bus` holds a store. `client`, `run`, `attend`, and `web` call a bus that is already up. The bus launches no agents. The store directory holds `hotseat.db`, `hotseat.db.lock`, `hotseat.pid` (pid and listen address), and `hotseat.log`. Hidden `bus serve` runs only as a session leader with the readiness pipe on fd 3, and otherwise returns `bus serve is internal`.
 
 ## Checks
 
-Go is the version on the `go` line in `go.mod`. This machine's default `CGO_ENABLED` is `1`. Every build and test sets `CGO_ENABLED=0`. The SQLite driver is `modernc.org/sqlite`. A cgo driver is out. `go test -race` needs cgo, so it is not a project check.
+Go is the version on the `go` line in `go.mod`. This machine defaults to `CGO_ENABLED=1`, so every build and test sets `CGO_ENABLED=0`. The driver is `modernc.org/sqlite`, and a cgo driver is out. `go test -race` needs cgo, so it is not a check.
 
 | Check | Command |
 | --- | --- |
@@ -31,65 +55,76 @@ Go is the version on the `go` line in `go.mod`. This machine's default `CGO_ENAB
 | Format | `gofmt -l .` prints nothing |
 | Lint | `golangci-lint run` |
 
-`cli.Version` is `dev` until `-ldflags "-X main.Version=..."` sets it. The repo-root binary `hotseat` is gitignored, as are `*.db`, `*.db-wal`, `*.db-shm`, and `*.db-journal`.
+`.golangci.yml` is v2 with errcheck, govet, ineffassign, staticcheck, and unused. errcheck ignores `fmt.Fprint*` only. There is no issue cap.
 
-`.golangci.yml` is golangci-lint v2. Enabled linters: errcheck, govet, ineffassign, staticcheck, unused. errcheck ignores `fmt.Fprint`, `fmt.Fprintf`, and `fmt.Fprintln` only. `max-issues-per-linter: 0` and `max-same-issues: 0`, so the first finding fails the run.
+Note: lint is not clean on main. The existing findings are unchecked `Close` errors and staticcheck `QF1006` in `internal/cli`. Leave them, and add none.
 
-NOTE: `golangci-lint run` is not a clean gate on this tree. Existing findings are unchecked `Close` errors and staticcheck `QF1006` in `internal/cli`. Leave findings that are already on main. A change adds none of its own.
+`cli.Version` is `dev` unless `-ldflags "-X main.Version=..."` sets it. The repo-root `hotseat` binary and `*.db*` files are gitignored.
 
-## Process
+## Invariants
 
-`hotseat bus start` detaches and returns after the listener is bound, the database is open, and the page is listening. It prints `pid`, `listen`, `store`, and `page`. `page` is the URL on `127.0.0.1` at the next port. The default bus prints `http://127.0.0.1:4728`. The page is a client of that bus and does not open the store. The child is hidden `bus serve`. That command runs when it is a session leader and fd 3 is the readiness pipe. Without that session and pipe, it returns `bus serve is internal`.
+- One writer. Seq order is commit order only because of it. The flock is on `hotseat.db.lock`, not the database inode, because on macOS flock shares SQLite's lock table and closing any descriptor drops every lock.
+- DSN: `busy_timeout=0` (another holder fails this process instead of stalling it), `journal_mode=WAL`, `locking_mode=EXCLUSIVE` (checked after open), `foreign_keys=1`, `synchronous=FULL` (commit returns after the write is durable), `_txlock=immediate`. `SetMaxOpenConns(1)`.
+- `Open` resolves the directory to an absolute path first, chmods it `0700`, refuses symlinks for the database, wal, shm, and lock, and opens the lock with `O_NOFOLLOW` and mode `0600`.
+- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. A schema change means deleting the database.
+- A write that changes nothing (idempotent publish, close of a closed conversation) returns `errNoChange`, so the transaction rolls back.
+- Store sentinels are `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, and `ErrLaunched`. Wrap with `%w` when the caller branches on the cause.
+- Refusal text is a `bus.Reason*` constant. A new reason is a constant beside the others, plus a test whose name states the rule.
+- Session ids, pids, and the token stay off read, wait, list, member list, the page, logs, status lines, and prompts.
+- `from` is caller-supplied. The token does not authenticate the sender.
+- The page listens on loopback only, because it holds the bus token.
+- CLI stdout is `key: value`, and a value with a newline is `key <<N` and then those bytes. Usage errors go to stderr with no stdout. Commands set `SilenceUsage` and `SilenceErrors`. SIGINT and SIGTERM exit `128+signal`, read before the error path.
 
-| File | Role |
+## Runner
+
+The designs are `hotseat-r7gj` (runner) and `hotseat-b225` (finding discussion). Read one with `tk design get <id> --content`. The code is current.
+
+Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/implement`, `pre-commit/review`, and `workflow/implement`, which is the chief's workflow. Member-facing text is the roles `hotseat/member` and `hotseat/chief` and the context `hotseat/bus`. A change to that text lands in `library/` first.
+
+| File | Owns |
 | --- | --- |
-| `hotseat.db` | Database. `store.FileName` |
-| `hotseat.db.lock` | Process flock. Separate inode from the database |
-| `hotseat.pid` | Pid and listen address of the detached bus |
-| `hotseat.log` | slog output of the detached bus |
+| `loop.go` | Transcript watch, turns, stop on `done` |
+| `launch.go` | Member processes, launch cap, handoff |
+| `state.go` | Member rows, leftovers on resume, backup, prompts |
+| `findings.go` | Finding protocol: launches, judging, prompts |
+| `discussion.go` | Live state of one finding. No bus or process |
+| `ledger.go` | Pure reading of the transcript |
 
-The store directory is an absolute `$XDG_DATA_HOME/hotseat`. An unset, empty, or relative `$XDG_DATA_HOME` uses `$HOME/.local/share/hotseat`. A relative home is refused and nothing is created. One bus per store directory. A second start prints the running process and leaves it.
+- A stance is judged only by the live launch window it arrived in. A continuation never replays stances and restarts the open discussion from its finding. History is the messages stored before the continuation started, plus each leftover's messages up to its recorded exit.
+- A protocol error body is `<member>\n<class>\n<seq>`. Each class is a `class*` constant in `run.go`. `run.ErrUnresolved` maps to the CLI's reported failure.
+- Settled, do not reopen:
+  - the roster is `name=module:model`, and there is no `HOTSEAT_MEMBERS`;
+  - `mode` is the first line of a turn body, and the database has no phase, mode, or cursor column;
+  - member rows replace a registration ack;
+  - `run.DoneGrace` has no flag;
+  - agy has no module, and `herdr` is not a dependency.
+- In `internal/web`, `kindMessages`, `kindList`, and `kindConversation` are page modes, not the message field.
 
-`hotseat bus status` takes `--address` (default `127.0.0.1:4727`) and has no `--store`. It calls `GET /health`. `pass` exits 0. `fail` and `connection_failure` exit 1. The error text is empty so stdout is the only report. When a local `bus serve` is bound to that address, the report includes its pid and store.
+## Code
 
-`hotseat bus stop` with no `--store` signals the default-store bus and any other local `bus serve` on `127.0.0.1:4727`. A process that is not `bus serve` and holds that port is left running, and stop exits 1. Stop waits until those processes have exited and each lock is released. A second stop of an already stopped bus succeeds.
+Every Go file starts with this header:
 
-SIGINT and SIGTERM exit `128+signal` (130 and 143). `main` reads that code before the error path, so `context.Canceled` does not become exit 1.
+```go
+// Copyright (c) 2026 Grant Carthew
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+```
 
-## Calls
+Dependencies stay the standard library, cobra, `golang.org/x/sys`, `modernc.org/sqlite`, and `github.com/yuin/goldmark`. `github.com/dop251/goja` runs the page script in `internal/web/page_test.go` only.
 
-Every operation is `POST` of one JSON object. A completed call is HTTP 200. Read `outcome`. Unknown JSON fields are ignored.
+Put new code in the package that already owns the behaviour. An exported doc comment states the contract. Any further comment is one line for a non-obvious WHY, with no ticket ids, PR numbers, or bare TODO. A bad request, a conflict, or a failed write returns an error.
 
-| Outcome | Where it appears |
-| --- | --- |
-| `ok`, `timeout`, `refused`, `unavailable` | Bus JSON |
-| `connection_failure` | Client and CLI only. The call never completed |
+## Tests
 
-`refused` names the rule in `reason` and writes nothing. `unavailable` writes nothing. A dropped connection has no body. The client retries that once, with the same body and the same token. A dropped launch whose retry is refused because the member is already launched returns the stored row. A second launch, after a reply was received, stays refused. Dial failure, cancellation, a non-200 or unexpected outcome, and a completed outcome are returned without a second attempt. Keep-alives are off so the retry cannot reuse the connection that dropped. Dial timeout is 5s. There is no request timeout. A wait blocks until the bus replies.
+`cmd/hotseat` has no tests. CLI cases build `./cmd/hotseat` with `CGO_ENABLED=0` into a temp binary. Name each test for its rule (`TestNonLoopbackDoesNotListenOrCreateStore`).
 
-Routes: `/create`, `/publish`, `/read`, `/wait`, `/watch`, `/close`, `/list`, `/messages`, `/register`, `/member`, `/session`, `/members`. `GET /health` is not an operation. It takes no token on any address. The body is `pass` (200) or `fail` (503) plus a newline. Off loopback the new routes require the same bearer token. Loopback stays unauthenticated.
+Do not add `t.Parallel`. Cases bind ports, take the store lock, and spawn processes, and several bind `127.0.0.1:4727`. Run `hotseat bus stop` before the suite.
 
-Publish requires `kind`. It uses the participant name grammar. The vocabulary is open. Publish is acknowledged only after a durable commit. The attempt is the conversation, the sender, and `txid`. The bus requires that id and does not generate one. `kind` is part of the content, with `to` and body. The same attempt with the same kind, the same `to`, and the same body returns the original message and `already_stored`, including after close. A different kind, `to`, or body is refused. `to` order is content. The bus does not sort or dedupe it. Another sender with that `txid` stores a new message.
+`internal/cli` `TestMain` treats `HOTSEAT_FAKE_SERVE=1` as a fake listener on `HOTSEAT_FAKE_LISTEN`, for the `unshare` network-namespace case, which skips when `unshare` is missing. Leave both unset.
 
-`read` and `wait` take an optional `kinds` array. Omit it and the address rule alone stands. A present empty array is refused. A named wait still returns the span through the match, including other kinds. A named read returns a message when it is addressed to that name and its kind is listed. The limit counts returned messages.
-
-Create stores the binding on the conversation: `task`, `ticket`, `seat`, `directory`, `prompts`, `custom`, and `roster`. Omitted fields are empty. `prompts` and `roster` keep the caller's order. A roster requires a seat that is one of the roster names. Empty roster and empty seat is the name-only create. Create and list return the binding. JSON objects include the keys. List puts the conversation whose newest message has the highest `seq` first. Conversations with no message follow, by name. The bus owns that order. The page keeps it. `hotseat create` stays name-only. Empty binding fields are omitted in the text result.
-
-A member row is one roster name. It holds launched time, registered time, status, session id, and pid. Status is `launched`, `registered`, `running`, `exited`, or `timed-out`. `/register` sets the registered time. The status becomes `registered` only when the row is `launched`. `/member` inserts `launched` and updates `running`, `exited`, and `timed-out`. A pid without a status is refused and writes nothing. A call with neither returns the row. `/members` is `hotseat member list` and returns name, launched time, registered time, and status, in roster order. It does not return a session id or a pid. `/session` stores and returns session ids. There is no CLI for that route. Session ids and pids stay off read, wait, list, member list, the page, and the bus log. Create does not insert a row for `owner` or for a roster name.
-
-The CLI mints an omitted id as 10 lowercase hex characters, prints `txid: <id>` to stderr, flushes, then sends it. A dropped CLI call retries that same id. Pass `--txid` to send that value. `--kind` is required on publish. `hotseat read` and `hotseat wait` take repeatable `--kind` and omit `kinds` when the flag is absent. `--body` and `--body-file` are exclusive. `--body-file -` reads stdin. A body whose text is `-` is `--body -`. Invalid UTF-8 in a publish body or txid is `refused` in the client and is not posted. JSON would otherwise replace the bytes and store a different message.
-
-`/watch` takes `cursor`, `conversation`, `rev`, `limit`, and `deadline`, each optional. `limit` is required with `cursor` and follows the read range rule. `conversation` uses the name grammar. A name with no conversation matches no message and is not refused. `deadline` follows `/wait`. An ok watch returns `messages` with `seq` greater than `cursor`, oldest first, in that conversation or every conversation, at most `limit`, each with `conversation`. It also returns `more`, true when further matching messages follow the last one returned, and `rev`. Omit `cursor` and the watch returns no messages and waits on `rev` alone. It returns at once when a matching message exists, when `rev` is omitted, or when `rev` differs from the current counter. Otherwise it blocks until one of those holds, the deadline passes (`timeout`), the connection drops, or the bus stops. `rev` is a change counter for the conversation list, kept in bus memory. It starts at a random value below 2^53 when the bus starts, so a restarted bus does not return a value a caller still holds. Compare it for equality only. It increases on a create that inserted, on a close that changed the status, and on a stored publish to a conversation other than the one holding the newest message. An idempotent publish and a close of a closed conversation change nothing and wake no watch. Omit `rev` on the first watch. Member writes do not change `rev`. There is no CLI for `/watch`.
-
-`seq` is assigned at commit and increases across the whole store and within each conversation, with gaps. `/messages` returns highest `seq` first. It takes an optional `before` and then returns only messages whose `seq` is less than it. `before` less than 1 is refused. Nothing orders by `time` text. `cursor` `0` means the caller has seen nothing. The bus does not store cursors. `deadline` is a Go duration (`30s`, `500ms`) from arrival, or an RFC3339 end time on the bus clock. Omit it to wait until a match or a dropped connection. `0s` and a time already past time out at once when nothing matches. A stored match still returns `ok`.
-
-Close sets `closed` and still accepts a later publish. A member write after close is stored. Close does not end a wait. `["all"]` wakes every named waiter except the sender. Empty `to` matches only an unnamed wait. A named read skips messages that are not addressed to that name. `from` must not be `all`.
-
-Names are 1 to 64 characters from ASCII letters, digits, `.`, `_`, and `-`. Exact refusal strings are the `bus.Reason*` constants. A new reason is a constant beside the others, plus a test whose name states the rule.
-
-CLI stdout is line text. A field is `key: value`. A message body, and any value that contains a newline, is `key <<N` and then those bytes. The count keeps an empty body, a multi-line body, and a line that looks like a field. Usage errors go to stderr and print no stdout. Cobra commands set `SilenceUsage` and `SilenceErrors`.
-
-`TestReadmeDescribesDetachedBus` reads `README.md` and requires each substring below. The last one includes the backtick characters around `--store`.
+`TestReadmeDescribesDetachedBus` requires each substring below in `README.md`. The last one includes its backticks.
 
 ```
 hotseat bus start
@@ -104,93 +139,10 @@ does not take `--store`
 http://127.0.0.1:4728
 ```
 
-The test fails when the README contains `prints one JSON object`, or a line whose trimmed text is `hotseat bus`.
-
-## Store
-
-`Open` resolves the directory to an absolute path before it creates anything. It chmods the directory to `0700`, including a directory that already existed. Database, wal, shm, and lock symlinks are refused and left unchanged. The lock is opened with `O_NOFOLLOW` and mode `0600`.
-
-The flock stays on `hotseat.db.lock`. It does not share the database inode. On macOS, flock shares SQLite's lock table, and closing any descriptor on the database file drops every lock on it.
-
-DSN pragmas: `busy_timeout=0`, `journal_mode=WAL`, `locking_mode=EXCLUSIVE`, `foreign_keys=1`, `synchronous=FULL`, `_txlock=immediate`. `busy_timeout` 0 makes another holder fail this process instead of stalling it. `EXCLUSIVE` is checked after open. `FULL` means commit returns only after the write is durable. `SetMaxOpenConns(1)`.
-
-Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, the string `1`. Statements are `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`. `messages.seq` is `INTEGER PRIMARY KEY AUTOINCREMENT`, so a seq is never issued twice. An index on `(conversation, seq)` serves transcript reads and list. Seq order is commit order only because the store has one writer.
-
-`Open` returns `store.ErrSchema` for a recorded version other than `1`, and for a version-`1` file that lacks `kind`, the binding columns, or the member table, or whose `messages` primary key is not `seq` alone (read from `pragma_table_info`). It does not alter the file and it does not serve it. There is no migration. Delete a database this binary already created before the new process opens it.
-
-Idempotent publish, and close of an already-closed conversation, return the unexported `errNoChange` so the transaction rolls back instead of committing an empty write.
-
-Sentinels: `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, `ErrLaunched`. Wrap with `%w` when the caller branches on the cause.
-
-## Access
-
-Loopback accepts every operation with no token. Passing `--token-file` on loopback leaves the check off. Any other socket requires the file. A missing or empty file does not listen, and no database is created. A failed bind creates no database.
-
-`ResolveListen` resolves a hostname once. One non-loopback answer selects one non-loopback address, so the socket is the listener that requires a token. IPv4 wins inside that set. An empty host is remote. `127.0.0.1` and `::1` are different addresses.
-
-The header is `Authorization: Bearer` plus the token. `bus.WriteToken` sets it. A missing token is `token is required`. A wrong token is `token does not match`. Nothing is written. The token is not a flag, not a sender, and not stored. Logs, the page, and prompts do not contain it.
-
-`hotseat bus start` serves the page on `127.0.0.1` at the bus port plus one. The default is `127.0.0.1:4728`. `hotseat web` serves the same page for a bus that is already running. The page default is `127.0.0.1:4728`, the address `bus start` already binds, so a further page passes another loopback listen address. It listens on loopback only. Any other socket is closed. The page holds the bus token, so a public socket would hand that token to the network. The request host is checked before a bus call. On loopback, `localhost` with the same port is that host. An empty listen host refuses every request. The page shows messages, lists conversations, reads, and publishes. The top bar searches every conversation by name, task, and ticket, in the list order. Messages, at `/`, shows the newest 50 messages across every conversation, newest first. A conversation can appear more than once. Reaching the bottom of that group loads the next older 50. Conversations, at `/conversations`, shows an Open section and then a Closed section. Each keeps that order and shows the task, ticket, and seat. An empty section stays on the page. A conversation named `.` or `..` is shown without a link. Opening `/conversations/{name}` shows its name, status, task, ticket, seat, and directory, then the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. Loaded groups stay on the page. The page does not ask for a cursor or a limit, and it does not keep that place. Send posts to `/conversations/{name}/messages`. A stored send redirects to the conversation. The form sends `kind`, and the transcript shows it. A message body is rendered as Markdown. The stored text stays in the message. Markdown shows that text, and Copy writes it. A refused send leaves the form open with the posted values. The page does not create, wait, close, or manage members. `GET /events` is a Server-Sent Events stream for one view. With no view parameter it follows Messages, `conversation=<name>` follows that transcript, and `view=list` follows Conversations. It starts after query `after=<seq>` or the `Last-Event-ID` header. When both are present, the header wins. `view=list` takes neither. Each stream is its own client of the bus and calls `/watch`, not `/wait`. It sends `message` with `id: <seq>` for each message of its view, `conversations` with the Open and Closed sections and the search index on every view, and, on a transcript, `meta` with the side panel at stream start and when it changes. A view that missed more than 50 of its messages gets `reset`, and the stream ends. A quiet stream sends a comment every 25s. A malformed position or view, `view=list` with a conversation, and a conversation name the bus refuses are answered `400` with a plain-text reason. A bus that is away ends a `200` stream, so the browser reconnects. Event data is HTML from the same template blocks as the pages. The stream position comes from the tab and is not stored. Each visible tab holds one stream for its view and updates in place. A new message appears at the top of Messages or its transcript with a brief highlight, and nothing is trimmed. Conversations, the search index, and the side panel follow the list. The open Send form, Markdown toggles, and the search box are kept. A hidden tab closes its stream and catches up from its last seq when it is visible again. On `reset` the tab reloads the newest group of its view, without `before`, and opens a new stream from it. A failed reload is retried after 2s, doubling to 30s, while the tab is visible. The stream seq lives only in the tab's script and is not shown or stored. An empty transaction id is filled in the page script on submit. The server forwards the posted id. The script does not invent `kind`.
-
-`from` is caller-supplied. The token does not authenticate the sender.
-
-## Code
-
-Every Go file starts with the MPL-2.0 header used by the others:
-
-```go
-// Copyright (c) 2026 Grant Carthew
-//
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-```
-
-Format with gofmt. Dependencies stay the standard library, cobra, `golang.org/x/sys`, `modernc.org/sqlite`, and `github.com/yuin/goldmark`. `github.com/dop251/goja` runs the page script in `internal/web/page_test.go` only. It stays off the request path.
-
-Put new code in the package that already owns the behaviour. An exported doc comment states the contract. A further comment is one line for a non-obvious WHY. Comments do not carry ticket ids, PR numbers, or a bare TODO. A bad request, a conflict, or a failed write returns an error.
-
-## Tests
-
-`cmd/hotseat` has no tests. CLI cases build `./cmd/hotseat` with `CGO_ENABLED=0` into a temp binary. The suite command is in Checks.
-
-Name the test for the rule (`TestNonLoopbackDoesNotListenOrCreateStore`). Do not add `t.Parallel`. Cases bind ports, take the store lock, and spawn processes. Several bind `127.0.0.1:4727`. Stop a bus on that port before the suite (`hotseat bus stop`).
-
-`internal/cli` `TestMain` treats `HOTSEAT_FAKE_SERVE=1` as a fake listener on `HOTSEAT_FAKE_LISTEN` and exits. That pair is for the `unshare` network-namespace case. Leave both unset for a normal run. The test skips when `unshare` is missing.
-
-## Runner
-
-Design `hotseat-r7gj` (Hotseat conversation runner). Read it with `tk design get hotseat-r7gj --content`. The bus design `hotseat-ppyt` is decomposed and its tickets are done. This tree stores `kind`, the conversation binding, and member rows. `hotseat run` and `hotseat attend` are in this tree.
-
-Settled, and in this tree:
-
-- `kind` is a message field. `mode` stays the first line of a turn body. The database does not gain a phase, a mode column, or a cursor.
-- Member rows hold registration, status, pid, and session id. Speech stays in the transcript. Registration replaces ack.
-- Session ids stay out of the transcript, `member list`, logs, status lines, and prompts. An id works on the machine that stored it.
-- Schema version stays `1`. Delete a database this binary already created. Do not add a migration.
-- The bus process still does not launch agents. The web page shows message `kind`, renders the body as Markdown, and does not manage members.
-- `hotseat run` is a client. It does not start the bus and does not open the database. It shells out to `start` and `tk`. A missing task resolver, prompt, session-id locator, or ticket code-root is a change in that program. Hotseat does not grow its own.
-- `hotseat attend` is a client. It waits as `owner` with kinds `ask`, `error`, and `done`, prints only that match, and waits again until a `done` addressed to `owner`. It does not start the bus, open the database, publish, or write a member row. The cursor stays in the process. `--cursor` defaults to 0.
-- Roster is `--agents` / `HOTSEAT_AGENTS` as `name=module:model`. There is no `HOTSEAT_MEMBERS`. The flag wins over the matching `HOTSEAT_*` variable. A resume launches only when that roster is passed again. Without it, the resume continues and does not launch. The turn cap defaults to 500 `turn` messages. The member process limit defaults to 8 hours. Interactive mode disables that process limit and keeps the cap. The launch cap, `--max-launches` / `HOTSEAT_MAX_LAUNCHES`, defaults to 300 member processes in one `run` process, of every launch kind, and starts from zero on a continuation.
-- A task's `min_members` (empty is 1) is the smallest roster `run` accepts. A smaller roster creates nothing. A continuation checks the stored roster only after a stored stopping `done` is handled, and after dead leftovers are settled. A member failure that leaves fewer live (not `timed-out`) members, or a launch past the cap, publishes `error` with class `below minimum` or `launch cap` and winds down: no further launch or handoff, running members finish, a `turn` is not acted on, and `run` exits with `outcome: error` and the conversation open once none is in flight. A stopping `done` still closes. A member `run` stops itself is not a failure, and a resume that cannot launch skips the floor.
-- A `turn` launches a recipient unless it has already answered. Inside the member's slot, `run` reads the transcript, and a `say` or `finding` from that member after the turn, with the turn's sender named in `to`, means it answered and is not launched. `all`, an `ask`, and a `say` to someone else do not count. Live runs and `--conversation` share this rule. A timed-out member is not launched.
-- After a stopping `done`, `run` closes the conversation, starts no further launch, and stops other running members at once. The `done` sender, launched by this run or left from an earlier one, gets up to 30 seconds (`run.DoneGrace`, no flag) to exit before it is killed, so `run` can exit up to 30 seconds after the `done`. A zero exit in that period is `exited` with the session id stored. A non-zero exit, the process limit, or a missing session id in that period is `timed-out` and publishes `error`, with no handoff. A kill at the end of the period is `timed-out` with no `error`. A leftover sender is `exited` only when a session id is already stored, otherwise `timed-out`, and publishes no `error`.
-- Instruction bodies over the 512 KiB maximum are refused before create. Naming, seat backup, and the turn loop are in the design. Follow that text.
-- Finding discussion is design `hotseat-b225`. A `finding` from a recipient of a set that has not finished opens a discussion, unless it is stored while another set's discussions are open. When the set's recipients have exited or are `timed-out`, `run` reports each live recipient with no `say` or `finding` to the turn's sender as `no reply`, publishes `discuss` (body: the turn's `seq`), and, for two or more findings, launches the acting seat once for `aggregate` (one line per issue: kept finding, then dropped duplicates). `run` publishes `issues` (body: the turn's `seq`, then the groups), or each finding alone with `no aggregate` or `bad aggregate`. A dropped finding is not discussed, fixed, or unresolved. `run` runs the kept findings' discussions one at a time in `seq` order, then the follow-up, whose prompt carries `fixed: <n>`, `no reply:`, and `dropped:`. Stances are `propose`, `dismiss`, `agree`, `object`, and `stand`, one per discussion launch. A speaker whose launch ends `timed-out` gets no `no stance` or `extra stance`, its `pass` is ignored, and a single stance it stored is still judged. A finding settles when every live member but the proposer agrees, and `run` publishes `settled` (body: the finding's `seq`, a space, the proposal's `seq`). The finder applies a settled change and publishes `fixed`. A missed fix goes to the acting seat once. `--max-says` / `HOTSEAT_MAX_SAYS` (default 4) is each member's discussion launches per finding. A stall launches the acting seat for `extend` or `deadlock`. A seat whose stall launch ends `timed-out` with no single decision hands the stall to the backup, with no `no decision`. Each `extend` counts toward `--max-turns`, including one that refreshes nobody. An accepted `deadlock` publishes `halted` (body: the finding's `seq`) and a report launch. Markers are from `run` with an empty `to`. A seat timeout during a set's discussions holds the handoff until they finish.
-- `internal/run/discussion.go` is the live state of one finding and has no bus or process. `internal/run/ledger.go` is a pure reading of the transcript: set windows, valid findings, issues and dropped duplicates, unanswered recipients, each discussion's start and asks, settles, fixes, and the stop result. `findings.go` launches and judges. A stance is judged only by the live launch window it arrived in. A continuation never replays one, and restarts the open discussion from its finding. It treats as history only the messages stored before it started and those a leftover stored up to its recorded exit. A stray from its own launches is judged.
-- The stop result counts the messages stored before the stopping `done`. An unsettled finding or an unfixed change exits non-zero with `outcome: deadlock` (a `halted` exists) or `outcome: unsettled`, which also publishes one `unsettled` error. `run.ErrUnresolved` maps to the CLI's reported failure. Protocol error bodies are `<member>\n<class>\n<seq>`, and each class is a `class*` constant in `internal/run/run.go`.
-- agy (Antigravity CLI) has no hotseat module. `herdr` is not a dependency.
-
-Settled for the runner, and absent here:
-
-- The chief task, the ticket-review task, and the design task. `run` publishes the module text and executes `turn`s.
-
-`internal/web` uses `kindMessages`, `kindList`, and `kindConversation` for page modes. Those names are not the message field.
+It fails when the README contains `prints one JSON object`, or a line whose trimmed text is `hotseat bus`.
 
 ## Scope
 
-Tickets and designs live in the tk scope `hotseat`, outside this git tree. The scope is tk-driven. `tk pulse --scope hotseat` shows the board.
+Tickets and designs live in the tk scope `hotseat`, outside this tree. `tk pulse --scope hotseat` shows the board. Mutators self-commit in that scope. Commit a ticket body edit or `tk create` with `tk sync --scope hotseat`, and do not push the scope with host git. `tk doctor` takes no scope flag.
 
-Mutators self-commit inside that scope. Do not push it with host git. A ticket body edit or `tk create` is committed with `tk sync --scope hotseat`. `tk doctor` takes no scope flag.
-
-Do not commit this repository unless asked. Messages are Scoped Commits: `<scope>: <description>`, optional body, no `feat` or `fix` prefix. Scopes already used here include `bus`, `cli`, `client`, `hotseat`, and `context`.
+Do not commit this repository unless asked. Messages are scoped commits, `<scope>: <description>` with an optional body and no `feat` or `fix` prefix. Scopes in use include `bus`, `cli`, `client`, `store`, `run`, `web`, `hotseat`, and `agents`.
