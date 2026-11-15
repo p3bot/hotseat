@@ -40,6 +40,8 @@
 //	POST /member   {"conversation","name","status"?,"pid"?}
 //	POST /session  {"conversation","name"?,"session"?}
 //	POST /members  {"conversation"}
+//	POST /record   {"conversation","record",...}
+//	POST /records  {"conversation"}
 //
 // to is an array. [] is empty. ["all"] is the single value all. Any other
 // array is an ordered list of names. Order is part of the publish identity.
@@ -131,6 +133,38 @@
 // members returns name, launched time, registered time, and status, in roster
 // order, with no session id and no pid. session stores and returns session
 // ids for its caller. Those ids stay off read, wait, list, and members.
+//
+// record writes one of hotseat run's decision records and records reads them.
+// Neither has a command. Records are absent from read, wait, watch, list,
+// members, and the page. Neither route changes rev or wakes a wait or watch.
+// The log holds each call and its outcome and no record content. record
+// selects the write and its fields, each seq an integer greater than zero:
+//
+//	set       {"turn","findings"}               findings may be []
+//	grouping  {"turn","drops":[{"finding","kept"}]}
+//	settle    {"finding","proposal","proposal_kind"}
+//	fix       {"finding","fixed"}
+//	halt      {"finding"}
+//
+// A set with exactly one finding also writes its grouping with no drops, and
+// returns it beside the set. The result is the stored record in the shape
+// records uses, and already_stored. after is the conversation's highest seq
+// when the record commits. The bus assigns it and ignores one sent. A fix
+// carries settled_after, its settle's after, and has no after. A write that
+// matches the stored record on its key, ignoring after, returns it and
+// already_stored true and writes nothing. Findings and drops compare as sets.
+// A write that differs on the same key is refused with the transaction id
+// conflict reason. The key is the turn for a set and a grouping, the finding
+// for a settle and a fix, and the conversation for a halt. A repeated seq in
+// findings and a repeated finding in drops are refused. Every reference,
+// kind, CHECK, or uniqueness failure is one reason: a missing message or
+// record, a message of the wrong kind, a finding in another set, a drop that
+// keeps itself or names another set, a proposal_kind that differs from the
+// stored message, and a fixed used by another fix. Three rules have their
+// own reasons: a kept finding is not itself dropped, a settle or a halt names
+// a kept finding of a set that has a grouping, and a fix belongs to a settle
+// whose proposal is not a dismiss. records returns sets, groupings, settles,
+// fixes, and halts, each in key order, and an empty list as [].
 //
 // Timeout returns no messages and writes nothing. Close does not end a wait.
 //

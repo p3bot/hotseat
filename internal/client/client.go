@@ -88,6 +88,16 @@ type Result struct {
 	Sessions       *[]Session      `json:"sessions,omitempty"`
 	More           *bool           `json:"more,omitempty"`
 	Rev            *uint64         `json:"rev,omitempty"`
+	Set            *Set            `json:"set,omitempty"`
+	Grouping       *Grouping       `json:"grouping,omitempty"`
+	Settle         *Settle         `json:"settle,omitempty"`
+	Fix            *Fix            `json:"fix,omitempty"`
+	Halt           *Halt           `json:"halt,omitempty"`
+	Sets           *[]Set          `json:"sets,omitempty"`
+	Groupings      *[]Grouping     `json:"groupings,omitempty"`
+	Settles        *[]Settle       `json:"settles,omitempty"`
+	Fixes          *[]Fix          `json:"fixes,omitempty"`
+	Halts          *[]Halt         `json:"halts,omitempty"`
 }
 
 // Message is one transcript entry as the bus returned it.
@@ -133,6 +143,148 @@ type Member struct {
 type Session struct {
 	Name    string `json:"name"`
 	Session string `json:"session"`
+}
+
+// Set is a closed turn and its findings in seq order, as the record routes return it.
+type Set struct {
+	Turn     int64   `json:"turn"`
+	Findings []int64 `json:"findings"`
+	After    int64   `json:"after"`
+}
+
+// Drop is a finding of a set and the finding of the same set that kept its issue.
+type Drop struct {
+	Finding int64 `json:"finding"`
+	Kept    int64 `json:"kept"`
+}
+
+// Grouping is a set's drops in finding order, as the record routes return it.
+type Grouping struct {
+	Turn  int64  `json:"turn"`
+	Drops []Drop `json:"drops"`
+	After int64  `json:"after"`
+}
+
+// Settle is the agreed proposal for a finding. ProposalKind is finding, propose, or dismiss.
+type Settle struct {
+	Finding      int64  `json:"finding"`
+	Proposal     int64  `json:"proposal"`
+	ProposalKind string `json:"proposal_kind"`
+	After        int64  `json:"after"`
+}
+
+// Fix is the fixed message for a settled finding. SettledAfter is that settle's After.
+type Fix struct {
+	Finding      int64 `json:"finding"`
+	SettledAfter int64 `json:"settled_after"`
+	Fixed        int64 `json:"fixed"`
+}
+
+// Halt is the finding a conversation's run stopped on.
+type Halt struct {
+	Finding int64 `json:"finding"`
+	After   int64 `json:"after"`
+}
+
+// RecordWrite is the body of the record operation: SetRecord, GroupingRecord,
+// SettleRecord, FixRecord, or HaltRecord. Each sends its own record selector
+// and only its own fields. The bus assigns after.
+type RecordWrite interface {
+	recordBody() any
+}
+
+// SetRecord writes a closed turn and its findings. A nil Findings is sent as an empty array.
+type SetRecord struct {
+	Conversation string
+	Turn         int64
+	Findings     []int64
+}
+
+func (r SetRecord) recordBody() any {
+	findings := r.Findings
+	if findings == nil {
+		findings = []int64{}
+	}
+	return struct {
+		Conversation string  `json:"conversation"`
+		Record       string  `json:"record"`
+		Turn         int64   `json:"turn"`
+		Findings     []int64 `json:"findings"`
+	}{r.Conversation, "set", r.Turn, findings}
+}
+
+// GroupingRecord writes a set's drops. A nil Drops is sent as an empty array.
+type GroupingRecord struct {
+	Conversation string
+	Turn         int64
+	Drops        []Drop
+}
+
+func (r GroupingRecord) recordBody() any {
+	drops := r.Drops
+	if drops == nil {
+		drops = []Drop{}
+	}
+	return struct {
+		Conversation string `json:"conversation"`
+		Record       string `json:"record"`
+		Turn         int64  `json:"turn"`
+		Drops        []Drop `json:"drops"`
+	}{r.Conversation, "grouping", r.Turn, drops}
+}
+
+// SettleRecord writes the agreed proposal for a finding.
+// ProposalKind is the proposal message's kind: finding, propose, or dismiss.
+type SettleRecord struct {
+	Conversation string
+	Finding      int64
+	Proposal     int64
+	ProposalKind string
+}
+
+func (r SettleRecord) recordBody() any {
+	return struct {
+		Conversation string `json:"conversation"`
+		Record       string `json:"record"`
+		Finding      int64  `json:"finding"`
+		Proposal     int64  `json:"proposal"`
+		ProposalKind string `json:"proposal_kind"`
+	}{r.Conversation, "settle", r.Finding, r.Proposal, r.ProposalKind}
+}
+
+// FixRecord writes the fixed message for a settled finding.
+type FixRecord struct {
+	Conversation string
+	Finding      int64
+	Fixed        int64
+}
+
+func (r FixRecord) recordBody() any {
+	return struct {
+		Conversation string `json:"conversation"`
+		Record       string `json:"record"`
+		Finding      int64  `json:"finding"`
+		Fixed        int64  `json:"fixed"`
+	}{r.Conversation, "fix", r.Finding, r.Fixed}
+}
+
+// HaltRecord writes the finding a conversation's run stopped on.
+type HaltRecord struct {
+	Conversation string
+	Finding      int64
+}
+
+func (r HaltRecord) recordBody() any {
+	return struct {
+		Conversation string `json:"conversation"`
+		Record       string `json:"record"`
+		Finding      int64  `json:"finding"`
+	}{r.Conversation, "halt", r.Finding}
+}
+
+// RecordsRequest is the records body.
+type RecordsRequest struct {
+	Conversation string `json:"conversation"`
 }
 
 // CreateRequest is the create body.
@@ -364,6 +516,13 @@ func marshalBody(op string, body any) ([]byte, error) {
 		}
 		body = req
 	}
+	if op == "record" {
+		w, ok := body.(RecordWrite)
+		if !ok {
+			return nil, errors.New("record body has the wrong type")
+		}
+		body = w.recordBody()
+	}
 	if body == nil {
 		body = struct{}{}
 	}
@@ -414,6 +573,10 @@ func operationPath(op string) (string, error) {
 		return bus.PathSession, nil
 	case "members":
 		return bus.PathMembers, nil
+	case "record":
+		return bus.PathRecord, nil
+	case "records":
+		return bus.PathRecords, nil
 	default:
 		return "", fmt.Errorf("unknown operation %s", op)
 	}

@@ -166,13 +166,9 @@ func (s *Store) Members(ctx context.Context, conv string) ([]Member, error) {
 		if err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `
+		out, err = queryRows(ctx, tx, scanMember, `
 			SELECT name, launched, registered, status, pid
 			FROM members WHERE conversation = ?`, conv)
-		if err != nil {
-			return err
-		}
-		out, err = scanMembers(rows)
 		if err != nil {
 			return err
 		}
@@ -255,23 +251,12 @@ func (s *Store) Sessions(ctx context.Context, conv string) ([]MemberSession, err
 		if err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `
-			SELECT name, session FROM members WHERE conversation = ?`, conv)
-		if err != nil {
-			return err
-		}
-		list := make([]MemberSession, 0)
-		for rows.Next() {
+		list, err := queryRows(ctx, tx, func(row rowScanner) (MemberSession, error) {
 			var item MemberSession
-			if err := rows.Scan(&item.Name, &item.Session); err != nil {
-				return joinClose(err, rows.Close())
-			}
-			list = append(list, item)
-		}
-		if err := rows.Err(); err != nil {
-			return joinClose(err, rows.Close())
-		}
-		if err := rows.Close(); err != nil {
+			err := row.Scan(&item.Name, &item.Session)
+			return item, err
+		}, `SELECT name, session FROM members WHERE conversation = ?`, conv)
+		if err != nil {
 			return err
 		}
 		out = orderByRoster(roster, list, func(item MemberSession) string { return item.Name })
@@ -308,46 +293,31 @@ func rosterOf(ctx context.Context, tx *sql.Tx, conv string) ([]string, error) {
 }
 
 func memberByName(ctx context.Context, tx *sql.Tx, conv, name string) (Member, bool, error) {
-	var m Member
-	var pid sql.NullInt64
-	err := tx.QueryRowContext(ctx, `
+	m, err := scanMember(tx.QueryRowContext(ctx, `
 		SELECT name, launched, registered, status, pid
 		FROM members WHERE conversation = ? AND name = ?`,
-		conv, name).Scan(&m.Name, &m.Launched, &m.Registered, &m.Status, &pid)
+		conv, name))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Member{}, false, nil
 	}
 	if err != nil {
 		return Member{}, false, err
 	}
+	return m, true, nil
+}
+
+// scanMember reads name, launched, registered, status, and pid.
+func scanMember(row rowScanner) (Member, error) {
+	var m Member
+	var pid sql.NullInt64
+	if err := row.Scan(&m.Name, &m.Launched, &m.Registered, &m.Status, &pid); err != nil {
+		return Member{}, err
+	}
 	if pid.Valid {
 		m.PID = pid.Int64
 		m.HasPID = true
 	}
-	return m, true, nil
-}
-
-func scanMembers(rows *sql.Rows) ([]Member, error) {
-	out := make([]Member, 0)
-	for rows.Next() {
-		var m Member
-		var pid sql.NullInt64
-		if err := rows.Scan(&m.Name, &m.Launched, &m.Registered, &m.Status, &pid); err != nil {
-			return nil, joinClose(err, rows.Close())
-		}
-		if pid.Valid {
-			m.PID = pid.Int64
-			m.HasPID = true
-		}
-		out = append(out, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, joinClose(err, rows.Close())
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return m, nil
 }
 
 func orderByRoster[T any](roster []string, rows []T, name func(T) string) []T {

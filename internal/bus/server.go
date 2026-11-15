@@ -112,6 +112,8 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST "+PathMember, s.handleMember)
 	mux.HandleFunc("POST "+PathSession, s.handleSession)
 	mux.HandleFunc("POST "+PathMembers, s.handleMembers)
+	mux.HandleFunc("POST "+PathRecord, s.handleRecord)
+	mux.HandleFunc("POST "+PathRecords, s.handleRecords)
 	mux.HandleFunc("/", s.handleUnknown)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Before the token check, so a missing credential never sees this route.
@@ -220,6 +222,10 @@ func opName(path string) string {
 		return "session"
 	case PathMembers:
 		return "members"
+	case PathRecord:
+		return "record"
+	case PathRecords:
+		return "records"
 	default:
 		return path
 	}
@@ -646,6 +652,10 @@ func (s *server) finish(w http.ResponseWriter, op, conv string, start time.Time,
 	if res.Message != nil {
 		attrs = append(attrs, "seq", res.Message.Seq, "already_stored", res.AlreadyStored)
 	}
+	// Record content stays out of the log. Whether a write was a replay is outcome.
+	if op == "record" && res.Outcome == OutcomeOK {
+		attrs = append(attrs, "already_stored", res.AlreadyStored)
+	}
 	if op == "create" {
 		attrs = append(attrs, "already_existed", res.AlreadyExisted)
 	}
@@ -695,6 +705,16 @@ type wire struct {
 	Sessions       *[]wireSession      `json:"sessions,omitempty"`
 	More           *bool               `json:"more,omitempty"`
 	Rev            *uint64             `json:"rev,omitempty"`
+	Set            *wireSet            `json:"set,omitempty"`
+	Grouping       *wireGrouping       `json:"grouping,omitempty"`
+	Settle         *wireSettle         `json:"settle,omitempty"`
+	Fix            *wireFix            `json:"fix,omitempty"`
+	Halt           *wireHalt           `json:"halt,omitempty"`
+	Sets           *[]wireSet          `json:"sets,omitempty"`
+	Groupings      *[]wireGrouping     `json:"groupings,omitempty"`
+	Settles        *[]wireSettle       `json:"settles,omitempty"`
+	Fixes          *[]wireFix          `json:"fixes,omitempty"`
+	Halts          *[]wireHalt         `json:"halts,omitempty"`
 }
 
 type wireMessage struct {
@@ -744,60 +764,51 @@ func toWire(op string, res Result) wire {
 	case OutcomeOK:
 		switch op {
 		case "publish":
-			out.Message = wireMsg(res.Message)
+			out.Message = wirePtr(res.Message, toWireMessage)
 			already := res.AlreadyStored
 			out.AlreadyStored = &already
-			out.Conversation = wireConv(res.Conversation)
+			out.Conversation = wirePtr(res.Conversation, toWireConversation)
 		case "create":
-			out.Conversation = wireConv(res.Conversation)
+			out.Conversation = wirePtr(res.Conversation, toWireConversation)
 			existed := res.AlreadyExisted
 			out.AlreadyExisted = &existed
 		case "close":
-			out.Conversation = wireConv(res.Conversation)
+			out.Conversation = wirePtr(res.Conversation, toWireConversation)
 		case "list":
-			cs := wireConvs(res.Conversations)
-			out.Conversations = &cs
+			out.Conversations = wireList(res.Conversations, toWireConversation)
 		case "messages", "read", "wait":
-			ms := wireMsgs(res.Messages)
-			out.Messages = &ms
+			out.Messages = wireList(res.Messages, toWireMessage)
 			if op == "wait" && res.MatchSeq != 0 {
 				seq := res.MatchSeq
 				out.MatchSeq = &seq
 			}
 		case "watch":
-			ms := wireMsgs(res.Messages)
-			out.Messages = &ms
+			out.Messages = wireList(res.Messages, toWireMessage)
 			more, rev := res.More, res.Rev
 			out.More = &more
 			out.Rev = &rev
 		case "register", "member":
-			out.Member = wireOneMember(res.Member)
+			out.Member = wirePtr(res.Member, toWireMember)
 		case "members":
-			ms := wireMemberList(res.Members)
-			out.Members = &ms
+			out.Members = wireList(res.Members, publicMember)
 		case "session":
-			if res.Session != nil {
-				item := wireSession{Name: res.Session.Name, Session: res.Session.Session}
-				out.Session = &item
-			}
+			out.Session = wirePtr(res.Session, toWireSession)
 			if res.Sessions != nil {
-				ss := wireSessionList(res.Sessions)
-				out.Sessions = &ss
+				out.Sessions = wireList(res.Sessions, toWireSession)
 			}
+		case "record", "records":
+			recordWire(op, res, &out)
 		}
 	}
 	return out
 }
 
-func wireMsg(m *store.Message) *wireMessage {
-	if m == nil {
-		return nil
-	}
+func toWireMessage(m store.Message) wireMessage {
 	to := m.To
 	if to == nil {
 		to = []string{}
 	}
-	return &wireMessage{
+	return wireMessage{
 		Seq:          m.Seq,
 		Time:         m.Time,
 		From:         m.From,
@@ -810,19 +821,7 @@ func wireMsg(m *store.Message) *wireMessage {
 	}
 }
 
-func wireMsgs(in []store.Message) []wireMessage {
-	out := make([]wireMessage, 0, len(in))
-	for i := range in {
-		msg := wireMsg(&in[i])
-		out = append(out, *msg)
-	}
-	return out
-}
-
-func wireConv(c *store.Conversation) *wireConversation {
-	if c == nil {
-		return nil
-	}
+func toWireConversation(c store.Conversation) wireConversation {
 	prompts := c.Prompts
 	if prompts == nil {
 		prompts = []string{}
@@ -831,7 +830,7 @@ func wireConv(c *store.Conversation) *wireConversation {
 	if roster == nil {
 		roster = []string{}
 	}
-	return &wireConversation{
+	return wireConversation{
 		Name:      c.Name,
 		Status:    c.Status,
 		Task:      c.Task,
@@ -844,19 +843,8 @@ func wireConv(c *store.Conversation) *wireConversation {
 	}
 }
 
-func wireConvs(in []store.Conversation) []wireConversation {
-	out := make([]wireConversation, 0, len(in))
-	for i := range in {
-		out = append(out, *wireConv(&in[i]))
-	}
-	return out
-}
-
-func wireOneMember(m *store.Member) *wireMember {
-	if m == nil {
-		return nil
-	}
-	out := &wireMember{wireMemberPublic: publicMember(*m)}
+func toWireMember(m store.Member) wireMember {
+	out := wireMember{wireMemberPublic: publicMember(m)}
 	if m.HasPID {
 		pid := m.PID
 		out.PID = &pid
@@ -873,20 +861,25 @@ func publicMember(m store.Member) wireMemberPublic {
 	}
 }
 
-func wireMemberList(in []store.Member) []wireMemberPublic {
-	out := make([]wireMemberPublic, 0, len(in))
-	for _, m := range in {
-		out = append(out, publicMember(m))
-	}
-	return out
+func toWireSession(item store.MemberSession) wireSession {
+	return wireSession{Name: item.Name, Session: item.Session}
 }
 
-func wireSessionList(in []store.MemberSession) []wireSession {
-	out := make([]wireSession, 0, len(in))
-	for _, item := range in {
-		out = append(out, wireSession{Name: item.Name, Session: item.Session})
+// wireList converts every element. The result is empty rather than nil, so JSON carries [].
+func wireList[T, W any](in []T, conv func(T) W) *[]W {
+	out := make([]W, 0, len(in))
+	for _, v := range in {
+		out = append(out, conv(v))
 	}
-	return out
+	return &out
+}
+
+func wirePtr[T, W any](in *T, conv func(T) W) *W {
+	if in == nil {
+		return nil
+	}
+	out := conv(*in)
+	return &out
 }
 
 func writeJSON(w http.ResponseWriter, v any) error {

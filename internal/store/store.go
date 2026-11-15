@@ -9,6 +9,17 @@
 // A message carries kind and an optional re, the seq of an earlier message of
 // the same conversation it responds to. A conversation row holds the binding.
 // A member row holds registration, status, pid, and session id for one roster name.
+//
+// Decision records are hotseat run's insert-only facts about messages: a set
+// closed with its findings, a set's grouping of duplicates, a settle, a fix,
+// and a halt. Each references messages of its conversation by composite
+// foreign keys that also fix the referenced kind (turn, finding, propose,
+// dismiss, fixed). after on a record is the conversation's highest seq when
+// it commits, read in the write transaction. A write that matches the stored
+// record on its key, ignoring after, returns it and writes nothing. One that
+// differs returns ErrConflict. Every other constraint failure on a record
+// table is ErrRecordReference, and the three rules that span rows are
+// ErrKeptDropped, ErrNotKept, and ErrFixDismissed.
 package store
 
 import (
@@ -98,7 +109,80 @@ var schemaStmts = []string{
   pid INTEGER,
   PRIMARY KEY (conversation, name)
 ) STRICT`,
+	`CREATE TABLE IF NOT EXISTS sets (
+  conversation TEXT NOT NULL REFERENCES conversations(name),
+  turn INTEGER NOT NULL,
+  turn_kind TEXT NOT NULL DEFAULT 'turn' CHECK (turn_kind = 'turn'),
+  after INTEGER NOT NULL,
+  PRIMARY KEY (conversation, turn),
+  FOREIGN KEY (conversation, turn, turn_kind) REFERENCES messages (conversation, seq, kind),
+  CHECK (after >= turn)
+) STRICT`,
+	`CREATE TABLE IF NOT EXISTS set_findings (
+  conversation TEXT NOT NULL REFERENCES conversations(name),
+  turn INTEGER NOT NULL,
+  finding INTEGER NOT NULL,
+  finding_kind TEXT NOT NULL DEFAULT 'finding' CHECK (finding_kind = 'finding'),
+  PRIMARY KEY (conversation, finding),
+  UNIQUE (conversation, turn, finding),
+  FOREIGN KEY (conversation, turn) REFERENCES sets (conversation, turn),
+  FOREIGN KEY (conversation, finding, finding_kind) REFERENCES messages (conversation, seq, kind)
+) STRICT`,
+	`CREATE TABLE IF NOT EXISTS groupings (
+  conversation TEXT NOT NULL REFERENCES conversations(name),
+  turn INTEGER NOT NULL,
+  after INTEGER NOT NULL,
+  PRIMARY KEY (conversation, turn),
+  FOREIGN KEY (conversation, turn) REFERENCES sets (conversation, turn),
+  CHECK (after >= turn)
+) STRICT`,
+	`CREATE TABLE IF NOT EXISTS drops (
+  conversation TEXT NOT NULL REFERENCES conversations(name),
+  turn INTEGER NOT NULL,
+  finding INTEGER NOT NULL,
+  kept INTEGER NOT NULL,
+  PRIMARY KEY (conversation, finding),
+  FOREIGN KEY (conversation, turn) REFERENCES groupings (conversation, turn),
+  FOREIGN KEY (conversation, turn, finding) REFERENCES set_findings (conversation, turn, finding),
+  FOREIGN KEY (conversation, turn, kept) REFERENCES set_findings (conversation, turn, finding),
+  CHECK (finding <> kept)
+) STRICT`,
+	`CREATE TABLE IF NOT EXISTS settles (
+  conversation TEXT NOT NULL REFERENCES conversations(name),
+  finding INTEGER NOT NULL,
+  proposal INTEGER NOT NULL,
+  proposal_kind TEXT NOT NULL CHECK (proposal_kind IN ('finding', 'propose', 'dismiss')),
+  after INTEGER NOT NULL,
+  PRIMARY KEY (conversation, finding),
+  UNIQUE (conversation, finding, after),
+  FOREIGN KEY (conversation, finding) REFERENCES set_findings (conversation, finding),
+  FOREIGN KEY (conversation, proposal, proposal_kind) REFERENCES messages (conversation, seq, kind),
+  CHECK (proposal >= finding AND after >= proposal),
+  CHECK (proposal_kind <> 'finding' OR proposal = finding)
+) STRICT`,
+	`CREATE TABLE IF NOT EXISTS fixes (
+  conversation TEXT NOT NULL REFERENCES conversations(name),
+  finding INTEGER NOT NULL,
+  settled_after INTEGER NOT NULL,
+  fixed INTEGER NOT NULL,
+  fixed_kind TEXT NOT NULL DEFAULT 'fixed' CHECK (fixed_kind = 'fixed'),
+  PRIMARY KEY (conversation, finding),
+  UNIQUE (conversation, fixed),
+  FOREIGN KEY (conversation, finding, settled_after) REFERENCES settles (conversation, finding, after),
+  FOREIGN KEY (conversation, fixed, fixed_kind) REFERENCES messages (conversation, seq, kind),
+  CHECK (fixed > settled_after)
+) STRICT`,
+	`CREATE TABLE IF NOT EXISTS halts (
+  conversation TEXT NOT NULL PRIMARY KEY REFERENCES conversations(name),
+  finding INTEGER NOT NULL,
+  after INTEGER NOT NULL,
+  FOREIGN KEY (conversation, finding) REFERENCES set_findings (conversation, finding),
+  CHECK (after >= finding)
+) STRICT`,
 }
+
+// recordTables are the decision record tables. A version-1 file lacking any of them is ErrSchema.
+var recordTables = []string{"sets", "set_findings", "groupings", "drops", "settles", "fixes", "halts"}
 
 var (
 	// ErrNotFound means the conversation does not exist.
@@ -109,6 +193,7 @@ var (
 	ErrHeld = errors.New("database is held by another process")
 	// ErrSchema means this binary will not serve the file.
 	// The recorded version differs, or a version-1 file lacks kind, re, the binding columns, the member table,
+	// any decision record table (sets, set_findings, groupings, drops, settles, fixes, halts),
 	// or the unique keys (conversation, seq) and (conversation, seq, kind) on messages,
 	// or its messages primary key is not seq alone.
 	ErrSchema = errors.New("store schema is not supported by this binary")
@@ -120,6 +205,15 @@ var (
 	ErrLaunched = errors.New("member is already launched")
 	// ErrReplyTarget means re is not the seq of an earlier message of the same conversation.
 	ErrReplyTarget = errors.New("re is not an earlier message of the conversation")
+	// ErrRecordReference means a record breaks a foreign key, kind, CHECK, or uniqueness rule
+	// of the record tables other than its own key.
+	ErrRecordReference = errors.New("record breaks a reference, kind, or uniqueness rule")
+	// ErrKeptDropped means a grouping drops a finding that another of its drops keeps.
+	ErrKeptDropped = errors.New("a kept finding is itself dropped")
+	// ErrNotKept means a settle or a halt names a finding whose set has no grouping, or that is dropped.
+	ErrNotKept = errors.New("finding is not a kept finding of a grouped set")
+	// ErrFixDismissed means a fix names a finding whose settle proposal is a dismiss.
+	ErrFixDismissed = errors.New("fix belongs to a dismissed settle")
 
 	// errNoChange tells withTx to roll the transaction back and return nil.
 	// Idempotent publish and close of an already-closed conversation take it
@@ -443,26 +537,21 @@ func (s *Store) Newest(ctx context.Context, limit int, before int64) ([]Message,
 	}
 	var out []Message
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		var rows *sql.Rows
 		var err error
 		if before == 0 {
-			rows, err = tx.QueryContext(ctx, `
+			out, err = queryRows(ctx, tx, scanPlaced, `
 				SELECT conversation, `+messageColumns+`
 				FROM messages
 				ORDER BY seq DESC
 				LIMIT ?`, limit)
 		} else {
-			rows, err = tx.QueryContext(ctx, `
+			out, err = queryRows(ctx, tx, scanPlaced, `
 				SELECT conversation, `+messageColumns+`
 				FROM messages
 				WHERE seq < ?
 				ORDER BY seq DESC
 				LIMIT ?`, before, limit)
 		}
-		if err != nil {
-			return err
-		}
-		out, err = scanPlaced(rows)
 		return err
 	})
 	return out, err
@@ -482,27 +571,22 @@ func (s *Store) After(ctx context.Context, conversation string, after int64, lim
 		probe = -1
 	}
 	err = s.withTx(ctx, false, func(tx *sql.Tx) error {
-		var rows *sql.Rows
 		var err error
 		if conversation == "" {
-			rows, err = tx.QueryContext(ctx, `
+			msgs, err = queryRows(ctx, tx, scanPlaced, `
 				SELECT conversation, `+messageColumns+`
 				FROM messages
 				WHERE seq > ?
 				ORDER BY seq
 				LIMIT ?`, after, probe)
 		} else {
-			rows, err = tx.QueryContext(ctx, `
+			msgs, err = queryRows(ctx, tx, scanPlaced, `
 				SELECT conversation, `+messageColumns+`
 				FROM messages
 				WHERE conversation = ? AND seq > ?
 				ORDER BY seq
 				LIMIT ?`, conversation, after, probe)
 		}
-		if err != nil {
-			return err
-		}
-		msgs, err = scanPlaced(rows)
 		return err
 	})
 	if err != nil {
@@ -520,17 +604,14 @@ func (s *Store) After(ctx context.Context, conversation string, after int64, lim
 func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 	var out []Conversation
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `
+		var err error
+		out, err = queryRows(ctx, tx, scanConversation, `
 			SELECT `+conversationColumns+`
 			FROM conversations
 			ORDER BY (
 				SELECT MAX(seq) FROM messages
 				WHERE conversation = conversations.name
 			) DESC NULLS LAST, name`)
-		if err != nil {
-			return err
-		}
-		out, err = scanListed(rows)
 		return err
 	})
 	return out, err
@@ -774,24 +855,6 @@ func scanConversation(row rowScanner) (Conversation, error) {
 	return finishConversation(c, prompts, roster)
 }
 
-func scanListed(rows *sql.Rows) ([]Conversation, error) {
-	out := make([]Conversation, 0)
-	for rows.Next() {
-		c, err := scanConversation(rows)
-		if err != nil {
-			return nil, joinClose(err, rows.Close())
-		}
-		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, joinClose(err, rows.Close())
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func finishConversation(c Conversation, prompts, roster string) (Conversation, error) {
 	var err error
 	c.Prompts, err = unmarshalTo(prompts)
@@ -847,7 +910,13 @@ func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 			return false, nil
 		}
 	}
-	return tableExists(ctx, tx, "members")
+	for _, table := range append([]string{"members"}, recordTables...) {
+		ok, err := tableExists(ctx, tx, table)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // uniqueKeys returns the ordered columns of each unique index on messages that covers every row.
@@ -923,23 +992,9 @@ func columnExists(ctx context.Context, tx *sql.Tx, table, col string) (bool, err
 	return n > 0, err
 }
 
-// scanPlaced reads rows that lead with the conversation column, then closes them.
-func scanPlaced(rows *sql.Rows) ([]Message, error) {
-	out := make([]Message, 0)
-	for rows.Next() {
-		m, err := scanMessage(rows, true)
-		if err != nil {
-			return nil, joinClose(err, rows.Close())
-		}
-		out = append(out, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, joinClose(err, rows.Close())
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	return out, nil
+// scanPlaced reads one message row that leads with the conversation column.
+func scanPlaced(row rowScanner) (Message, error) {
+	return scanMessage(row, true)
 }
 
 // scanMessage reads messageColumns, led by conversation when placed is true.
@@ -966,6 +1021,29 @@ func scanMessage(row rowScanner, placed bool) (Message, error) {
 		m.Re = &re.Int64
 	}
 	return m, nil
+}
+
+// queryRows scans every row of query with scan, then closes the rows. The result is empty rather than nil.
+func queryRows[T any](ctx context.Context, tx *sql.Tx, scan func(rowScanner) (T, error), query string, args ...any) ([]T, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, 0)
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, joinClose(err, rows.Close())
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, joinClose(err, rows.Close())
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func joinClose(err, cerr error) error {
@@ -1101,6 +1179,8 @@ const (
 	sqliteConstraint           = 19
 	sqliteConstraintCheck      = 275
 	sqliteConstraintForeignKey = 787
+	sqliteConstraintPrimaryKey = 1555
+	sqliteConstraintUnique     = 2067
 )
 
 // sqliteCode is the extended result code of a driver error, or 0.

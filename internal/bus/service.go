@@ -53,6 +53,12 @@ type Result struct {
 	Sessions       []store.MemberSession
 	More           bool
 	Rev            uint64
+	Set            *store.Set
+	Grouping       *store.Grouping
+	Settle         *store.Settle
+	Fix            *store.Fix
+	Halt           *store.Halt
+	Records        *store.Records
 }
 
 type waiter struct {
@@ -392,6 +398,14 @@ func (s *Service) fail(err error, op string) (Result, error) {
 		return refused(ReasonMemberMissing), nil
 	case errors.Is(err, store.ErrLaunched):
 		return refused(ReasonAlreadyLaunched), nil
+	case errors.Is(err, store.ErrRecordReference):
+		return refused(ReasonRecordReference), nil
+	case errors.Is(err, store.ErrKeptDropped):
+		return refused(ReasonKeptDropped), nil
+	case errors.Is(err, store.ErrNotKept):
+		return refused(ReasonNotKept), nil
+	case errors.Is(err, store.ErrFixDismissed):
+		return refused(ReasonFixDismissed), nil
 	default:
 		s.log.Error("store", "op", op, "err", err)
 		return Result{Outcome: OutcomeUnavailable, Reason: ReasonUnavailable}, nil

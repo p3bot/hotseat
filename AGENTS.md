@@ -21,7 +21,7 @@ Rules that follow from the purpose:
 - A message is identified by its `seq`. A body is never only an id.
 - Findings are discussed one at a time because a fix can make a later finding obsolete.
 
-Note: `run` still publishes its finding markers (`discuss`, `issues`, `settled`, `halted`) as messages. hotseat-vn53 moves them out of the transcript.
+Note: `run` still publishes its finding markers (`discuss`, `issues`, `settled`, `halted`) as messages. The store holds decision records behind `/record` and `/records`, and hotseat-dsu2 moves `run` onto them and drops the markers.
 
 ## Contract
 
@@ -66,11 +66,11 @@ Note: lint is not clean on main. The existing findings are unchecked `Close` err
 - One writer. Seq order is commit order only because of it. The flock is on `hotseat.db.lock`, not the database inode, because on macOS flock shares SQLite's lock table and closing any descriptor drops every lock.
 - DSN: `busy_timeout=0` (another holder fails this process instead of stalling it), `journal_mode=WAL`, `locking_mode=EXCLUSIVE` (checked after open), `foreign_keys=1`, `synchronous=FULL` (commit returns after the write is durable), `_txlock=immediate`. `SetMaxOpenConns(1)`.
 - `Open` resolves the directory to an absolute path first, chmods it `0700`, refuses symlinks for the database, wal, shm, and lock, and opens the lock with `O_NOFOLLOW` and mode `0600`.
-- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. A schema change means deleting the database.
-- A write that changes nothing (idempotent publish, close of a closed conversation) returns `errNoChange`, so the transaction rolls back.
-- Store sentinels are `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, `ErrLaunched`, and `ErrReplyTarget`. Wrap with `%w` when the caller branches on the cause.
+- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. The version-1 shape includes the decision record tables `sets`, `set_findings`, `groupings`, `drops`, `settles`, `fixes`, and `halts`. A schema change means deleting the database.
+- A write that changes nothing (idempotent publish, a record replay, close of a closed conversation) returns `errNoChange`, so the transaction rolls back.
+- Store sentinels are `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, `ErrLaunched`, `ErrReplyTarget`, `ErrRecordReference`, `ErrKeptDropped`, `ErrNotKept`, and `ErrFixDismissed`. Wrap with `%w` when the caller branches on the cause.
 - Refusal text is a `bus.Reason*` constant. A new reason is a constant beside the others, plus a test whose name states the rule.
-- Session ids, pids, and the token stay off read, wait, list, member list, the page, logs, status lines, and prompts.
+- Session ids, pids, and the token stay off read, wait, list, member list, the page, logs, status lines, and prompts. Decision records stay off read, wait, watch, list, member list, the page, and logs.
 - `from` is caller-supplied. The token does not authenticate the sender.
 - The page listens on loopback only, because it holds the bus token.
 - CLI stdout is `key: value`, and a value with a newline is `key <<N` and then those bytes. Usage errors go to stderr with no stdout. Commands set `SilenceUsage` and `SilenceErrors`. SIGINT and SIGTERM exit `128+signal`, read before the error path.

@@ -182,7 +182,8 @@ const replyMessagesHead = `CREATE TABLE messages (
   UNIQUE (conversation, sender, txid)`
 
 // writeVersion1 writes a version-1 file whose messages table is built by
-// messages, with one conversation and one message, in WAL mode.
+// messages, with one conversation and one message, the members table, and
+// the record tables, in WAL mode.
 func writeVersion1(t *testing.T, messages ...string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -220,6 +221,7 @@ func writeVersion1(t *testing.T, messages ...string) string {
 			PRIMARY KEY (conversation, name)
 		) STRICT`,
 	)
+	stmts = append(stmts, recordStmts(t)...)
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -229,6 +231,24 @@ func writeVersion1(t *testing.T, messages ...string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// recordStmts returns the record table statements this binary creates.
+func recordStmts(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	for _, table := range recordTables {
+		prefix := "CREATE TABLE IF NOT EXISTS " + table + " ("
+		for _, stmt := range schemaStmts {
+			if strings.HasPrefix(stmt, prefix) {
+				out = append(out, stmt)
+			}
+		}
+	}
+	if len(out) != len(recordTables) {
+		t.Fatalf("found %d record statements for %d tables", len(out), len(recordTables))
+	}
+	return out
 }
 
 func TestOpenRejectsVersion1WithoutReOrBothMessageKeys(t *testing.T) {
