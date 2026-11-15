@@ -277,6 +277,7 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		Body         *string         `json:"body"`
 		TxID         *string         `json:"txid"`
 		Kind         *string         `json:"kind"`
+		Re           json.RawMessage `json:"re"`
 	}
 	if !s.decode(w, r, "publish", "", start, &req) {
 		return
@@ -304,6 +305,15 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.To = names
+	re, hasRe, err := parsePositive(req.Re, ReasonReRange)
+	if err != nil {
+		res, rerr := asRefused(err)
+		s.finish(w, "publish", in.Conversation, start, res, rerr)
+		return
+	}
+	if hasRe {
+		in.Re = &re
+	}
 	res, err := s.svc.Publish(r.Context(), in)
 	s.finish(w, "publish", in.Conversation, start, res, err)
 }
@@ -491,7 +501,7 @@ func (s *server) handleMember(w http.ResponseWriter, r *http.Request) {
 		s.finish(w, "member", conv, start, refused(ReasonNameRequired), nil)
 		return
 	}
-	pid, hasPID, err := parsePID(req.PID)
+	pid, hasPID, err := parsePositive(req.PID, ReasonPID)
 	if err != nil {
 		res, rerr := asRefused(err)
 		s.finish(w, "member", conv, start, res, rerr)
@@ -695,6 +705,7 @@ type wireMessage struct {
 	Body         string   `json:"body"`
 	TxID         string   `json:"txid"`
 	Kind         string   `json:"kind"`
+	Re           *int64   `json:"re"`
 	Conversation string   `json:"conversation,omitempty"`
 }
 
@@ -794,6 +805,7 @@ func wireMsg(m *store.Message) *wireMessage {
 		Body:         m.Body,
 		TxID:         m.TxID,
 		Kind:         m.Kind,
+		Re:           m.Re,
 		Conversation: m.Conversation,
 	}
 }

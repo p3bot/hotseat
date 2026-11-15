@@ -29,7 +29,7 @@
 // and answers pass or fail with no token, on every address.
 //
 //	POST /create   {"name":"job","task"?,"ticket"?,"seat"?,"directory"?,"prompts"?,"custom"?,"roster"?}
-//	POST /publish  {"conversation","from","to","body","txid","kind"}
+//	POST /publish  {"conversation","from","to","body","txid","kind","re"?}
 //	POST /read     {"conversation","cursor","limit","name"?,"kinds"?}
 //	POST /wait     {"conversation","cursor","name"?,"deadline"?,"kinds"?}
 //	POST /watch    {"cursor"?,"conversation"?,"rev"?,"limit"?,"deadline"?}
@@ -48,6 +48,13 @@
 // the name and does not check its meaning. kinds, when present, is an array
 // of those names. Omit it and read and wait match without a kind filter.
 // An empty array is refused.
+//
+// re is the seq of an earlier message of the same conversation that this
+// publish responds to. Omit it, or send null, to respond to nothing. A value
+// that is not an integer greater than zero is refused. A seq of another
+// conversation, a seq that does not exist, and the publish's own seq are
+// refused and write nothing. Every message object from publish, read, wait,
+// watch, and /messages has re, the integer or null.
 //
 // deadline is a Go duration such as "30s" or "500ms", or an RFC3339 end time.
 // Omit it, or send "", to wait until a match or a dropped connection.
@@ -97,14 +104,15 @@
 // A publish response is written only after the message is durable. It carries
 // the message, including kind, and the conversation. An attempt is the
 // conversation, the sender, and the transaction id. The bus requires that id
-// and does not generate one. The same attempt with the same kind, to, and
-// body returns the original message and already_stored true, including after
-// the conversation is closed, and writes nothing. The same attempt with a
-// different kind, to, or body is refused. A different name order in to is
-// different content. Another sender using that transaction id stores a new
-// message. Close sets status to closed and still accepts a new message. That
-// publish reports status closed. Register, member, session, and members
-// follow the same rules on a closed conversation.
+// and does not generate one. The same attempt with the same kind, to, body,
+// and re returns the original message and already_stored true, including
+// after the conversation is closed, and writes nothing. The same attempt with
+// a different kind, to, body, or re is refused, including re present against
+// absent. A different name order in to is different content. Another sender
+// using that transaction id stores a new message. Close sets status to closed
+// and still accepts a new message. That publish reports status closed.
+// Register, member, session, and members follow the same rules on a closed
+// conversation.
 //
 // An ok named read returns messages addressed to that name whose kind is
 // listed when kinds is set. The limit counts returned messages. An ok named

@@ -24,6 +24,7 @@ var ErrDropped = errors.New("connection dropped")
 
 // PublishInput is one publish after the JSON object has been decoded.
 // BodyMissing distinguishes an absent body from an empty one.
+// A nil Re responds to nothing.
 type PublishInput struct {
 	Conversation string
 	From         string
@@ -32,6 +33,7 @@ type PublishInput struct {
 	BodyMissing  bool
 	TxID         string
 	Kind         string
+	Re           *int64
 }
 
 // Result is one completed protocol call.
@@ -154,6 +156,7 @@ func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) 
 		Body:         in.Body,
 		TxID:         in.TxID,
 		Kind:         in.Kind,
+		Re:           in.Re,
 		Time:         s.clock().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
@@ -381,6 +384,8 @@ func (s *Service) fail(err error, op string) (Result, error) {
 		return refused(ReasonNotFound), nil
 	case errors.Is(err, store.ErrConflict):
 		return refused(ReasonKeyConflict), nil
+	case errors.Is(err, store.ErrReplyTarget):
+		return refused(ReasonReTarget), nil
 	case errors.Is(err, store.ErrNotRoster):
 		return refused(ReasonNotInRoster), nil
 	case errors.Is(err, store.ErrNotMember):

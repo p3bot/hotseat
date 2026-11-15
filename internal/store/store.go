@@ -6,7 +6,8 @@
 
 // Package store is the bus SQLite database.
 // One process holds hotseat.db.lock. Cursors and blocked waits are not stored.
-// A message carries kind. A conversation row holds the binding.
+// A message carries kind and an optional re, the seq of an earlier message of
+// the same conversation it responds to. A conversation row holds the binding.
 // A member row holds registration, status, pid, and session id for one roster name.
 package store
 
@@ -18,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -53,6 +55,8 @@ const (
 
 const conversationColumns = `name, status, task, ticket, seat, directory, prompts, custom, roster`
 
+const messageColumns = `seq, time, sender, recipients, body, txid, kind, re`
+
 var schemaStmts = []string{
 	`CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -78,9 +82,12 @@ var schemaStmts = []string{
   body TEXT NOT NULL,
   txid TEXT NOT NULL,
   kind TEXT NOT NULL,
-  UNIQUE (conversation, sender, txid)
+  re INTEGER CHECK (re < seq),
+  UNIQUE (conversation, sender, txid),
+  UNIQUE (conversation, seq),
+  UNIQUE (conversation, seq, kind),
+  FOREIGN KEY (conversation, re) REFERENCES messages (conversation, seq)
 ) STRICT`,
-	`CREATE INDEX IF NOT EXISTS messages_conversation_seq ON messages (conversation, seq)`,
 	`CREATE TABLE IF NOT EXISTS members (
   conversation TEXT NOT NULL REFERENCES conversations(name),
   name TEXT NOT NULL,
@@ -101,7 +108,8 @@ var (
 	// ErrHeld means another process already has the database.
 	ErrHeld = errors.New("database is held by another process")
 	// ErrSchema means this binary will not serve the file.
-	// The recorded version differs, or a version-1 file lacks kind, the binding columns, or the member table,
+	// The recorded version differs, or a version-1 file lacks kind, re, the binding columns, the member table,
+	// or the unique keys (conversation, seq) and (conversation, seq, kind) on messages,
 	// or its messages primary key is not seq alone.
 	ErrSchema = errors.New("store schema is not supported by this binary")
 	// ErrNotRoster means the name is not on the conversation roster.
@@ -110,6 +118,8 @@ var (
 	ErrNotMember = errors.New("member has not been launched")
 	// ErrLaunched means launched was asked for a name that already has a row.
 	ErrLaunched = errors.New("member is already launched")
+	// ErrReplyTarget means re is not the seq of an earlier message of the same conversation.
+	ErrReplyTarget = errors.New("re is not an earlier message of the conversation")
 
 	// errNoChange tells withTx to roll the transaction back and return nil.
 	// Idempotent publish and close of an already-closed conversation take it
@@ -140,6 +150,7 @@ type Conversation struct {
 // Seq is assigned at commit and increases across the whole store. Within one
 // conversation it increases with gaps where other conversations published.
 // Conversation is set by Newest and After. Other reads leave it empty.
+// Re is nil when the message responds to nothing.
 type Message struct {
 	Conversation string
 	Seq          int64
@@ -149,9 +160,10 @@ type Message struct {
 	Body         string
 	TxID         string
 	Kind         string
+	Re           *int64
 }
 
-// Publish is a validated publish to commit.
+// Publish is a validated publish to commit. A nil Re responds to nothing.
 type Publish struct {
 	Conversation string
 	From         string
@@ -159,6 +171,7 @@ type Publish struct {
 	Body         string
 	TxID         string
 	Kind         string
+	Re           *int64
 	Time         string
 }
 
@@ -434,13 +447,13 @@ func (s *Store) Newest(ctx context.Context, limit int, before int64) ([]Message,
 		var err error
 		if before == 0 {
 			rows, err = tx.QueryContext(ctx, `
-				SELECT conversation, seq, time, sender, recipients, body, txid, kind
+				SELECT conversation, `+messageColumns+`
 				FROM messages
 				ORDER BY seq DESC
 				LIMIT ?`, limit)
 		} else {
 			rows, err = tx.QueryContext(ctx, `
-				SELECT conversation, seq, time, sender, recipients, body, txid, kind
+				SELECT conversation, `+messageColumns+`
 				FROM messages
 				WHERE seq < ?
 				ORDER BY seq DESC
@@ -473,14 +486,14 @@ func (s *Store) After(ctx context.Context, conversation string, after int64, lim
 		var err error
 		if conversation == "" {
 			rows, err = tx.QueryContext(ctx, `
-				SELECT conversation, seq, time, sender, recipients, body, txid, kind
+				SELECT conversation, `+messageColumns+`
 				FROM messages
 				WHERE seq > ?
 				ORDER BY seq
 				LIMIT ?`, after, probe)
 		} else {
 			rows, err = tx.QueryContext(ctx, `
-				SELECT conversation, seq, time, sender, recipients, body, txid, kind
+				SELECT conversation, `+messageColumns+`
 				FROM messages
 				WHERE conversation = ? AND seq > ?
 				ORDER BY seq
@@ -524,8 +537,10 @@ func (s *Store) List(ctx context.Context) ([]Conversation, error) {
 }
 
 // Publish commits one message, or returns the original when this sender
-// already stored this txid with the same kind, to, and body.
-// The same sender and txid with a different kind, to, or body returns ErrConflict.
+// already stored this txid with the same kind, to, body, and re.
+// The same sender and txid with a different kind, to, body, or re returns ErrConflict.
+// A re that is not the seq of an earlier message of the conversation returns
+// ErrReplyTarget and writes nothing.
 // Another sender using that txid is a different attempt.
 // A matching attempt returns the original message and writes nothing.
 // The conversation is the row committed with that result.
@@ -546,7 +561,8 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, Conversation,
 			return err
 		}
 		if found {
-			if stored.From == in.From && stored.Kind == in.Kind && stored.Body == in.Body && sameTo(stored.To, in.To) {
+			if stored.From == in.From && stored.Kind == in.Kind && stored.Body == in.Body &&
+				sameTo(stored.To, in.To) && sameRe(stored.Re, in.Re) {
 				msg = stored
 				already = true
 				return errNoChange
@@ -562,10 +578,13 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, Conversation,
 		var seq int64
 		err = tx.QueryRowContext(ctx, `
 			INSERT INTO messages (
-				conversation, time, sender, recipients, body, txid, kind
-			) VALUES (?, ?, ?, ?, ?, ?, ?)
+				conversation, time, sender, recipients, body, txid, kind, re
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			RETURNING seq`,
-			in.Conversation, in.Time, in.From, rec, in.Body, in.TxID, in.Kind).Scan(&seq)
+			in.Conversation, in.Time, in.From, rec, in.Body, in.TxID, in.Kind, nullSeq(in.Re)).Scan(&seq)
+		if isBadReply(err) {
+			return ErrReplyTarget
+		}
 		if err != nil {
 			return err
 		}
@@ -577,6 +596,7 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, Conversation,
 			Body: in.Body,
 			TxID: in.TxID,
 			Kind: in.Kind,
+			Re:   copySeq(in.Re),
 		}
 		return nil
 	})
@@ -615,7 +635,7 @@ func (s *Store) Scan(ctx context.Context, name string, after int64, fn func(Mess
 		}
 		status = conv.Status
 		rows, err := tx.QueryContext(ctx, `
-			SELECT seq, time, sender, recipients, body, txid, kind
+			SELECT `+messageColumns+`
 			FROM messages
 			WHERE conversation = ? AND seq > ?
 			ORDER BY seq`, name, after)
@@ -623,7 +643,7 @@ func (s *Store) Scan(ctx context.Context, name string, after int64, fn func(Mess
 			return err
 		}
 		for rows.Next() {
-			m, err := scanOne(rows)
+			m, err := scanMessage(rows, false)
 			if err != nil {
 				return joinClose(err, rows.Close())
 			}
@@ -802,9 +822,11 @@ func recordedSchema(ctx context.Context, tx *sql.Tx) (string, bool, error) {
 }
 
 func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
-	kind, err := columnExists(ctx, tx, "messages", "kind")
-	if err != nil || !kind {
-		return false, err
+	for _, col := range []string{"kind", "re"} {
+		ok, err := columnExists(ctx, tx, "messages", col)
+		if err != nil || !ok {
+			return false, err
+		}
 	}
 	for _, col := range []string{"task", "ticket", "seat", "directory", "prompts", "custom", "roster"} {
 		ok, err := columnExists(ctx, tx, "conversations", col)
@@ -816,7 +838,57 @@ func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 	if err != nil || !seqKey {
 		return false, err
 	}
+	keys, err := uniqueKeys(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	for _, want := range [][]string{{"conversation", "seq"}, {"conversation", "seq", "kind"}} {
+		if !hasKey(keys, want) {
+			return false, nil
+		}
+	}
 	return tableExists(ctx, tx, "members")
+}
+
+// uniqueKeys returns the ordered columns of each unique index on messages that covers every row.
+// An unnamed UNIQUE gets a generated sqlite_autoindex name, so keys are matched by columns.
+// A partial index cannot be a foreign key parent, so it is not a key.
+func uniqueKeys(ctx context.Context, tx *sql.Tx) ([][]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT il.name, ii.name
+		FROM pragma_index_list('messages') AS il, pragma_index_info(il.name) AS ii
+		WHERE il."unique" = 1 AND il.partial = 0
+		ORDER BY il.name, ii.seqno`)
+	if err != nil {
+		return nil, err
+	}
+	var keys [][]string
+	last := ""
+	for rows.Next() {
+		var index string
+		var col sql.NullString
+		if err := rows.Scan(&index, &col); err != nil {
+			return nil, joinClose(err, rows.Close())
+		}
+		if len(keys) == 0 || index != last {
+			keys = append(keys, nil)
+			last = index
+		}
+		keys[len(keys)-1] = append(keys[len(keys)-1], col.String)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, joinClose(err, rows.Close())
+	}
+	return keys, rows.Close()
+}
+
+func hasKey(keys [][]string, want []string) bool {
+	for _, k := range keys {
+		if slices.Equal(k, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // seqIsPrimaryKey reports whether seq alone is the messages primary key.
@@ -855,16 +927,10 @@ func columnExists(ctx context.Context, tx *sql.Tx, table, col string) (bool, err
 func scanPlaced(rows *sql.Rows) ([]Message, error) {
 	out := make([]Message, 0)
 	for rows.Next() {
-		var m Message
-		var rec string
-		if err := rows.Scan(&m.Conversation, &m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind); err != nil {
+		m, err := scanMessage(rows, true)
+		if err != nil {
 			return nil, joinClose(err, rows.Close())
 		}
-		to, err := unmarshalTo(rec)
-		if err != nil {
-			return nil, joinClose(fmt.Errorf("message %s/%d recipients: %w", m.Conversation, m.Seq, err), rows.Close())
-		}
-		m.To = to
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -876,17 +942,29 @@ func scanPlaced(rows *sql.Rows) ([]Message, error) {
 	return out, nil
 }
 
-func scanOne(rows *sql.Rows) (Message, error) {
+// scanMessage reads messageColumns, led by conversation when placed is true.
+func scanMessage(row rowScanner, placed bool) (Message, error) {
 	var m Message
 	var rec string
-	if err := rows.Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind); err != nil {
+	var re sql.NullInt64
+	dest := []any{&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind, &re}
+	if placed {
+		dest = append([]any{&m.Conversation}, dest...)
+	}
+	if err := row.Scan(dest...); err != nil {
 		return Message{}, err
 	}
 	to, err := unmarshalTo(rec)
 	if err != nil {
+		if placed {
+			return Message{}, fmt.Errorf("message %s/%d recipients: %w", m.Conversation, m.Seq, err)
+		}
 		return Message{}, fmt.Errorf("message %d recipients: %w", m.Seq, err)
 	}
 	m.To = to
+	if re.Valid {
+		m.Re = &re.Int64
+	}
 	return m, nil
 }
 
@@ -901,24 +979,17 @@ func joinClose(err, cerr error) error {
 }
 
 func messageByAttempt(ctx context.Context, tx *sql.Tx, conversation, sender, txid string) (Message, bool, error) {
-	var m Message
-	var rec string
-	err := tx.QueryRowContext(ctx, `
-		SELECT seq, time, sender, recipients, body, txid, kind
+	m, err := scanMessage(tx.QueryRowContext(ctx, `
+		SELECT `+messageColumns+`
 		FROM messages
 		WHERE conversation = ? AND sender = ? AND txid = ?`,
-		conversation, sender, txid).Scan(&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind)
+		conversation, sender, txid), false)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, false, nil
 	}
 	if err != nil {
 		return Message{}, false, err
 	}
-	to, err := unmarshalTo(rec)
-	if err != nil {
-		return Message{}, false, err
-	}
-	m.To = to
 	return m, true, nil
 }
 
@@ -1025,16 +1096,40 @@ func tighten(path string) error {
 	return nil
 }
 
-func sqlitePrimary(err error) int {
+// SQLite result codes this store branches on (https://sqlite.org/rescode.html).
+const (
+	sqliteConstraint           = 19
+	sqliteConstraintCheck      = 275
+	sqliteConstraintForeignKey = 787
+)
+
+// sqliteCode is the extended result code of a driver error, or 0.
+func sqliteCode(err error) int {
 	var se *sqlite.Error
 	if !errors.As(err, &se) {
 		return 0
 	}
-	return se.Code() & 0xff
+	return se.Code()
+}
+
+func sqlitePrimary(err error) int {
+	return sqliteCode(err) & 0xff
+}
+
+// isBadReply reports a message insert refused by the re foreign key or the re < seq check.
+// The conversation is read in the same transaction first, so its foreign key cannot be the cause.
+// The result code does not name the constraint, so re < seq must stay the only CHECK on messages.
+func isBadReply(err error) bool {
+	switch sqliteCode(err) {
+	case sqliteConstraintCheck, sqliteConstraintForeignKey:
+		return true
+	default:
+		return false
+	}
 }
 
 func isConstraint(err error) bool {
-	return sqlitePrimary(err) == 19
+	return sqlitePrimary(err) == sqliteConstraint
 }
 
 func isBusy(err error) bool {

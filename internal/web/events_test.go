@@ -649,7 +649,7 @@ func (s *sseStream) expectEnd(t *testing.T) {
 func expectMessage(t *testing.T, ev sseEvent, seq int64, conv string) {
 	t.Helper()
 	n := strconv.FormatInt(seq, 10)
-	want := `<li class="message" data-seq="` + n + `" data-conversation="` + conv + `">`
+	want := `<li class="message" id="msg-` + n + `" data-seq="` + n + `" data-conversation="` + conv + `">`
 	if ev.Name != eventMessage || ev.ID != n || !strings.HasPrefix(ev.Data, want) || !strings.HasSuffix(ev.Data, "</li>") {
 		t.Fatalf("want message %s in %s, got %+v", n, conv, ev)
 	}

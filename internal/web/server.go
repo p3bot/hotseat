@@ -229,6 +229,10 @@ func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 		s.render(w, p)
 		return
 	}
+	if !newest {
+		p.History = true
+		p.NewestHref = conversationPath(name)
+	}
 	if err := s.fillRecent(r.Context(), &p, before, newest); err != nil {
 		if r.Context().Err() != nil {
 			return

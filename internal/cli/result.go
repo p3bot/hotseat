@@ -155,6 +155,9 @@ func (lw *lineWriter) message(msg client.Message) {
 	lw.plain("time", msg.Time)
 	lw.plain("from", msg.From)
 	lw.plain("kind", msg.Kind)
+	if msg.Re != nil {
+		lw.integer("re", *msg.Re)
+	}
 	for _, name := range msg.To {
 		lw.plain("to", name)
 	}

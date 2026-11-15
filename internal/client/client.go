@@ -92,6 +92,7 @@ type Result struct {
 
 // Message is one transcript entry as the bus returned it.
 // Conversation is set by the messages and watch operations and omitted on the others.
+// Re is the seq this message responds to, and nil when the bus sent null.
 type Message struct {
 	Seq          int64    `json:"seq"`
 	Time         string   `json:"time"`
@@ -100,6 +101,7 @@ type Message struct {
 	Body         string   `json:"body"`
 	TxID         string   `json:"txid"`
 	Kind         string   `json:"kind"`
+	Re           *int64   `json:"re"`
 	Conversation string   `json:"conversation,omitempty"`
 }
 
@@ -148,6 +150,7 @@ type CreateRequest struct {
 
 // PublishRequest is the publish body. To keeps the caller's order.
 // A nil To is sent as an empty array. Kind is required by the bus.
+// A nil Re omits the field. Any other value is sent, and the bus refuses one below 1.
 type PublishRequest struct {
 	Conversation string   `json:"conversation"`
 	From         string   `json:"from"`
@@ -155,6 +158,7 @@ type PublishRequest struct {
 	Body         string   `json:"body"`
 	TxID         string   `json:"txid"`
 	Kind         string   `json:"kind"`
+	Re           *int64   `json:"re,omitempty"`
 }
 
 // ReadRequest is the read body. A nil Name omits the field.

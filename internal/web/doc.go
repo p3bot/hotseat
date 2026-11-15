@@ -27,10 +27,20 @@
 // generate one.
 // A message body is rendered as Markdown. The stored text stays in the
 // message. Markdown shows that text, and Copy writes it.
+// Each message row has id msg-<seq>. A message with re shows it in the
+// message foot as a link to /conversations/{name}?before=<re+1>#msg-<re>, so
+// the referenced message is the top of that group, including one older than
+// the newest 50. A conversation
+// named "." or ".." shows re as text. Send does not take re. A transcript
+// served with before is a history view. Its top links to the newest group,
+// which is the live view.
 // GET /events is a Server-Sent Events stream for one view: Messages with no
-// view parameter, a transcript with conversation=<name>, and Conversations
-// with view=list. It starts after query after=<seq> or the Last-Event-ID
-// header, and the header wins. view=list takes neither. Each stream is its
+// view parameter, a transcript with conversation=<name>, Conversations
+// with view=list, and a history view with conversation=<name>&view=history.
+// It starts after query after=<seq> or the Last-Event-ID header, and the
+// header wins. view=list takes neither. A history stream watches with no
+// cursor, sends conversations and meta, and never sends message or reset.
+// It ignores Last-Event-ID, and after is answered 400. Each stream is its
 // own client of the bus and calls watch, not wait. It sends message with
 // id <seq> for each message of its view, conversations with the Open and
 // Closed sections and the search index, and, on a transcript, meta with the
@@ -40,7 +50,8 @@
 // ends a 200 stream, so the browser reconnects. Event data comes from the
 // same template blocks as the pages. The stream position comes from the tab
 // and is not stored.
-// Each visible tab holds one stream for its view and updates in place. A new
+// Each visible tab holds one stream for its view and updates in place,
+// except that a history view shows no new message. A new
 // message appears at the top of Messages or its transcript with a brief
 // highlight, and nothing is trimmed. Conversations, the search index, and
 // the side panel follow the list. The open Send form, Markdown toggles, and

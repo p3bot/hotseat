@@ -9,6 +9,7 @@ package web
 import (
 	"html/template"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/p3bot/hotseat/internal/client"
@@ -36,6 +37,8 @@ type page struct {
 	Seat          string
 	Directory     string
 	PublishAction string
+	History       bool
+	NewestHref    string
 	Group         *messageGroup
 	From          string
 	ToText        string
@@ -62,6 +65,25 @@ type messageItem struct {
 	Conversation string
 	Href         string
 	Message      client.Message
+}
+
+// Anchor is the element id of this message. seq is unique across the store, so it is unique on a page.
+func (m messageItem) Anchor() string {
+	return messageAnchor(m.Message.Seq)
+}
+
+// ReHref links the message re names: its conversation's history group with
+// that message at the top. It is empty when there is no re or no conversation link.
+func (m messageItem) ReHref() string {
+	if m.Message.Re == nil || m.Href == "" {
+		return ""
+	}
+	re := *m.Message.Re
+	return olderHref(m.Href, re+1) + "#" + messageAnchor(re)
+}
+
+func messageAnchor(seq int64) string {
+	return "msg-" + strconv.FormatInt(seq, 10)
 }
 
 type indexEntry struct {
@@ -249,6 +271,9 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 .meta .when { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 1rem 0 0.15rem; font-size: 0.875rem; color: var(--muted); }
 .foot .seq-n { color: var(--fg); font-variant-numeric: tabular-nums; }
+.foot-start { display: flex; align-items: baseline; gap: 0.6rem; }
+.foot .re { font-variant-numeric: tabular-nums; }
+#newest { margin: 0 0 0.75rem; }
 .kind { display: inline-block; padding: 0.05rem 0.55rem; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--muted); font-size: 0.75rem; font-weight: 650; line-height: 1.4; text-transform: capitalize; }
 .kind[data-kind="error"] { color: var(--issues); background: var(--banner); border-color: color-mix(in srgb, var(--issues) 35%, var(--line)); }
 .kind[data-kind="instruction"], .kind[data-kind="instructions"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, #fff); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
@@ -325,8 +350,9 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 <p id="publish-outcome">{{.Publish.Outcome}}</p>
 {{if .Publish.Reason}}<p id="publish-reason">{{.Publish.Reason}}</p>{{end}}
 </section>{{end}}
-<section id="transcript-section">
-{{if .Group}}{{if ne .Group.Outcome "ok"}}<p id="read-outcome">{{.Group.Outcome}}</p>
+<section id="transcript-section"{{if .History}} data-history{{end}}>
+{{if .History}}<p id="newest"><a href="{{.NewestHref}}">Newest messages</a></p>
+{{end}}{{if .Group}}{{if ne .Group.Outcome "ok"}}<p id="read-outcome">{{.Group.Outcome}}</p>
 {{if .Group.Reason}}<p id="read-reason">{{.Group.Reason}}</p>{{end}}
 {{end}}{{if and .Group (eq .Group.Outcome "ok")}}{{if eq (len .Group.Messages) 0}}<p id="transcript-empty">No messages.</p>
 {{else}}<ol id="transcript">
@@ -513,6 +539,9 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 
   var view = pageView(location.pathname);
   if (!view) return;
+  // The server marks a transcript served with before. Its stream follows the list and the side panel only.
+  var historySection = view.history ? document.getElementById(view.region) : null;
+  var historyView = !!(historySection && historySection.hasAttribute("data-history"));
   function pageView(path) {
     if (path === "/") return { list: "messages", empty: "empty", region: "main", url: "/", stream: "/events?", loadNotice: true };
     if (path === "/conversations") return { sections: true, stream: "/events?view=list", loadNotice: true };
@@ -527,6 +556,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
       region: "transcript-section",
       url: "/conversations/" + m[1],
       stream: "/events?conversation=" + encodeURIComponent(name) + "&",
+      history: "/events?conversation=" + encodeURIComponent(name) + "&view=history",
       // After a failed Send the notice explains the send, which a reload does not undo.
       loadNotice: !m[2]
     };
@@ -672,10 +702,11 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
   var reloadDue = false;
   function openStream() {
     if (source || reloading || document.visibilityState === "hidden") return;
-    source = new EventSource(view.list ? view.stream + "after=" + seq : view.stream);
+    if (historyView) source = new EventSource(view.history);
+    else source = new EventSource(view.list ? view.stream + "after=" + seq : view.stream);
     source.addEventListener("conversations", applyConversations);
     if (view.meta) source.addEventListener("meta", applyMeta);
-    if (view.list) {
+    if (view.list && !historyView) {
       source.addEventListener("message", applyMessage);
       source.addEventListener("reset", reset);
     }
@@ -760,7 +791,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     if (view.sections && mainEl) applySections(doc);
     if (box && results && trim(box.value) !== "") renderSearch();
     // The event follows a watch and a list that worked, so a quiet view can recover too.
-    if (view.list && groupMissing()) reset();
+    if (view.list && !historyView && groupMissing()) reset();
   }
   function applyMeta(event) {
     replaceFrom(parseHTML(event.data), "conversation-meta");
@@ -861,14 +892,14 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 </dl>
 </aside>{{end}}{{define "convRows"}}{{range .}}<li class="conv"><p class="conv-name">{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="name">{{.Name}}</span>{{end}}</p>{{if or .Task .Ticket .Seat}}<dl class="conv-binding">{{if .Task}}<div><dt>Task</dt><dd>{{.Task}}</dd></div>{{end}}{{if .Ticket}}<div><dt>Ticket</dt><dd>{{.Ticket}}</dd></div>{{end}}{{if .Seat}}<div><dt>Seat</dt><dd>{{.Seat}}</dd></div>{{end}}</dl>{{end}}</li>
 {{end}}{{end}}
-{{define "messageItem"}}<li class="message" data-seq="{{.Message.Seq}}" data-conversation="{{.Conversation}}"><p class="where">{{if .Href}}<a href="{{.Href}}">{{.Conversation}}</a>{{else}}{{.Conversation}}{{end}}</p>
+{{define "messageItem"}}<li class="message" id="{{.Anchor}}" data-seq="{{.Message.Seq}}" data-conversation="{{.Conversation}}"><p class="where">{{if .Href}}<a href="{{.Href}}">{{.Conversation}}</a>{{else}}{{.Conversation}}{{end}}</p>
 {{template "messageMeta" .Message}}
 {{template "messageBody" .Message}}
-{{template "messageFoot" .Message}}
+{{template "messageFoot" .}}
 </li>{{end}}
 {{define "olderMarker"}}{{if .Full}}<div id="more" data-next="{{.NextPage}}"></div>
 {{end}}{{end}}
 {{define "messageMeta"}}<p class="meta"><span class="who">From: <span class="from">{{.From}}</span>{{if .To}} To: <span class="to">{{range $i, $name := .To}}{{if $i}}, {{end}}<span class="addressee">{{$name}}</span>{{end}}</span>{{end}}</span><span class="meta-end"><time class="when" datetime="{{.Time}}">{{viewTime .Time}}</time><span class="msg-actions"><button type="button" class="markdown" aria-pressed="false" aria-label="Markdown" title="Markdown"><svg viewBox="25 22 165 84" aria-hidden="true"><path fill="currentColor" d="M30 98V30h20l20 25 20-25h20v68H90V59L70 84 50 59v39zm125 0-30-33h20V30h20v35h20z"/></svg></button><button type="button" class="copy" aria-label="Copy markdown" title="Copy markdown"><svg class="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></button></span></span></p>{{end}}
 {{define "messageBody"}}<div class="body rendered">{{renderBody .Body}}</div><pre class="body source" hidden>{{.Body}}</pre>{{end}}
-{{define "messageFoot"}}<p class="foot"><span class="seq-n">{{.Seq}}</span><span class="kind" data-kind="{{.Kind}}">{{.Kind}}</span></p>{{end}}
+{{define "messageFoot"}}<p class="foot"><span class="foot-start"><span class="seq-n">{{.Message.Seq}}</span>{{with .ReHref}}<a class="re" href="{{.}}">re {{$.Message.Re}}</a>{{else}}{{if .Message.Re}}<span class="re">re {{.Message.Re}}</span>{{end}}{{end}}</span><span class="kind" data-kind="{{.Message.Kind}}">{{.Message.Kind}}</span></p>{{end}}
 `

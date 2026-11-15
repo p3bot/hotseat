@@ -251,6 +251,9 @@ func validatePublish(in PublishInput, maxBody int) error {
 	if !validName(in.Kind) {
 		return rule(ReasonKindBad)
 	}
+	if in.Re != nil && *in.Re < 1 {
+		return rule(ReasonReRange)
+	}
 	return nil
 }
 
@@ -351,25 +354,26 @@ func decodeStringList(raw []byte, shape string) ([]string, error) {
 	return names, nil
 }
 
-// parsePID reports an optional pid. Absent and null are unset.
-// Any other value that is not an integer greater than zero is refused.
-func parsePID(raw json.RawMessage) (pid int64, has bool, err error) {
+// parsePositive reports an optional integer field such as pid or re. Absent and null are unset.
+// Any other value that is not an integer greater than zero is refused with reason,
+// so a float or a string names the field instead of the whole request.
+func parsePositive(raw json.RawMessage, reason string) (n int64, has bool, err error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return 0, false, nil
 	}
 	if trimmed[0] == '"' { // json.Number accepts a JSON string.
-		return 0, true, rule(ReasonPID)
+		return 0, true, rule(reason)
 	}
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	dec.UseNumber()
-	var n json.Number
-	if err := dec.Decode(&n); err != nil || dec.More() {
-		return 0, true, rule(ReasonPID)
+	var num json.Number
+	if err := dec.Decode(&num); err != nil || dec.More() {
+		return 0, true, rule(reason)
 	}
-	i, err := n.Int64()
+	i, err := num.Int64()
 	if err != nil || i <= 0 {
-		return 0, true, rule(ReasonPID)
+		return 0, true, rule(reason)
 	}
 	return i, true, nil
 }

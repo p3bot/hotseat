@@ -29,7 +29,8 @@ const (
 	eventMeta          = "meta"
 	eventReset         = "reset"
 
-	viewParamList = "list"
+	viewParamList    = "list"
+	viewParamHistory = "history"
 
 	// streamRetry is the reconnect delay, in milliseconds, the stream gives the browser.
 	streamRetry = 2000
@@ -39,13 +40,16 @@ const (
 var watchDeadline = 25 * time.Second
 
 // streamView is the part of the bus one /events stream follows.
-// A transcript names its conversation. Conversations has no messages.
+// A transcript and a history name their conversation. Conversations and a history have no messages.
 type streamView int
 
 const (
 	viewMessages streamView = iota
 	viewTranscript
 	viewList
+	// viewHistory is a transcript served with before. A cursor would see the
+	// later messages and reset the tab off the group it opened.
+	viewHistory
 )
 
 func (v streamView) String() string {
@@ -54,9 +58,21 @@ func (v streamView) String() string {
 		return "transcript"
 	case viewList:
 		return "list"
+	case viewHistory:
+		return "history"
 	default:
 		return "messages"
 	}
+}
+
+// named reports a view of one conversation.
+func (v streamView) named() bool {
+	return v == viewTranscript || v == viewHistory
+}
+
+// follows reports a view that sends its messages and can reset.
+func (v streamView) follows() bool {
+	return v == viewMessages || v == viewTranscript
 }
 
 // stream is the state of one /events response.
@@ -77,14 +93,24 @@ type stream struct {
 func parseStream(r *http.Request) (stream, string, bool) {
 	q := r.URL.Query()
 	st := stream{view: viewMessages}
-	if q.Has("view") {
-		if q.Get("view") != viewParamList {
-			return stream{}, "view must be list or omitted", false
-		}
+	switch {
+	case !q.Has("view"):
+	case q.Get("view") == viewParamList:
 		if q.Has("conversation") {
 			return stream{}, "view list does not take a conversation", false
 		}
 		return stream{view: viewList}, "", true
+	case q.Get("view") == viewParamHistory:
+		if !q.Has("conversation") || q.Get("conversation") == "" {
+			return stream{}, "view history requires a conversation", false
+		}
+		if q.Has("after") {
+			return stream{}, "view history does not take after", false
+		}
+		// Last-Event-ID is ignored: a history stream sends no message, so it has no position.
+		return stream{view: viewHistory, name: q.Get("conversation")}, "", true
+	default:
+		return stream{}, "view must be list, history, or omitted", false
 	}
 	if q.Has("conversation") {
 		st.view = viewTranscript
@@ -124,10 +150,11 @@ func position(raw string) (int64, bool) {
 // than a group, so a gap wider than a group is seen as a reset.
 func (st *stream) watchRequest() client.WatchRequest {
 	req := client.WatchRequest{}
-	if st.view == viewTranscript {
+	// A history watch names its conversation only so the bus refuses a bad name.
+	if st.view.named() {
 		req.Conversation = st.name
 	}
-	if st.view != viewList {
+	if st.view.follows() {
 		cursor := st.cursor
 		limit := groupLimit
 		if !st.hasRev {
@@ -157,7 +184,7 @@ func (s Server) handleEvents(stop context.Context, w http.ResponseWriter, r *htt
 	defer context.AfterFunc(stop, cancel)()
 
 	log := s.logger().With("op", "events", "view", st.view.String())
-	if st.view == viewTranscript {
+	if st.view.named() {
 		log = log.With("conversation", st.name)
 	}
 
@@ -297,7 +324,7 @@ func (s Server) sendList(ctx context.Context, st *stream, out eventWriter) error
 		}
 		st.conversations = frag
 	}
-	if st.view != viewTranscript {
+	if !st.view.named() {
 		return nil
 	}
 	meta, err := renderBlock("convMeta", p)

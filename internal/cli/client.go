@@ -56,8 +56,10 @@ func newPublishCmd() *cobra.Command {
 	var address, conv, from, body, key, kind string
 	var to []string
 	var bodyFile string
+	var re int64
 	cmd := newClientCmd("publish", "Publish a message", `  hotseat publish --conversation job --from alice --kind say --to bob --body hello
   hotseat publish --conversation job --from alice --kind say --to bob --body hello --txid 1
+  hotseat publish --conversation job --from bob --kind say --to alice --body done --re 1
   hotseat publish --conversation job --from alice --kind say --to bob --body-file note.txt`, func(cmd *cobra.Command) error {
 		text, err := publishBody(cmd, body, bodyFile)
 		if err != nil {
@@ -79,6 +81,7 @@ func newPublishCmd() *cobra.Command {
 			Body:         text,
 			TxID:         key,
 			Kind:         kind,
+			Re:           changedRe(cmd, re),
 		})
 	})
 	addAddress(cmd, &address)
@@ -89,6 +92,7 @@ func newPublishCmd() *cobra.Command {
 	cmd.Flags().StringVar(&body, "body", "", "message body")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "file to read the body from; - reads stdin")
 	cmd.Flags().StringVar(&key, "txid", "", "transaction id; 10 hex characters when omitted")
+	cmd.Flags().Int64Var(&re, "re", 0, "seq of an earlier message of this conversation that this one responds to; omit for none")
 	markRequired(cmd, "conversation", "from", "kind")
 	return cmd
 }
@@ -238,6 +242,14 @@ func changedString(cmd *cobra.Command, flag, value string) *string {
 		return nil
 	}
 	return &value
+}
+
+// changedRe omits the field when --re was not passed.
+func changedRe(cmd *cobra.Command, re int64) *int64 {
+	if !cmd.Flags().Changed("re") {
+		return nil
+	}
+	return &re
 }
 
 // changedKinds omits the field when --kind was not passed.

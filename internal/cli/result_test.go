@@ -461,6 +461,10 @@ func (c *textCursor) messageFields() (client.Message, error) {
 	if err != nil {
 		return msg, err
 	}
+	msg.Re, err = c.optionalInt("re")
+	if err != nil {
+		return msg, err
+	}
 	msg.To = []string{}
 	for {
 		if c.i >= len(c.raw) {

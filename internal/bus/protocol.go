@@ -43,6 +43,8 @@ const (
 	ReasonKeyConflict          = "transaction id reused with different content"
 	ReasonKindRequired         = "kind is required"
 	ReasonKindBad              = "kind must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
+	ReasonReRange              = "re must be an integer greater than zero"
+	ReasonReTarget             = "re must be the seq of an earlier message of the same conversation"
 	ReasonKindsShape           = "kinds must be an array of names"
 	ReasonKindsEmpty           = "kinds must not be empty"
 	ReasonKindsBadName         = "kinds contains a name that is not 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"

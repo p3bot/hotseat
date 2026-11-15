@@ -82,12 +82,12 @@ func TestEveryMessageItemNamesItsSeqAndConversation(t *testing.T) {
 		items []string
 	}{
 		{name: "messages", page: messages, items: []string{
-			`<li class="message" data-seq="9" data-conversation="beta"><p class="where"><a href="/conversations/beta">beta</a></p>`,
-			`<li class="message" data-seq="7" data-conversation=".."><p class="where">..</p>`,
+			`<li class="message" id="msg-9" data-seq="9" data-conversation="beta"><p class="where"><a href="/conversations/beta">beta</a></p>`,
+			`<li class="message" id="msg-7" data-seq="7" data-conversation=".."><p class="where">..</p>`,
 		}},
 		{name: "transcript", page: transcript, items: []string{
-			`<li class="message" data-seq="6" data-conversation="job"><p class="where"><a href="/conversations/job">job</a></p>`,
-			`<li class="message" data-seq="4" data-conversation="job"><p class="where"><a href="/conversations/job">job</a></p>`,
+			`<li class="message" id="msg-6" data-seq="6" data-conversation="job"><p class="where"><a href="/conversations/job">job</a></p>`,
+			`<li class="message" id="msg-4" data-seq="4" data-conversation="job"><p class="where"><a href="/conversations/job">job</a></p>`,
 		}},
 	}
 	for _, tc := range cases {
@@ -125,7 +125,7 @@ func TestMessageFooterKeepsSourceBesideRenderedMarkdown(t *testing.T) {
 		t.Fatalf("copy tooltip\n%s", html)
 	}
 	when := strings.Index(html, `class="when"`)
-	kind := strings.Index(html, `class="seq-n">4</span><span class="kind" data-kind="instruction">instruction</span>`)
+	kind := strings.Index(html, `class="seq-n">4</span></span><span class="kind" data-kind="instruction">instruction</span>`)
 	if rendered < 0 || source < rendered || actions < 0 || when < 0 || actions < when || kind < source {
 		t.Fatalf("message\n%s", html)
 	}
@@ -769,14 +769,14 @@ func TestRecoveryClearsALoadNoticeButNotASendNotice(t *testing.T) {
 	}
 }
 
-func TestResetFromAnOlderGroupDropsBeforeOnce(t *testing.T) {
-	d := loadPage(t, renderPage(t, transcriptFixture("job", "/conversations/job?before=38", 39, 38)), "/conversations/job?before=40", "")
-	d.serve(true, renderPage(t, transcriptFixture("job", "/conversations/job?before=199", 200, 199)))
+func TestResetFromAnOlderMessagesGroupDropsBeforeOnce(t *testing.T) {
+	d := loadPage(t, renderPage(t, messagesFixture("/?before=38", 39, 38)), "/?before=40", "")
+	d.serve(true, renderPage(t, messagesFixture("/?before=199", 200, 199)))
 	d.emit("reset", "")
-	if got := d.str(`__fetches.join(" ") + "|" + __replaced.join(" ") + "|" + location.search`); got != "/conversations/job streams=0|/conversations/job|" {
+	if got := d.str(`__fetches.join(" ") + "|" + __replaced.join(" ") + "|" + location.search`); got != "/ streams=0|/|" {
 		t.Fatalf("reload %q", got)
 	}
-	if got := d.str(`__sources.length + " " + __streamURLs()`); got != "2 /events?conversation=job&after=200" {
+	if got := d.str(`__sources.length + " " + __streamURLs()`); got != "2 /events?after=200" {
 		t.Fatalf("streams %q", got)
 	}
 }
