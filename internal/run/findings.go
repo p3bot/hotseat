@@ -42,6 +42,11 @@ func (w window) of(kinds ...string) []client.Message {
 	return out
 }
 
+// fixed reports whether the window holds a fixed whose re is absent or names finding. Any other fixed is not reported.
+func (w window) fixed(finding int64) bool {
+	return slices.ContainsFunc(w.of(kindFixed), func(m client.Message) bool { return concerns(m, finding) })
+}
+
 // launchWindow launches name and returns the messages it stored during the launch.
 // The start is read inside the member's slot, so a message stored before the process started is outside the window.
 func (e *engine) launchWindow(name string, kind launchKind, prompt string) (window, error) {
@@ -190,7 +195,7 @@ func (e *engine) holdHandoffs(on bool) {
 	e.mu.Unlock()
 }
 
-// judgeFinding reports a finding that opened no discussion. A stored report of the same finding is not repeated.
+// judgeFinding reports a finding that opened no discussion. The derived transaction id stores that report once.
 func (e *engine) judgeFinding(f client.Message) error {
 	if !e.canLaunch() {
 		return nil
@@ -199,10 +204,10 @@ func (e *engine) judgeFinding(f client.Message) error {
 	if err != nil {
 		return e.busErr(err)
 	}
-	if l.valid(f.Seq) || l.reported(errBody(f.From, classBadFinding, f.Seq)) {
+	if l.valid(f.Seq) {
 		return nil
 	}
-	return e.protocolErr(f.From, classBadFinding, f.Seq)
+	return e.factErr(f.From, classBadFinding, f.Seq, factTx(classBadFinding, f.From, seqText(f.Seq)))
 }
 
 // judgeStray reports a stance, pass, extend, or deadlock that no live launch window ruled on.
@@ -311,8 +316,8 @@ func (e *engine) resumeSet(turn client.Message, seen int64) error {
 	return e.followUp(turn, seen)
 }
 
-// judgeReplies reports each live recipient of the set that published no say or finding to the turn's sender.
-// A recipient that timed out already has its failure published. A stored report is not repeated.
+// judgeReplies reports each live recipient of the set that published no answer to the turn.
+// A recipient that timed out already has its failure published. The derived transaction id stores each report once.
 func (e *engine) judgeReplies(turn client.Message) error {
 	if !e.canLaunch() {
 		return nil
@@ -322,10 +327,10 @@ func (e *engine) judgeReplies(turn client.Message) error {
 		return e.busErr(err)
 	}
 	for _, name := range l.unanswered(turn) {
-		if e.localStatus(name) == statusTimedOut || l.reported(errBody(name, classNoReply, turn.Seq)) {
+		if e.localStatus(name) == statusTimedOut {
 			continue
 		}
-		if err := e.protocolErr(name, classNoReply, turn.Seq); err != nil {
+		if err := e.factErr(name, classNoReply, turn.Seq, factTx(classNoReply, name, seqText(turn.Seq))); err != nil {
 			return err
 		}
 	}
@@ -359,7 +364,7 @@ func (e *engine) aggregateSet(turn client.Message, findings []client.Message) er
 	failed := e.localStatus(seat) == statusTimedOut
 	switch {
 	case len(aggs) == 1:
-		if g, ok := aggregate(aggs[0].Body, seqs); ok {
+		if g, ok := aggregate(aggs[0].Body, seqs); ok && concerns(aggs[0], turn.Seq) {
 			groups = g
 		} else if err := e.protocolErr(seat, classBadAggregate, aggs[0].Seq); err != nil {
 			return err
@@ -545,7 +550,7 @@ func (e *engine) judgeTurn(d *discussion, speaker string, w window) (string, err
 		}
 	case 1:
 		s := stances[0]
-		if !d.stance(speaker, s.Kind, s.Seq) {
+		if !concerns(s, d.finding) || !d.stance(speaker, s.Kind, s.Seq) {
 			if err := e.protocolErr(speaker, classBadStance, s.Seq); err != nil {
 				return "", err
 			}
@@ -563,7 +568,7 @@ func (e *engine) judgeTurn(d *discussion, speaker string, w window) (string, err
 	if len(passes) == 0 || failed {
 		return "", nil
 	}
-	if len(passes) > 1 || len(stances) != 1 || len(passes[0].To) != 1 || !d.passable(speaker, passes[0].To[0]) {
+	if len(passes) > 1 || len(stances) != 1 || len(passes[0].To) != 1 || !concerns(passes[0], d.finding) || !d.passable(speaker, passes[0].To[0]) {
 		for _, p := range passes {
 			if err := e.protocolErr(speaker, classBadPass, p.Seq); err != nil {
 				return "", err
@@ -614,7 +619,7 @@ func (e *engine) actingOrStop() (string, error) {
 	return "", e.noteHalt(errors.New(classNoBackup))
 }
 
-// fix launches the finder to apply the agreed proposal. A launch with no fixed hands the fix to the acting seat once.
+// fix launches the finder to apply the agreed proposal. A launch with no fixed for the finding hands the fix to the acting seat once.
 func (e *engine) fix(finding int64, finder string, proposal int64) error {
 	w, err := e.launchWindow(finder, launchFix, e.fixPrompt(finder, finding, proposal))
 	if err == nil {
@@ -623,7 +628,7 @@ func (e *engine) fix(finding int64, finder string, proposal int64) error {
 	if err != nil {
 		return err
 	}
-	if fixed := w.of(kindFixed); len(fixed) > 0 {
+	if w.fixed(finding) {
 		e.out.record([2]string{"fixed", seqText(finding)}, [2]string{"from", finder})
 		return nil
 	}
@@ -641,7 +646,7 @@ func (e *engine) fix(finding int64, finder string, proposal int64) error {
 	if err != nil {
 		return err
 	}
-	if fixed := w.of(kindFixed); len(fixed) > 0 {
+	if w.fixed(finding) {
 		e.out.record([2]string{"fixed", seqText(finding)}, [2]string{"from", seat})
 		return nil
 	}
@@ -686,7 +691,14 @@ func (e *engine) stall(d *discussion) (bool, error) {
 		if err := e.judgeBacklog(); err != nil {
 			return false, err
 		}
-		if len(extends)+len(deadlocks) != 1 {
+		decided := len(extends)+len(deadlocks) == 1
+		if decided && len(deadlocks) == 1 && !concerns(deadlocks[0], d.finding) {
+			if err := e.protocolErr(seat, classBadDeadlock, deadlocks[0].Seq); err != nil {
+				return false, err
+			}
+			decided = false
+		}
+		if !decided {
 			// A seat that timed out already has its failure published, so the backup decides.
 			if failed {
 				if e.quiet() {
@@ -711,19 +723,22 @@ func (e *engine) stall(d *discussion) (bool, error) {
 }
 
 // extend refreshes the budget of each live roster name in the extend's to. Each other name is reported.
+// An extend whose re names another message refreshes nobody and is reported like one addressed to nobody.
 // Every extend counts toward the turn cap, including one that refreshes nobody.
 func (e *engine) extend(d *discussion, seat string, ext client.Message) (bool, error) {
-	e.syncDead(d)
-	refreshed, rejected := d.extend(ext.To)
-	for _, name := range rejected {
-		if err := e.protocolErr(name, classBadExtend, ext.Seq); err != nil {
-			return false, err
+	var refreshed []string
+	addressed := len(ext.To) > 0 && concerns(ext, d.finding)
+	if addressed {
+		e.syncDead(d)
+		var rejected []string
+		refreshed, rejected = d.extend(ext.To)
+		for _, name := range rejected {
+			if err := e.protocolErr(name, classBadExtend, ext.Seq); err != nil {
+				return false, err
+			}
 		}
-	}
-	if len(ext.To) == 0 {
-		if err := e.protocolErr(seat, classBadExtend, ext.Seq); err != nil {
-			return false, err
-		}
+	} else if err := e.protocolErr(seat, classBadExtend, ext.Seq); err != nil {
+		return false, err
 	}
 	switch e.takeTurn() {
 	case turnWindingDown:
@@ -802,7 +817,7 @@ func (e *engine) reportAgain() (bool, error) {
 }
 
 // reportStop prints the stop result from the messages stored before the stopping done.
-// An unsettled stop with no halted publishes one unsettled error, unless one is already stored.
+// An unsettled stop with no halted publishes one unsettled error about the stopping done, under a derived transaction id.
 func (e *engine) reportStop() error {
 	l, err := e.ledgerOn(e.root)
 	if err != nil {
@@ -824,10 +839,8 @@ func (e *engine) reportStop() error {
 		e.out.line("outcome", "deadlock")
 		return ErrUnresolved
 	}
-	if !l.reported(classUnsettled) {
-		if err := e.protocolErr("", classUnsettled, 0); err != nil {
-			return err
-		}
+	if err := e.factErr("", classUnsettled, e.doneSeq, factTx(classUnsettled, seqText(e.doneSeq))); err != nil {
+		return err
 	}
 	e.out.line("outcome", "unsettled")
 	return ErrUnresolved
@@ -863,6 +876,11 @@ func (e *engine) readCommands(b *strings.Builder, name string, cursor int64) {
 	fmt.Fprintf(b, "Read everything else with: hotseat read --conversation %s --cursor %d --limit 200 --name %s\n", e.name, cursor, name)
 }
 
+// publishCommand writes the publish command a prompt gives for what, with the re run judges it by.
+func (e *engine) publishCommand(b *strings.Builder, what, name, kind string, re int64) {
+	fmt.Fprintf(b, "Publish %s with: hotseat publish --conversation %s --from %s --kind %s --re %d, then --to and the body.\n", what, e.name, name, kind, re)
+}
+
 func (e *engine) discussionPrompt(name string, d *discussion, restarted bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
@@ -884,6 +902,8 @@ func (e *engine) discussionPrompt(name string, d *discussion, restarted bool) st
 	}
 	fmt.Fprintf(&b, "Address the stance to every roster name: %s.\n", strings.Join(d.roster, " "))
 	b.WriteString("When you need one member's answer next, also publish one pass addressed to that one member. Do not use turn for this.\n")
+	e.publishCommand(&b, "the stance", name, "<stance>", d.finding)
+	e.publishCommand(&b, "a pass", name, kindPass, d.finding)
 	b.WriteString(e.busNote())
 	return b.String()
 }
@@ -908,6 +928,7 @@ func (e *engine) aggregatePrompt(name string, turn client.Message, findings []in
 	b.WriteString("The body has one line per issue: the seq of the finding to keep, then the seq of each duplicate it drops, separated by spaces. Keep the most complete finding.\n")
 	b.WriteString("Every finding listed above is on exactly one line. A finding with no duplicate is a line of its own. Nothing else is in the body.\n")
 	b.WriteString("Do not rewrite a finding, take a stance, pass, or edit the document. Each kept finding is discussed in seq order.\n")
+	e.publishCommand(&b, "the aggregate", name, kindAggregate, turn.Seq)
 	b.WriteString(e.busNote())
 	return b.String()
 }
@@ -934,6 +955,7 @@ func (e *engine) stallPrompt(name string, d *discussion, asks []int64) string {
 	b.WriteString("Publish exactly one of these, not both:\n")
 	b.WriteString("- extend with to naming each member whose budget is refreshed. The discussion continues from the same proposal and agreements.\n")
 	fmt.Fprintf(&b, "- deadlock addressed to every roster name and owner: %s owner. The run stops.\n", strings.Join(d.roster, " "))
+	e.publishCommand(&b, "the extend or deadlock", name, "<extend or deadlock>", d.finding)
 	b.WriteString(e.busNote())
 	return b.String()
 }
@@ -946,6 +968,7 @@ func (e *engine) fixPrompt(name string, finding, proposal int64) string {
 	e.readCommands(&b, name, finding-1)
 	fmt.Fprintf(&b, "Apply the agreed proposal at seq %d. You decide how to apply it. The decision to fix is made.\n", proposal)
 	fmt.Fprintf(&b, "Then publish fixed addressed to every roster name: %s. The body says what changed. Do not pass.\n", strings.Join(rosterNames(e.roster), " "))
+	e.publishCommand(&b, "the fixed", name, kindFixed, finding)
 	b.WriteString(e.busNote())
 	return b.String()
 }

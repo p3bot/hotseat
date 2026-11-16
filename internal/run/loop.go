@@ -358,7 +358,7 @@ func (e *engine) apply(batch []client.Message, historical bool) error {
 			if stop {
 				return e.finishDone(done)
 			}
-			if err := e.actTurn(msg, historical, batch[len(batch)-1].Seq, batch[i+1:]); err != nil {
+			if err := e.actTurn(msg, historical, batch[len(batch)-1].Seq); err != nil {
 				return err
 			}
 		}
@@ -385,7 +385,7 @@ func (e *engine) resumeIfDiscussed(turn client.Message, seen int64) (bool, error
 }
 
 // turnSettled is the rule for a set with no discuss: every recipient has exited or timed out, the follow-up target
-// has a later turn or done, and no recipient published a finding before it. A bootstrap exit is not that proof.
+// has a later turn or done, and the ledger gives the set no finding. A bootstrap exit is not that proof.
 func (e *engine) turnSettled(msg client.Message, later []client.Message) (bool, error) {
 	recips := e.rosterTo(msg.To)
 	if len(recips) == 0 {
@@ -405,37 +405,26 @@ func (e *engine) turnSettled(msg client.Message, later []client.Message) (bool, 
 	if target == "" {
 		return false, nil
 	}
-	for _, m := range later {
-		if m.Kind == kindFinding && slices.Contains(recips, m.From) {
-			return false, nil
-		}
-		if m.From == target && (m.Kind == kindTurn || m.Kind == kindDone) {
-			return true, nil
-		}
+	if !slices.ContainsFunc(later, func(m client.Message) bool {
+		return m.From == target && (m.Kind == kindTurn || m.Kind == kindDone)
+	}) {
+		return false, nil
 	}
-	return false, nil
+	l, err := e.ledgerOn(e.child)
+	if err != nil {
+		return false, e.busErr(err)
+	}
+	return len(l.findingsOf(msg.Seq)) == 0, nil
 }
 
-// badTurnReported is the stored rejection. A later resume does not reject the turn again.
-func badTurnReported(later []client.Message) bool {
-	for _, m := range later {
-		if m.Kind == kindTurn {
-			return false
-		}
-		if m.Kind == kindError && m.From == fromRun && m.Body == classBadTurn {
-			return true
-		}
-	}
-	return false
-}
-
-func (e *engine) actTurn(msg client.Message, historical bool, seen int64, later []client.Message) error {
+func (e *engine) actTurn(msg client.Message, historical bool, seen int64) error {
 	if !e.canLaunch() {
 		return nil
 	}
-	// A live error can be stored after a newer turn. Only the stored transcript is settled.
-	if historical && badTurnReported(later) {
-		return nil
+	mode, phase, ok := parseMode(msg.Body)
+	// A stored rejected turn never takes a turn from the cap, so a continuation only reports it.
+	if !ok && historical {
+		return e.rejectTurn(msg)
 	}
 	switch e.takeTurn() {
 	case turnWindingDown:
@@ -446,9 +435,8 @@ func (e *engine) actTurn(msg client.Message, historical bool, seen int64, later 
 		}
 		return e.noteHalt(errors.New(classTurnCap))
 	}
-	mode, phase, ok := parseMode(msg.Body)
 	if !ok {
-		return e.publishErr("", classBadTurn)
+		return e.rejectTurn(msg)
 	}
 	turnLine := make([][2]string, 0, 1+len(msg.To))
 	turnLine = append(turnLine, [2]string{"turn", mode})
@@ -458,7 +446,7 @@ func (e *engine) actTurn(msg client.Message, historical bool, seen int64, later 
 	e.out.record(turnLine...)
 	for _, name := range msg.To {
 		if name != "" && !nameIn(e.roster, name) {
-			if err := e.publishErr(name, classBadTurn); err != nil {
+			if _, err := e.storeErr(name, classBadTurn, msg.Seq, factTx(classBadTurn, name, seqText(msg.Seq))); err != nil {
 				return err
 			}
 		}
@@ -483,6 +471,12 @@ func (e *engine) actTurn(msg client.Message, historical bool, seen int64, later 
 		return e.stopped()
 	}
 	return e.finishSet(msg, seen)
+}
+
+// rejectTurn reports a turn whose body run rejects. Its derived transaction id stores one error however often it is read.
+func (e *engine) rejectTurn(turn client.Message) error {
+	_, err := e.storeErr("", classBadTurn, turn.Seq, factTx(classBadTurn, seqText(turn.Seq)))
+	return err
 }
 
 // stopForNewDone closes when a stopping done was stored after the batch in hand.

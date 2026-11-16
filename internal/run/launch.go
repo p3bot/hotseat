@@ -16,11 +16,11 @@ import (
 	"io"
 	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/client"
 )
 
@@ -65,8 +65,7 @@ func (e *engine) launchForTurn(name string, turn client.Message, prompt string) 
 	return err
 }
 
-// answered reports whether name published a say or finding after turn that names its sender in to.
-// A named read would also return messages to all, so to is checked here.
+// answered reports whether name published an answer to turn after it.
 func (e *engine) answered(name string, turn client.Message) (bool, error) {
 	msgs, err := e.readFrom(turn.Seq)
 	if err != nil {
@@ -80,10 +79,21 @@ func (e *engine) answered(name string, turn client.Message) (bool, error) {
 	return false, nil
 }
 
-// replies reports whether m is name's answer to turn: a say or finding from name that names the turn's sender in to.
-// all does not count.
+// replies reports whether m is name's answer to turn: a say or finding from name whose re names the turn.
+// With no re, it answers when it names the turn's sender in to, and all does not count.
 func replies(m client.Message, name string, turn client.Message) bool {
-	return m.From == name && (m.Kind == kindSay || m.Kind == kindFinding) && slices.Contains(m.To, turn.From)
+	if m.From != name || (m.Kind != kindSay && m.Kind != kindFinding) {
+		return false
+	}
+	if m.Re != nil {
+		return *m.Re == turn.Seq
+	}
+	return slices.Contains(m.To, turn.From)
+}
+
+// concerns reports whether m's re is absent or names seq. A missing re costs readability only, and a wrong one states something false.
+func concerns(m client.Message, seq int64) bool {
+	return m.Re == nil || *m.Re == seq
 }
 
 // launchUnless runs one member process under its slot and reports whether it started one. skip, when set, is checked inside the slot.
@@ -415,56 +425,103 @@ func mintTx() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
+// publishErr publishes an error that names no message, under a random transaction id, and prints no status group.
 func (e *engine) publishErr(member, class string) error {
-	return e.publish(kindError, fromRun, []string{fromOwner}, errBody(member, class, 0))
+	_, err := e.storeErr(member, class, 0, "")
+	return err
 }
 
-// errBody is the error layout: the member, the class, and the seq of the one message that caused it, each line only when present.
-func errBody(member, class string, seq int64) string {
-	body := class
-	if member != "" {
-		body = member + "\n" + class
-	}
-	if seq > 0 {
-		body += "\n" + strconv.FormatInt(seq, 10)
-	}
-	return body
-}
-
-// protocolErr publishes a finding-protocol error to owner and prints its error group.
-func (e *engine) protocolErr(member, class string, seq int64) error {
-	if err := e.publish(kindError, fromRun, []string{fromOwner}, errBody(member, class, seq)); err != nil {
+// protocolErr publishes a finding-protocol error about the message at re, under a random transaction id, and prints its error group.
+func (e *engine) protocolErr(member, class string, re int64) error {
+	if _, err := e.storeErr(member, class, re, ""); err != nil {
 		return err
 	}
+	e.errGroup(member, class, re)
+	return nil
+}
+
+// factErr publishes a finding-protocol error under tx, a transaction id derived from its fact, and prints its error group.
+// A continuation that meets the same fact again gets the stored error back and prints nothing.
+func (e *engine) factErr(member, class string, re int64, tx string) error {
+	fresh, err := e.storeErr(member, class, re, tx)
+	if err != nil || !fresh {
+		return err
+	}
+	e.errGroup(member, class, re)
+	return nil
+}
+
+// storeErr publishes an error from run to owner and reports whether the bus stored a new message.
+// re is the message it concerns, or zero. An empty tx mints a random transaction id.
+func (e *engine) storeErr(member, class string, re int64, tx string) (bool, error) {
+	return e.send(post{kind: kindError, from: fromRun, to: []string{fromOwner}, body: errBody(member, class), re: re, tx: tx})
+}
+
+func (e *engine) errGroup(member, class string, re int64) {
 	group := [][2]string{{"error", class}}
 	if member != "" {
 		group = append(group, [2]string{"from", member})
 	}
-	if seq > 0 {
-		group = append(group, [2]string{"seq", strconv.FormatInt(seq, 10)})
+	if re > 0 {
+		group = append(group, [2]string{"seq", seqText(re)})
 	}
 	e.out.record(group...)
-	return nil
+}
+
+// errBody is the error layout: the member and the class, or the class alone. The message it concerns is its re.
+func errBody(member, class string) string {
+	if member == "" {
+		return class
+	}
+	return member + "\n" + class
+}
+
+// factTx is the transaction id of an error a continuation can meet again: the class and the parts of its fact, joined by slashes.
+func factTx(class string, parts ...string) string {
+	return strings.Join(append([]string{class}, parts...), "/")
+}
+
+// post is one message run publishes. A zero re publishes none, and an empty tx mints a random transaction id.
+type post struct {
+	kind string
+	from string
+	to   []string
+	body string
+	re   int64
+	tx   string
 }
 
 func (e *engine) publish(kind, from string, to []string, body string) error {
-	tx, err := mintTx()
-	if err != nil {
-		return err
+	_, err := e.send(post{kind: kind, from: from, to: to, body: body})
+	return err
+}
+
+// send publishes p and reports whether the bus stored a new message. A replay of a stored attempt is success and not new.
+func (e *engine) send(p post) (bool, error) {
+	tx := p.tx
+	if tx == "" {
+		var err error
+		if tx, err = mintTx(); err != nil {
+			return false, err
+		}
 	}
-	res, err := e.call(e.root, "publish", client.PublishRequest{
+	req := client.PublishRequest{
 		Conversation: e.name,
-		From:         from,
-		To:           to,
-		Body:         body,
+		From:         p.from,
+		To:           p.to,
+		Body:         p.body,
 		TxID:         tx,
-		Kind:         kind,
-	})
+		Kind:         p.kind,
+	}
+	if p.re > 0 {
+		req.Re = &p.re
+	}
+	res, err := e.call(e.root, "publish", req)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if res.Outcome != "ok" {
-		return fmt.Errorf("publish %s: %s", kind, res.Reason)
+	if res.Outcome != bus.OutcomeOK {
+		return false, fmt.Errorf("publish %s: %s", p.kind, res.Reason)
 	}
-	return nil
+	return res.AlreadyStored == nil || !*res.AlreadyStored, nil
 }

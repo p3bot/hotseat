@@ -179,19 +179,13 @@ func TestFollowUpCountsOnlyATurnAfterTheDiscussionsEnded(t *testing.T) {
 	}
 }
 
-func TestHaltedAndReportedReadOnlyRunMarkers(t *testing.T) {
-	l := newLedger(tx(
-		msg("b", kindHalted, "1"),
-		msg("b", kindError, "unsettled", "owner"),
-	), abc, selfTargets())
-	if _, ok := l.halted(); ok || l.reported(classUnsettled) {
+func TestHaltedReadsOnlyRunMarkers(t *testing.T) {
+	l := newLedger(tx(msg("b", kindHalted, "1")), abc, selfTargets())
+	if _, ok := l.halted(); ok {
 		t.Fatal("a member marker counted")
 	}
-	l = newLedger(tx(
-		msg("run", kindHalted, "7"),
-		msg("run", kindError, "unsettled", "owner"),
-	), abc, selfTargets())
-	if f, ok := l.halted(); !ok || f != 7 || !l.reported(classUnsettled) {
+	l = newLedger(tx(msg("run", kindHalted, "7")), abc, selfTargets())
+	if f, ok := l.halted(); !ok || f != 7 {
 		t.Fatal("run markers not read")
 	}
 }

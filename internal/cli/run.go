@@ -30,10 +30,13 @@ posts done or a safety rail trips.
 
 A turn launches each roster member on its to list that has not timed out,
 unless that member has already answered it. Once that member's earlier
-process has ended, run reads the transcript. A member that has published a say or finding after the turn, with
-the turn's sender named on its to list, has answered and is not launched for
-it. A to list of all does not count. Neither does an ask, or a say to someone
-else. A live run and --conversation follow the same rule.
+process has ended, run reads the transcript. A member that has published a
+say or finding after the turn whose re names that turn has answered and is
+not launched for it, whatever its to list. One with no re has answered when
+its to list names the turn's sender, and a to list of all does not count. A
+say or finding whose re names another message, and an ask, do not answer. A
+live run, --conversation, and the no reply report follow the same rule. Each
+turn prompt gives --re with the turn's seq for the say and each finding.
 
 The roster is --agents or HOTSEAT_AGENTS, a space-separated list of
 name=module:model. There is no HOTSEAT_MEMBERS. The flag wins over the
@@ -59,7 +62,9 @@ exits non-zero with outcome: error and the conversation open. A stopping done
 still closes it. A stored stopping done is reported before the minimum is
 read.
 
-A finding from a recipient of a set that has not finished opens a discussion.
+A finding from a recipient of a set that has not finished opens a discussion
+when its re names that set's turn, or it has no re. Any other finding is
+reported once with error class bad finding.
 When the set's recipients have exited or timed out, run reports each live
 recipient that did not reply with error class no reply, and publishes discuss.
 A set with two or more findings gets one acting-seat launch that publishes
@@ -73,6 +78,14 @@ finder applies a settled change and publishes fixed. --max-says or
 HOTSEAT_MAX_SAYS defaults to 4 discussion launches per member per finding.
 When nobody can speak, the acting seat publishes extend or deadlock. A
 deadlock stops the run and the seat reports with done.
+
+Each prompt gives the exact --re for the kind it asks for. A present re that
+names another message rejects a stance, pass, aggregate, extend, or deadlock
+under its class, and a fixed with one does not count. A missing re is never
+an error. A protocol error carries the member and class in its body and the
+message that caused it as re. bad finding, no reply, bad turn, and unsettled
+take a transaction id derived from their fact, so a continuation stores and
+prints none of them twice.
 
 The stop result is read from the messages stored before the stopping done.
 An unsettled finding prints unsettled, a settled change with no fixed prints

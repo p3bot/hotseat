@@ -15,4 +15,12 @@
 // durable state: run records the end of each set, each settle, and each
 // accepted deadlock as marker messages, and a continuation restarts the open
 // discussion from them.
+//
+// Every prompt names the exact --re for the kind it asks for. A message whose
+// re is present and is not the message run expects is rejected under its
+// kind's class. A missing re is judged by the transcript windows. A protocol
+// error carries the member and class in its body and the message that caused
+// it in re. An error a continuation can meet again takes a transaction id
+// derived from its fact, so the bus returns the stored error instead of a
+// second copy.
 package run

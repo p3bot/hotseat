@@ -112,6 +112,8 @@ type messageFile struct {
 	Kind string   `json:"kind"`
 	To   []string `json:"to"`
 	Body string   `json:"body"`
+	// Re is empty for none, "$re" for the --re value the prompt gives, "$line:key" for that prompt line, or a seq.
+	Re string `json:"re,omitempty"`
 }
 
 func newHarness(t *testing.T) *harness {

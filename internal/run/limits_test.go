@@ -539,7 +539,7 @@ func TestTurnAfterTheWindDownBeganIsNotTaken(t *testing.T) {
 	e, stdout := h.closingEngine()
 	e.windDown(classBelowMinimum)
 	turn := client.Message{Seq: 2, From: "alpha", Kind: kindTurn, To: []string{"zulu"}, Body: "no mode"}
-	if err := e.actTurn(turn, false, turn.Seq, nil); err != nil {
+	if err := e.actTurn(turn, false, turn.Seq); err != nil {
 		t.Fatal(err)
 	}
 	if e.acted != 0 || stdout.String() != "" || countKind(h.messages("kept"), kindError) != 0 {

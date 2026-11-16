@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -66,6 +67,8 @@ type message struct {
 	Kind string   `json:"kind"`
 	To   []string `json:"to"`
 	Body string   `json:"body"`
+	// Re is empty for none, "$re" for the --re value the prompt gives, "$line:key" for that prompt line, or a seq.
+	Re string `json:"re"`
 }
 
 type line struct {
@@ -201,6 +204,7 @@ func launch(dir string, p plan, stdin string) {
 		conv := between(stdin, "in conversation ", ".\n")
 		for i, m := range st.Publish {
 			m.Body = fromPrompt(m.Body, stdin)
+			m.Re = reFromPrompt(m.Re, stdin)
 			publish(conv, name, fmt.Sprintf("%s-%d-%d", name, os.Getpid(), i), m)
 		}
 		if d, err := time.ParseDuration(st.Sleep); err == nil {
@@ -229,6 +233,15 @@ func fromPrompt(body, stdin string) string {
 		return strings.Join(strings.Fields(between(stdin, "\n"+key+": ", "\n")), "\n")
 	}
 	return body
+}
+
+// reFromPrompt fills a re that names a prompt value. "$re" is the first --re value the prompt gives.
+func reFromPrompt(re, stdin string) string {
+	if re == "$re" {
+		v, _, _ := strings.Cut(between(stdin, "--re ", "\n"), ",")
+		return v
+	}
+	return fromPrompt(re, stdin)
 }
 
 // takeStep marks and returns the first unused step for this prompt. One member's launches never overlap.
@@ -260,9 +273,18 @@ func publish(conv, from, txid string, m message) {
 	if to == nil {
 		to = []string{}
 	}
-	body, err := json.Marshal(map[string]any{
+	req := map[string]any{
 		"conversation": conv, "from": from, "to": to, "body": m.Body, "txid": txid, "kind": m.Kind,
-	})
+	}
+	if m.Re != "" {
+		re, err := strconv.ParseInt(m.Re, 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "re %q: %v\n", m.Re, err)
+			os.Exit(1)
+		}
+		req["re"] = re
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

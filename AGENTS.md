@@ -91,7 +91,8 @@ Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/impleme
 | `ledger.go` | Pure reading of the transcript |
 
 - A stance is judged only by the live launch window it arrived in. A continuation never replays stances and restarts the open discussion from its finding. History is the messages stored before the continuation started, plus each leftover's messages up to its recorded exit.
-- A protocol error body is `<member>\n<class>\n<seq>`. Each class is a `class*` constant in `run.go`. `run.ErrUnresolved` maps to the CLI's reported failure.
+- A protocol error body is `<member>\n<class>`, or `<class>` alone, and its `re` is the message that caused it. `bad finding`, `no reply`, `bad turn`, and `unsettled` take a transaction id from `factTx`, so a continuation stores no second copy. Each class is a `class*` constant in `run.go`. `run.ErrUnresolved` maps to the CLI's reported failure.
+- Prompts give the exact `--re` for the kind they ask for. A present `re` other than the one `run` expects rejects the message, and a missing `re` falls back to the `seq` windows. `re` adds a check and never replaces a launch window.
 - Settled, do not reopen:
   - the roster is `name=module:model`, and there is no `HOTSEAT_MEMBERS`;
   - `mode` is the first line of a turn body, and the database has no phase, mode, or cursor column;

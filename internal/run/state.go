@@ -451,6 +451,8 @@ func (e *engine) turnPrompt(name string, msg client.Message, mode, phase string)
 		b.WriteByte('\n')
 	}
 	fmt.Fprintf(&b, "Register, publish a say addressed at least to %s, and exit.\n", msg.From)
+	e.publishCommand(&b, "the say", name, kindSay, msg.Seq)
+	e.publishCommand(&b, "each finding", name, kindFinding, msg.Seq)
 	b.WriteString(e.busNote())
 	return b.String()
 }

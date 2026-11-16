@@ -57,6 +57,12 @@ func says(kind string, to ...string) messageFile {
 	return messageFile{Kind: kind, To: to, Body: kind}
 }
 
+// withRe is m published with re, which the fake fills as messageFile.Re describes.
+func withRe(m messageFile, re string) messageFile {
+	m.Re = re
+	return m
+}
+
 // team is a fresh conversation with roster names, each on a fake module, and seat.
 func (h *harness) team(seat string, names ...string) Config {
 	cfg := h.base()
@@ -103,12 +109,26 @@ func ofKind(msgs []client.Message, kind string) []client.Message {
 	return out
 }
 
+// errorBodies are the stored errors as errLine writes them: the body, then a re line when the error has one.
 func errorBodies(msgs []client.Message) []string {
 	var out []string
 	for _, m := range ofKind(msgs, kindError) {
-		out = append(out, m.Body)
+		line := m.Body
+		if m.Re != nil {
+			line += "\nre " + strconv.FormatInt(*m.Re, 10)
+		}
+		out = append(out, line)
 	}
 	return out
+}
+
+// errLine is the error errorBodies lists for member, class, and re. A zero re is none.
+func errLine(member, class string, re int64) string {
+	line := errBody(member, class)
+	if re > 0 {
+		line += "\nre " + strconv.FormatInt(re, 10)
+	}
+	return line
 }
 
 // launchesWith are the launches of name whose prompt holds text, in call order.
@@ -392,11 +412,13 @@ func TestEarlyDoneWithAnOpenFindingExitsUnsettledAndAReplayMatches(t *testing.T)
 		t.Fatalf("err %v\n%s", res.err, res.stdout)
 	}
 	f := first(h.messages(name), "bravo", kindFinding)
-	tail := "unsettled: " + seqOf(f) + "\nerror: unsettled\noutcome: unsettled\n"
+	done := first(h.messages(name), "alpha", kindDone)
+	tail := "unsettled: " + seqOf(f) + "\nerror: unsettled\nseq: " + seqOf(done) + "\noutcome: unsettled\n"
 	if !strings.HasSuffix(res.stdout, tail) {
 		t.Fatalf("stdout\n%s", res.stdout)
 	}
-	wantErrors(t, h.messages(name), classUnsettled)
+	unsettled := errLine("", classUnsettled, first(h.messages(name), "alpha", kindDone).Seq)
+	wantErrors(t, h.messages(name), unsettled)
 	for _, agents := range []string{"alpha=hotseat/grok:m bravo=hotseat/grok:m", ""} {
 		cfg := h.continueKept(agents)
 		cfg.Conversation = name
@@ -404,7 +426,7 @@ func TestEarlyDoneWithAnOpenFindingExitsUnsettledAndAReplayMatches(t *testing.T)
 		if !errors.Is(err, ErrUnresolved) || !strings.HasSuffix(stdout, "unsettled: "+seqOf(f)+"\noutcome: unsettled\n") {
 			t.Fatalf("replay %v\n%s", err, stdout)
 		}
-		wantErrors(t, h.messages(name), classUnsettled)
+		wantErrors(t, h.messages(name), unsettled)
 	}
 }
 
@@ -415,7 +437,7 @@ func TestSettledChangeWithNoFixedAtTheStopIsUnfixed(t *testing.T) {
 	h.script("alpha", on(promptDiscussion, says(kindAgree, "alpha", "bravo")), on(promptFix, says(kindDone, "owner")))
 	res, name := h.play(h.team("alpha", "alpha", "bravo"))
 	f := first(h.messages(name), "bravo", kindFinding)
-	if !errors.Is(res.err, ErrUnresolved) || !strings.HasSuffix(res.stdout, "unfixed: "+seqOf(f)+"\nerror: unsettled\noutcome: unsettled\n") {
+	if !errors.Is(res.err, ErrUnresolved) || !strings.HasSuffix(res.stdout, "unfixed: "+seqOf(f)+"\nerror: unsettled\nseq: "+seqOf(first(h.messages(name), "alpha", kindDone))+"\noutcome: unsettled\n") {
 		t.Fatalf("err %v\n%s", res.err, res.stdout)
 	}
 }
@@ -444,7 +466,7 @@ func TestFixedStoredAfterTheStoppingDoneDoesNotCount(t *testing.T) {
 	if !errors.Is(err, ErrUnresolved) || !strings.Contains(stdout, want) {
 		t.Fatalf("replay %v\n%s", err, stdout)
 	}
-	wantErrors(t, h.messages(name), classUnsettled)
+	wantErrors(t, h.messages(name), errLine("", classUnsettled, first(msgs, "alpha", kindDone).Seq))
 }
 
 // bravoFinds scripts bravo's review of the seat alpha's turn to every name as one finding.
@@ -499,7 +521,7 @@ func TestStanceWindowViolationsReportAndLeaveTheProposal(t *testing.T) {
 				}}
 				settles(h, abcRoster, "charlie", "alpha")
 			},
-			want: "charlie\nbad stance\n%d", class: classBadStance, from: "charlie", kind: kindAgree,
+			want: "charlie\nbad stance\nre %d", class: classBadStance, from: "charlie", kind: kindAgree,
 		},
 		{
 			name: "proposer agree",
@@ -508,7 +530,23 @@ func TestStanceWindowViolationsReportAndLeaveTheProposal(t *testing.T) {
 				h.script("bravo", on(promptDiscussion, says(kindAgree, abcRoster...)), on(promptDiscussion, says(kindStand, abcRoster...)))
 				settles(h, abcRoster, "alpha", "charlie")
 			},
-			want: "bravo\nbad stance\n%d", class: classBadStance, from: "bravo", kind: kindAgree,
+			want: "bravo\nbad stance\nre %d", class: classBadStance, from: "bravo", kind: kindAgree,
+		},
+		{
+			name: "stance with a wrong re",
+			setup: func(h *harness) {
+				h.script("charlie", on(promptDiscussion, withRe(says(kindAgree, abcRoster...), "1")))
+				settles(h, abcRoster, "alpha", "charlie")
+			},
+			want: "charlie\nbad stance\nre %d", class: classBadStance, from: "charlie", kind: kindAgree,
+		},
+		{
+			name: "two stances, one with a wrong re",
+			setup: func(h *harness) {
+				h.script("charlie", on(promptDiscussion, withRe(says(kindAgree, abcRoster...), "$re"), withRe(says(kindObject, abcRoster...), "1")))
+				settles(h, abcRoster, "alpha", "charlie")
+			},
+			want: "charlie\nextra stance", class: classExtraStance, from: "charlie",
 		},
 		{
 			name: "stand from a member who is not the proposer",
@@ -516,7 +554,7 @@ func TestStanceWindowViolationsReportAndLeaveTheProposal(t *testing.T) {
 				h.script("charlie", on(promptDiscussion, says(kindStand, abcRoster...)))
 				settles(h, abcRoster, "alpha", "charlie")
 			},
-			want: "charlie\nbad stance\n%d", class: classBadStance, from: "charlie", kind: kindStand,
+			want: "charlie\nbad stance\nre %d", class: classBadStance, from: "charlie", kind: kindStand,
 		},
 	}
 	for _, tc := range cases {
@@ -567,6 +605,7 @@ func TestPassTakesEffectOnlyFromOneStanceToOneEligibleMember(t *testing.T) {
 		{name: "outside the roster", launch: []messageFile{agree, pass("zed")}, bad: 1, next: "delta"},
 		{name: "to the proposer with no objection", launch: []messageFile{agree, pass("bravo")}, bad: 1, next: "delta"},
 		{name: "twice", launch: []messageFile{agree, pass("alpha"), pass("alpha")}, bad: 2, next: "delta"},
+		{name: "with a wrong re", launch: []messageFile{agree, withRe(pass("alpha"), "1")}, bad: 1, next: "delta"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -582,7 +621,7 @@ func TestPassTakesEffectOnlyFromOneStanceToOneEligibleMember(t *testing.T) {
 			var want []string
 			for _, p := range ofKind(msgs, kindPass) {
 				if len(want) < tc.bad {
-					want = append(want, "charlie\nbad pass\n"+seqOf(p))
+					want = append(want, "charlie\nbad pass\nre "+seqOf(p))
 				}
 			}
 			if tc.next == "delta" && tc.launch[0].Kind == kindPass {
@@ -613,7 +652,7 @@ func TestPassOutsideADiscussionLaunchIsReported(t *testing.T) {
 		t.Fatalf("%v\n%s", res.err, res.stdout)
 	}
 	msgs := h.messages(name)
-	wantErrors(t, msgs, "bravo\nbad pass\n"+seqOf(first(msgs, "bravo", kindPass)))
+	wantErrors(t, msgs, "bravo\nbad pass\nre "+seqOf(first(msgs, "bravo", kindPass)))
 }
 
 func TestTimedOutFinderHandsTheFixToTheSeatAndASecondMissStops(t *testing.T) {
@@ -684,10 +723,10 @@ func TestExtendRefreshesLiveNamesAndReportsTheRest(t *testing.T) {
 		t.Fatalf("extends %+v", ext)
 	}
 	wantErrors(t, msgs,
-		errBody("delta", classProcessExit, 0),
-		errBody("alpha", classBadExtend, ext[0].Seq),
-		errBody("delta", classBadExtend, ext[1].Seq),
-		errBody("zed", classBadExtend, ext[1].Seq),
+		errLine("delta", classProcessExit, 0),
+		errLine("alpha", classBadExtend, ext[0].Seq),
+		errLine("delta", classBadExtend, ext[1].Seq),
+		errLine("zed", classBadExtend, ext[1].Seq),
 	)
 	if !strings.Contains(res.stdout, "extend: "+seqOf(f)+"\nto: charlie\n") || strings.Count(res.stdout, "extend: ") != 1 {
 		t.Fatalf("stdout\n%s", res.stdout)
@@ -710,7 +749,7 @@ func TestDeadlockOutsideAStallLaunchIsReportedAndHaltsNothing(t *testing.T) {
 	}
 	msgs := h.messages(name)
 	dl := ofKind(msgs, kindDeadlock)
-	wantErrors(t, msgs, "charlie\nbad deadlock\n"+seqOf(dl[0]), "alpha\nbad deadlock\n"+seqOf(dl[1]))
+	wantErrors(t, msgs, "charlie\nbad deadlock\nre "+seqOf(dl[0]), "alpha\nbad deadlock\nre "+seqOf(dl[1]))
 	if len(ofKind(msgs, kindHalted)) != 0 || !strings.Contains(res.stdout, "error: bad deadlock\nfrom: charlie\nseq: "+seqOf(dl[0])+"\n") {
 		t.Fatalf("stdout\n%s", res.stdout)
 	}
@@ -735,7 +774,7 @@ func TestSeatThatTimesOutInItsStallLaunchHandsTheStallToTheBackup(t *testing.T) 
 		t.Fatalf("stall launches %+v", h.calls())
 	}
 	msgs := h.messages(name)
-	wantErrors(t, msgs, errBody("alpha", classProcessExit, 0))
+	wantErrors(t, msgs, errLine("alpha", classProcessExit, 0))
 	if len(ofKind(msgs, kindSettled)) != 1 || len(ofKind(msgs, kindHalted)) != 0 {
 		t.Fatalf("msgs %+v", msgs)
 	}
@@ -833,7 +872,7 @@ func TestFindingOutsideARunningSetIsReportedAndOpensNothing(t *testing.T) {
 	if outsider.Seq < first(msgs, "alpha", kindTurn).Seq {
 		t.Fatalf("charlie's finding came before the turn: %+v", msgs)
 	}
-	wantErrors(t, msgs, errBody("alpha", classBadFinding, none.Seq), errBody("charlie", classBadFinding, outsider.Seq))
+	wantErrors(t, msgs, errLine("alpha", classBadFinding, none.Seq), errLine("charlie", classBadFinding, outsider.Seq))
 	if len(ofKind(msgs, kindSettled)) != 0 || strings.Contains(res.stdout, "\nfinding: ") {
 		t.Fatalf("a bad finding opened a discussion\n%s", res.stdout)
 	}
@@ -873,6 +912,18 @@ func (h *harness) reviewed() (turn, finding client.Message) {
 	h.publish("kept", "bravo", kindSay, "found one", []string{"alpha"})
 	h.publish("kept", "charlie", kindSay, "clean", []string{"alpha"})
 	return turn, finding
+}
+
+// storedErr stores an error from run in kept, as an earlier process would have, under tx.
+func (h *harness) storedErr(member, class string, re int64, tx string) client.Message {
+	h.t.Helper()
+	res := h.do("publish", client.PublishRequest{
+		Conversation: "kept", From: fromRun, To: []string{fromOwner}, Body: errBody(member, class), TxID: tx, Kind: kindError, Re: &re,
+	})
+	if res.Outcome != bus.OutcomeOK || res.Message == nil {
+		h.t.Fatalf("publish error: %s", res.Reason)
+	}
+	return *res.Message
 }
 
 func (h *harness) marker(kind, body string) client.Message {
@@ -1052,7 +1103,7 @@ func TestContinueJudgesAStrayFromATurnLaunchedWhileALeftoverRuns(t *testing.T) {
 		t.Fatalf("%v\n%s", res.err, res.stdout)
 	}
 	msgs := h.messages("kept")
-	wantErrors(t, msgs, errBody("charlie", classBadStance, first(msgs, "charlie", kindAgree).Seq))
+	wantErrors(t, msgs, errLine("charlie", classBadStance, first(msgs, "charlie", kindAgree).Seq))
 }
 
 func TestContinueAfterHaltedReportsAgainAndNothingElse(t *testing.T) {
@@ -1082,7 +1133,7 @@ func TestRejectedMemberDeadlockBeforeARestartDoesNotEndTheRun(t *testing.T) {
 	turn, _ := h.reviewed()
 	h.marker(kindDiscuss, seqOf(turn))
 	dl := h.publish("kept", "charlie", kindDeadlock, "stop", []string{"alpha", "bravo", "charlie", "owner"})
-	h.publish("kept", fromRun, kindError, errBody("charlie", classBadDeadlock, dl.Seq), []string{"owner"})
+	h.storedErr("charlie", classBadDeadlock, dl.Seq, "random")
 	finishes(h)
 	res := h.playKept()
 	if res.err != nil || !strings.HasSuffix(res.stdout, "outcome: done\n") {
@@ -1092,7 +1143,7 @@ func TestRejectedMemberDeadlockBeforeARestartDoesNotEndTheRun(t *testing.T) {
 	if len(ofKind(msgs, kindHalted)) != 0 || len(ofKind(msgs, kindSettled)) != 1 {
 		t.Fatalf("msgs %+v", msgs)
 	}
-	wantErrors(t, msgs, errBody("charlie", classBadDeadlock, dl.Seq))
+	wantErrors(t, msgs, errLine("charlie", classBadDeadlock, dl.Seq))
 }
 
 func TestContinueDoesNotReportAStoredBadFindingAgain(t *testing.T) {
@@ -1103,7 +1154,7 @@ func TestContinueDoesNotReportAStoredBadFindingAgain(t *testing.T) {
 			h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
 			bad := h.publish("kept", "charlie", kindFinding, "not mine", abcRoster)
 			if stored {
-				h.publish("kept", fromRun, kindError, errBody("charlie", classBadFinding, bad.Seq), []string{"owner"})
+				h.storedErr("charlie", classBadFinding, bad.Seq, "bad finding/charlie/"+seqOf(bad))
 			}
 			h.publish("kept", "bravo", kindSay, "clean", []string{"alpha"})
 			h.script("alpha", on(promptFollow, says(kindDone, "owner")))
@@ -1111,7 +1162,7 @@ func TestContinueDoesNotReportAStoredBadFindingAgain(t *testing.T) {
 			if res.err != nil {
 				t.Fatalf("%v\n%s", res.err, res.stdout)
 			}
-			wantErrors(t, h.messages("kept"), errBody("charlie", classBadFinding, bad.Seq))
+			wantErrors(t, h.messages("kept"), errLine("charlie", classBadFinding, bad.Seq))
 			if got := strings.Contains(res.stdout, "error: bad finding\n"); got == stored {
 				t.Fatalf("error group %v\n%s", got, res.stdout)
 			}
@@ -1133,7 +1184,7 @@ func TestResumeWithoutRosterOpensNothingAndReportsTheStoredDone(t *testing.T) {
 	}
 	h.publish("kept", "alpha", kindDone, "early", []string{"owner"})
 	res := h.awaitRun(ch, 10*time.Second)
-	tail := "unsettled: " + seqOf(f) + "\nerror: unsettled\noutcome: unsettled\n"
+	tail := "unsettled: " + seqOf(f) + "\nerror: unsettled\nseq: " + seqOf(first(h.messages("kept"), "alpha", kindDone)) + "\noutcome: unsettled\n"
 	if !errors.Is(res.err, ErrUnresolved) || !strings.HasSuffix(res.stdout, tail) {
 		t.Fatalf("%v\n%s", res.err, res.stdout)
 	}
@@ -1141,7 +1192,7 @@ func TestResumeWithoutRosterOpensNothingAndReportsTheStoredDone(t *testing.T) {
 	if !errors.Is(err, ErrUnresolved) || !strings.HasSuffix(stdout, "unsettled: "+seqOf(f)+"\noutcome: unsettled\n") {
 		t.Fatalf("replay %v\n%s", err, stdout)
 	}
-	wantErrors(t, h.messages("kept"), classUnsettled)
+	wantErrors(t, h.messages("kept"), errLine("", classUnsettled, first(h.messages("kept"), "alpha", kindDone).Seq))
 	if h.launchCount() != 0 {
 		t.Fatalf("calls %+v", h.calls())
 	}
@@ -1210,7 +1261,7 @@ func TestMemberLostBelowTheMinimumStopsADiscussion(t *testing.T) {
 	if len(ofKind(msgs, kindSettled)) != 0 || len(h.launchesWith("bravo", promptFix))+len(h.launchesWith("bravo", promptStall)) != 0 {
 		t.Fatalf("calls %+v", h.calls())
 	}
-	wantErrors(t, msgs, errBody("alpha", classProcessExit, 0), classBelowMinimum)
+	wantErrors(t, msgs, errLine("alpha", classProcessExit, 0), classBelowMinimum)
 	if c, _ := h.conv(name); c.Status != "open" {
 		t.Fatalf("status %s", c.Status)
 	}
@@ -1232,7 +1283,7 @@ func TestFailedDiscussionLaunchKeepsItsStanceAndReportsOnlyTheExit(t *testing.T)
 	if len(ofKind(msgs, kindSettled)) != 1 {
 		t.Fatalf("msgs %+v", msgs)
 	}
-	wantErrors(t, msgs, errBody("charlie", classProcessExit, 0))
+	wantErrors(t, msgs, errLine("charlie", classProcessExit, 0))
 }
 
 func TestFailedDiscussionLaunchReportsOnlyAnInvalidStance(t *testing.T) {
@@ -1254,9 +1305,9 @@ func TestFailedDiscussionLaunchReportsOnlyAnInvalidStance(t *testing.T) {
 				t.Fatalf("%v\n%s", res.err, res.stdout)
 			}
 			msgs := h.messages(name)
-			want := []string{errBody("charlie", classProcessExit, 0)}
+			want := []string{errLine("charlie", classProcessExit, 0)}
 			if tc.stance != "" {
-				want = append(want, errBody("charlie", classBadStance, first(msgs, "charlie", tc.stance).Seq))
+				want = append(want, errLine("charlie", classBadStance, first(msgs, "charlie", tc.stance).Seq))
 			}
 			wantErrors(t, msgs, want...)
 		})
@@ -1383,7 +1434,7 @@ func TestAcceptedPassAndExtendCountTowardTheTurnCap(t *testing.T) {
 			t.Fatalf("%v\n%s", res.err, res.stdout)
 		}
 		msgs := h.messages(name)
-		wantErrors(t, msgs, errBody("zulu", classBadExtend, first(msgs, "alpha", kindExtend).Seq), classTurnCap)
+		wantErrors(t, msgs, errLine("zulu", classBadExtend, first(msgs, "alpha", kindExtend).Seq), classTurnCap)
 	})
 }
 
@@ -1450,6 +1501,7 @@ func TestFailedAggregateDiscussesEveryFinding(t *testing.T) {
 	}{
 		{"no aggregate", on(promptAggregate), classNoAggregate, false},
 		{"bad aggregate", on(promptAggregate, messageFile{Kind: kindAggregate, To: abcRoster, Body: "999"}), classBadAggregate, true},
+		{"aggregate with a wrong re", on(promptAggregate, messageFile{Kind: kindAggregate, To: abcRoster, Body: "$line:findings", Re: "1"}), classBadAggregate, true},
 		{"two aggregates", on(promptAggregate,
 			messageFile{Kind: kindAggregate, To: abcRoster, Body: "$line:findings"},
 			messageFile{Kind: kindAggregate, To: abcRoster, Body: "$line:findings"},
@@ -1492,11 +1544,11 @@ func TestFailedAggregateDiscussesEveryFinding(t *testing.T) {
 				t.Fatalf("settled %+v", settled)
 			}
 			// Each aggregate the seat stored is reported on its own seq. A missing aggregate is reported once with no seq.
-			want := []string{errBody("alpha", tc.class, 0)}
+			want := []string{errLine("alpha", tc.class, 0)}
 			if tc.atSeq {
 				want = nil
 				for _, a := range ofKind(msgs, kindAggregate) {
-					want = append(want, errBody("alpha", tc.class, a.Seq))
+					want = append(want, errLine("alpha", tc.class, a.Seq))
 				}
 			}
 			wantErrors(t, msgs, want...)
@@ -1551,7 +1603,7 @@ func TestRecipientThatPublishesNothingIsReportedAndNamedInTheFollowUp(t *testing
 	}
 	msgs := h.messages(name)
 	turn := first(msgs, "alpha", kindTurn)
-	wantErrors(t, msgs, errBody("charlie", classNoReply, turn.Seq))
+	wantErrors(t, msgs, errLine("charlie", classNoReply, turn.Seq))
 	if e := first(msgs, fromRun, kindError); e.Seq > first(msgs, fromRun, kindDiscuss).Seq {
 		t.Fatalf("no reply %d after discuss", e.Seq)
 	}

@@ -63,7 +63,8 @@ func newLedger(msgs []client.Message, roster []string, targets map[string]string
 		settled: make(map[int64]settle),
 		fixed:   make(map[int64]int64),
 	}
-	var latest int64
+	// latest is the newest settled marker and settledFinding its finding, zero when its body does not parse.
+	var latest, settledFinding int64
 	for _, m := range msgs {
 		switch {
 		case m.Kind == kindTurn:
@@ -83,8 +84,9 @@ func newLedger(msgs []client.Message, roster []string, targets map[string]string
 				}
 			}
 		case l.marker(m, kindSettled):
-			latest = m.Seq
+			latest, settledFinding = m.Seq, 0
 			if f, p, ok := parseSettled(m.Body); ok {
+				settledFinding = f
 				if _, dup := l.settled[f]; !dup {
 					l.settled[f] = settle{marker: m, proposal: p}
 				}
@@ -93,8 +95,8 @@ func newLedger(msgs []client.Message, roster []string, targets map[string]string
 			if f, err := strconv.ParseInt(m.Body, 10, 64); err == nil && !l.halt {
 				l.haltedAt, l.haltMarker, l.halt = f, m.Seq, true
 			}
-		case m.Kind == kindFixed && latest != 0:
-			// Discussions are serial, so a fixed belongs to the latest settled marker before it.
+		case m.Kind == kindFixed && latest != 0 && concerns(m, settledFinding):
+			// Discussions are serial, so a fixed belongs to the latest settled marker before it, unless its re names another message.
 			if _, dup := l.fixed[latest]; !dup {
 				l.fixed[latest] = m.Seq
 			}
@@ -111,7 +113,7 @@ func newLedger(msgs []client.Message, roster []string, targets map[string]string
 			if turn.Seq >= m.Seq {
 				break
 			}
-			if m.Seq < l.ends[turn.Seq] && slices.Contains(turn.To, m.From) {
+			if concerns(m, turn.Seq) && l.accepts(turn, m) {
 				l.owners[m.Seq] = turn.Seq
 				l.found = append(l.found, m)
 				break
@@ -178,6 +180,11 @@ func (l ledger) later(turn client.Message) (client.Message, bool) {
 	return client.Message{}, false
 }
 
+// accepts reports whether the set opened by turn takes finding: the set has not closed before it and its sender is a recipient.
+func (l ledger) accepts(turn, finding client.Message) bool {
+	return finding.Seq > turn.Seq && finding.Seq < l.ends[turn.Seq] && slices.Contains(turn.To, finding.From)
+}
+
 func (l ledger) setEnd(turn client.Message) int64 {
 	if d, ok := l.discuss[turn.Seq]; ok {
 		return d.Seq
@@ -188,8 +195,9 @@ func (l ledger) setEnd(turn client.Message) int64 {
 	return math.MaxInt64
 }
 
-// valid reports whether a finding opened a discussion: it lies in the window of a set whose recipients include its sender,
-// and not inside another set's discussions. A finding that lies in several windows belongs to the first.
+// valid reports whether a finding opened a discussion: a set whose recipients include its sender accepts it, and it is not
+// inside another set's discussions. A finding with re belongs only to the set its re names. One with no re that lies in
+// several windows belongs to the first.
 func (l ledger) valid(finding int64) bool {
 	_, ok := l.owners[finding]
 	return ok
@@ -462,16 +470,6 @@ func (l ledger) fixedSince(seq int64) int {
 		}
 	}
 	return n
-}
-
-// reported reports whether run already stored an error with this exact body.
-func (l ledger) reported(body string) bool {
-	for _, m := range l.msgs {
-		if m.Kind == kindError && m.From == fromRun && m.Body == body {
-			return true
-		}
-	}
-	return false
 }
 
 // issuesBody is the issues marker: the turn's seq, then one line per issue with the kept finding first and its dropped duplicates after.
