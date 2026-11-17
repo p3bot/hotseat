@@ -46,24 +46,25 @@ func reCommand(kind string, re int64) string {
 }
 
 func TestFindingWithReBelongsOnlyToTheOpenSetItNames(t *testing.T) {
-	l := newLedger(tx(
+	l := ledgerOf(tx(
 		msg("a", kindTurn, "mode: parallel\nfirst", "b"),               // 1
 		withSeqRe(msg("b", kindFinding, "names its turn", abc...), 1),  // 2
 		withSeqRe(msg("b", kindFinding, "names a finding", abc...), 2), // 3
 		msg("b", kindFinding, "no re in the window", abc...),           // 4
 		withSeqRe(msg("c", kindFinding, "not a recipient", abc...), 1), // 5
-	), abc, selfTargets())
+	), records{})
 	if got := seqs(l.findingsOf(1)); slices.Compare(got, []int64{2, 4}) != 0 {
 		t.Fatalf("set findings %v", got)
 	}
-	closed := newLedger(tx(
+	// A set has closed once it has a set record.
+	closed := ledgerOf(tx(
 		msg("a", kindTurn, "mode: parallel\nfirst", "b"),                    // 1
-		msg("run", kindDiscuss, "1"),                                        // 2
+		msg("b", kindSay, "clean", "a"),                                     // 2
 		msg("a", kindTurn, "mode: parallel\nsecond", "b"),                   // 3
 		withSeqRe(msg("b", kindFinding, "names the closed set", abc...), 1), // 4
 		withSeqRe(msg("b", kindFinding, "names the open set", abc...), 3),   // 5
 		msg("b", kindFinding, "no re", abc...),                              // 6
-	), abc, selfTargets())
+	), records{sets: []client.Set{setRec(1, 2)}})
 	if closed.valid(4) || slices.Compare(seqs(closed.findingsOf(3)), []int64{5, 6}) != 0 {
 		t.Fatalf("closed set took a finding: %v %v", closed.valid(4), seqs(closed.findingsOf(3)))
 	}
@@ -73,15 +74,18 @@ func TestFixedNamingAnotherMessageIsNotCreditedToTheSettle(t *testing.T) {
 	transcript := []client.Message{
 		msg("a", kindTurn, "mode: parallel\nreview", "b"),  // 1
 		msg("b", kindFinding, "foo", abc...),               // 2
-		msg("run", kindDiscuss, "1"),                       // 3
-		msg("run", kindSettled, settledBody(2, 2)),         // 4
-		withSeqRe(msg("b", kindFixed, "wrong", abc...), 1), // 5
+		withSeqRe(msg("b", kindFixed, "wrong", abc...), 1), // 3
 	}
-	if l := newLedger(tx(slices.Clone(transcript)...), abc, selfTargets()); !l.needsFix(2) {
+	recs := records{
+		sets:      []client.Set{setRec(1, 2, 2)},
+		groupings: []client.Grouping{groupingRec(1, 2)},
+		settles:   []client.Settle{settleRec(2, 2, kindFinding, 2)},
+	}
+	if l := ledgerOf(tx(slices.Clone(transcript)...), recs); !l.needsFix(2) {
 		t.Fatal("a fixed naming another message was credited")
 	}
 	right := append(slices.Clone(transcript), withSeqRe(msg("b", kindFixed, "right", abc...), 2))
-	if l := newLedger(tx(right...), abc, selfTargets()); l.needsFix(2) {
+	if l := ledgerOf(tx(right...), recs); l.needsFix(2) {
 		t.Fatal("a fixed naming the finding was not credited")
 	}
 }
@@ -345,7 +349,7 @@ func TestExtendWithAWrongReRefreshesNobodyAndTheDiscussionContinues(t *testing.T
 	}
 }
 
-func TestDeadlockWithAWrongReIsBadThenNoDecisionAndHaltsWithoutAMarker(t *testing.T) {
+func TestDeadlockWithAWrongReIsBadThenNoDecisionAndWritesNoHalt(t *testing.T) {
 	h := newHarness(t)
 	cfg := stalled(h, abcRoster...)
 	h.script("alpha", on(promptStall, withRe(says(kindDeadlock, "alpha", "bravo", "charlie", "owner"), "1")))
@@ -355,7 +359,7 @@ func TestDeadlockWithAWrongReIsBadThenNoDecisionAndHaltsWithoutAMarker(t *testin
 	}
 	msgs := h.messages(name)
 	wantErrors(t, msgs, errLine("alpha", classBadDeadlock, first(msgs, "alpha", kindDeadlock).Seq), errLine("alpha", classNoDecision, 0))
-	if c, _ := h.conv(name); c.Status != "open" || len(ofKind(msgs, kindHalted)) != 0 || len(h.launchesWith("alpha", promptReport)) != 0 {
+	if c, _ := h.conv(name); c.Status != "open" || len(h.recordsOf(name).halts) != 0 || len(h.launchesWith("alpha", promptReport)) != 0 {
 		t.Fatalf("status %s msgs %+v", c.Status, msgs)
 	}
 }
@@ -537,8 +541,8 @@ func TestContinueSkipsAFinishedSetWhoseOnlyFindingIsRejected(t *testing.T) {
 		t.Fatalf("%v\n%s", res.err, res.stdout)
 	}
 	msgs := h.messages("kept")
-	if d := ofKind(msgs, kindDiscuss); len(d) != 1 || d[0].Body != seqOf(next) {
-		t.Fatalf("discuss %+v", d)
+	if sets := h.recordsOf("kept").sets; len(sets) != 1 || sets[0].Turn != next.Seq {
+		t.Fatalf("sets %+v", sets)
 	}
 	if n := len(h.launchesWith("alpha", promptFollow)); n != 1 {
 		t.Fatalf("follow-ups %d", n)

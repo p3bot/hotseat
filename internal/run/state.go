@@ -505,7 +505,7 @@ func (e *engine) handoffPrompt(from, name string) string {
 	return b.String()
 }
 
-// followPrompt names what the set left for the report: the fixed count, recipients that did not reply, dropped duplicates, and timed-out members.
+// followPrompt names what the set left for the report: the set's fix records, recipients that did not reply, dropped duplicates, and timed-out members.
 func (e *engine) followPrompt(name string, fixed int, noReply []string, dropped []int64) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)

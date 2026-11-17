@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/client"
 )
 
@@ -42,9 +43,14 @@ func (w window) of(kinds ...string) []client.Message {
 	return out
 }
 
-// fixed reports whether the window holds a fixed whose re is absent or names finding. Any other fixed is not reported.
-func (w window) fixed(finding int64) bool {
-	return slices.ContainsFunc(w.of(kindFixed), func(m client.Message) bool { return concerns(m, finding) })
+// fixed is the first fixed in the window whose re is absent or names finding. Any other fixed is not counted.
+func (w window) fixed(finding int64) (client.Message, bool) {
+	for _, m := range w.of(kindFixed) {
+		if concerns(m, finding) {
+			return m, true
+		}
+	}
+	return client.Message{}, false
 }
 
 // launchWindow launches name and returns the messages it stored during the launch.
@@ -92,7 +98,7 @@ func (e *engine) quiet() bool {
 }
 
 // ledgerOn reads the protocol kinds stored since the last build and resolves the follow-up target of every turn sender.
-// The backup is read at most once per build.
+// The backup is read at most once per build, and for the fixers only while a settled change has no fix record.
 func (e *engine) ledgerOn(ctx context.Context) (ledger, error) {
 	e.mu.Lock()
 	var cursor int64
@@ -112,6 +118,7 @@ func (e *engine) ledgerOn(ctx context.Context) (ledger, error) {
 		}
 	}
 	msgs := slices.Clip(e.protocol)
+	recs := e.recs.clip()
 	e.mu.Unlock()
 	backup := sync.OnceValues(e.backup)
 	targets := make(map[string]string)
@@ -128,7 +135,94 @@ func (e *engine) ledgerOn(ctx context.Context) (ledger, error) {
 		}
 		targets[m.From] = target
 	}
-	return newLedger(msgs, rosterNames(e.roster), targets), nil
+	fixers := []string{e.seat}
+	if recs.awaitsFix() {
+		b, err := backup()
+		if err != nil {
+			return ledger{}, err
+		}
+		if b != "" {
+			fixers = append(fixers, b)
+		}
+	}
+	return newLedger(msgs, recs, rosterNames(e.roster), targets, fixers), nil
+}
+
+// loadRecords reads every decision record of the conversation. It runs once, before anything reads a ledger.
+func (e *engine) loadRecords() error {
+	res, err := e.call(e.root, "records", client.RecordsRequest{Conversation: e.name})
+	if err != nil {
+		return err
+	}
+	if res.Outcome != bus.OutcomeOK {
+		return fmt.Errorf("records: %s", res.Reason)
+	}
+	e.mu.Lock()
+	e.recs.add(res)
+	e.mu.Unlock()
+	return nil
+}
+
+// writeRecord stores one decision record and keeps every record the result returns. A stored copy is success.
+// A refusal stops the run as a refused publish does.
+func (e *engine) writeRecord(w client.RecordWrite) (client.Result, error) {
+	res, err := e.call(e.root, "record", w)
+	if err != nil {
+		return res, err
+	}
+	if res.Outcome != bus.OutcomeOK {
+		return res, fmt.Errorf("record: %s", res.Reason)
+	}
+	e.mu.Lock()
+	e.recs.add(res)
+	e.mu.Unlock()
+	return res, nil
+}
+
+// announce publishes the settle to owner with re the agreed proposal. Its transaction id is fixed by the finding,
+// so a continuation that announces again stores no second copy. The body comes only from the settle record and
+// the stored proposal, so a live run and a continuation publish the same bytes.
+func (e *engine) announce(l ledger, s client.Settle) error {
+	proposer := l.sender(s.Proposal)
+	if proposer == "" {
+		return fmt.Errorf("announce finding %d: proposal %d is not in the transcript", s.Finding, s.Proposal)
+	}
+	_, err := e.send(post{
+		kind: kindSettled,
+		from: fromRun,
+		to:   []string{fromOwner},
+		body: announcement(s, proposer),
+		re:   s.Proposal,
+		tx:   "settled/" + seqText(s.Finding),
+	})
+	return err
+}
+
+// announcement is the settled body, built only from the settle record and its proposal's sender. Nothing parses it.
+func announcement(s client.Settle, proposer string) string {
+	outcome := "fix follows"
+	if !changes(s) {
+		outcome = "no change"
+	}
+	return fmt.Sprintf("settled finding %d: %s by %s, %s", s.Finding, s.ProposalKind, proposer, outcome)
+}
+
+// announceSettles publishes the announcement of every settle record again, before a continuation resumes any work
+// or closes on a stored stopping done.
+func (e *engine) announceSettles() error {
+	if !e.canLaunch() {
+		return nil
+	}
+	l, err := e.ledgerOn(e.child)
+	if err != nil {
+		return e.busErr(err)
+	}
+	for _, s := range l.recs.settles {
+		if err := e.announce(l, s); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // endLeftover records the head once a leftover's exit is recorded. Its messages up to that seq are history.
@@ -265,7 +359,7 @@ func (e *engine) judgeBacklog() error {
 	return nil
 }
 
-// finishSet publishes discuss for a set whose recipients have all exited or timed out, settles its findings, and runs the follow-up.
+// finishSet writes the set record for a set whose recipients have all exited or timed out, settles its findings, and runs the follow-up.
 func (e *engine) finishSet(turn client.Message, seen int64) error {
 	if e.windingDown() {
 		return nil
@@ -277,7 +371,7 @@ func (e *engine) finishSet(turn client.Message, seen int64) error {
 		return err
 	}
 	e.holdHandoffs(true)
-	err := e.publish(kindDiscuss, fromRun, []string{}, strconv.FormatInt(turn.Seq, 10))
+	err := e.closeSet(turn)
 	if err == nil {
 		err = e.judgeBacklog()
 	}
@@ -292,6 +386,20 @@ func (e *engine) finishSet(turn client.Message, seen int64) error {
 		return err
 	}
 	return e.followUp(turn, seen)
+}
+
+// closeSet writes the set record: the turn and the set's valid findings. A set with one finding also gets its grouping.
+func (e *engine) closeSet(turn client.Message) error {
+	l, err := e.ledgerOn(e.child)
+	if err != nil {
+		return e.busErr(err)
+	}
+	var findings []int64
+	for _, f := range l.findingsOf(turn.Seq) {
+		findings = append(findings, f.Seq)
+	}
+	_, err = e.writeRecord(client.SetRecord{Conversation: e.name, Turn: turn.Seq, Findings: findings})
+	return err
 }
 
 // resumeSet continues a set an earlier process finished: its open discussion restarts, a missing fix runs again,
@@ -337,7 +445,7 @@ func (e *engine) judgeReplies(turn client.Message) error {
 	return nil
 }
 
-// aggregateSet launches the acting seat to drop duplicate findings, then publishes the set's issues marker.
+// aggregateSet launches the acting seat to drop duplicate findings, then writes the set's grouping record.
 // A seat that leaves no single valid aggregate makes each finding its own issue, so duplicates cost discussions and nothing is lost.
 func (e *engine) aggregateSet(turn client.Message, findings []client.Message) error {
 	if !e.canLaunch() {
@@ -386,7 +494,7 @@ func (e *engine) aggregateSet(turn client.Message, findings []client.Message) er
 	if e.quiet() {
 		return e.halting()
 	}
-	if err := e.publish(kindIssues, fromRun, []string{}, issuesBody(turn.Seq, groups)); err != nil {
+	if _, err := e.writeRecord(client.GroupingRecord{Conversation: e.name, Turn: turn.Seq, Drops: drops(groups)}); err != nil {
 		return err
 	}
 	for _, g := range groups {
@@ -399,7 +507,7 @@ func (e *engine) aggregateSet(turn client.Message, findings []client.Message) er
 	return nil
 }
 
-// settleFindings runs the set's discussions one at a time in seq order.
+// settleFindings runs the set's discussions one at a time in seq order, after its grouping.
 // A set with findings waits until every leftover has exited and reads the transcript again, so a fixed a leftover published counts.
 func (e *engine) settleFindings(turn client.Message, resumed bool) error {
 	l, err := e.ledgerOn(e.child)
@@ -423,16 +531,17 @@ func (e *engine) settleFindings(turn client.Message, resumed bool) error {
 			return e.busErr(err)
 		}
 	}
+	if !l.isGrouped(turn.Seq) {
+		return e.halting()
+	}
 	restart := resumed
 	for _, f := range l.findingsOf(turn.Seq) {
 		if e.quiet() {
 			return e.halting()
 		}
-		if _, proposal, ok := l.settledOf(f.Seq); ok {
-			if l.needsFix(f.Seq) {
-				if err := e.fix(f.Seq, f.From, proposal); err != nil {
-					return err
-				}
+		if s, ok := l.settledOf(f.Seq); ok {
+			if err := e.fixSettled(l, f, s); err != nil {
+				return err
 			}
 			continue
 		}
@@ -442,6 +551,19 @@ func (e *engine) settleFindings(turn client.Message, resumed bool) error {
 		restart = false
 	}
 	return nil
+}
+
+// fixSettled finishes a settled change with no fix record. A creditable fixed becomes the fix record, so a change
+// already applied is not launched again. Only a change with none gets its fix launch again.
+func (e *engine) fixSettled(l ledger, f client.Message, s client.Settle) error {
+	if !changes(s) || l.hasFixRecord(f.Seq) {
+		return nil
+	}
+	if fixed, ok := l.creditable(f.Seq); ok {
+		_, err := e.writeRecord(client.FixRecord{Conversation: e.name, Finding: f.Seq, Fixed: fixed})
+		return err
+	}
+	return e.fix(f.Seq, f.From, s.Proposal)
 }
 
 func (e *engine) syncDead(d *discussion) {
@@ -590,9 +712,20 @@ func (e *engine) judgeTurn(d *discussion, speaker string, w window) (string, err
 	return to, nil
 }
 
-// settle publishes settled before any fix launch, then has the finder apply a settled change.
+// settle writes the settle record and announces it before any fix launch, then has the finder apply a settled change.
 func (e *engine) settle(d *discussion) error {
-	if err := e.publish(kindSettled, fromRun, []string{}, settledBody(d.finding, d.proposal)); err != nil {
+	res, err := e.writeRecord(client.SettleRecord{Conversation: e.name, Finding: d.finding, Proposal: d.proposal, ProposalKind: d.kind})
+	if err != nil {
+		return err
+	}
+	if res.Settle == nil {
+		return errors.New("record: the settle result holds no settle")
+	}
+	l, err := e.ledgerOn(e.child)
+	if err != nil {
+		return e.busErr(err)
+	}
+	if err := e.announce(l, *res.Settle); err != nil {
 		return err
 	}
 	e.out.line("settled", seqText(d.finding))
@@ -619,7 +752,8 @@ func (e *engine) actingOrStop() (string, error) {
 	return "", e.noteHalt(errors.New(classNoBackup))
 }
 
-// fix launches the finder to apply the agreed proposal. A launch with no fixed for the finding hands the fix to the acting seat once.
+// fix launches the finder to apply the agreed proposal and writes the fix record for the first counted fixed.
+// A launch with no fixed for the finding hands the fix to the acting seat once.
 func (e *engine) fix(finding int64, finder string, proposal int64) error {
 	w, err := e.launchWindow(finder, launchFix, e.fixPrompt(finder, finding, proposal))
 	if err == nil {
@@ -628,9 +762,8 @@ func (e *engine) fix(finding int64, finder string, proposal int64) error {
 	if err != nil {
 		return err
 	}
-	if w.fixed(finding) {
-		e.out.record([2]string{"fixed", seqText(finding)}, [2]string{"from", finder})
-		return nil
+	if m, ok := w.fixed(finding); ok {
+		return e.fixed(finding, m, finder)
 	}
 	if e.quiet() {
 		return e.halting()
@@ -646,9 +779,8 @@ func (e *engine) fix(finding int64, finder string, proposal int64) error {
 	if err != nil {
 		return err
 	}
-	if w.fixed(finding) {
-		e.out.record([2]string{"fixed", seqText(finding)}, [2]string{"from", seat})
-		return nil
+	if m, ok := w.fixed(finding); ok {
+		return e.fixed(finding, m, seat)
 	}
 	if e.quiet() {
 		return e.halting()
@@ -657,6 +789,15 @@ func (e *engine) fix(finding int64, finder string, proposal int64) error {
 		return err
 	}
 	return e.noteHalt(errors.New(classNoFix))
+}
+
+// fixed writes the fix record for a counted fixed and prints its status.
+func (e *engine) fixed(finding int64, m client.Message, from string) error {
+	if _, err := e.writeRecord(client.FixRecord{Conversation: e.name, Finding: finding, Fixed: m.Seq}); err != nil {
+		return err
+	}
+	e.out.record([2]string{"fixed", seqText(finding)}, [2]string{"from", from})
+	return nil
 }
 
 // stall launches the acting seat to extend or deadlock. It reports whether the discussion continues.
@@ -713,7 +854,7 @@ func (e *engine) stall(d *discussion) (bool, error) {
 		}
 		if len(deadlocks) == 1 {
 			e.out.record([2]string{"deadlock", seqText(d.finding)}, [2]string{"from", seat})
-			if err := e.publish(kindHalted, fromRun, []string{}, seqText(d.finding)); err != nil {
+			if _, err := e.writeRecord(client.HaltRecord{Conversation: e.name, Finding: d.finding}); err != nil {
 				return false, err
 			}
 			return false, e.report(d)
@@ -798,7 +939,7 @@ func (e *engine) report(d *discussion) error {
 	}
 }
 
-// reportAgain answers a stored halted with no stopping done: the report launch runs again and nothing else.
+// reportAgain answers a halt record with no stopping done: the report launch runs again and nothing else.
 func (e *engine) reportAgain() (bool, error) {
 	l, err := e.ledgerOn(e.child)
 	if err != nil {
@@ -816,8 +957,8 @@ func (e *engine) reportAgain() (bool, error) {
 	return true, e.report(nil)
 }
 
-// reportStop prints the stop result from the messages stored before the stopping done.
-// An unsettled stop with no halted publishes one unsettled error about the stopping done, under a derived transaction id.
+// reportStop prints the stop result from the messages and records before the stopping done.
+// An unsettled stop with no halt publishes one unsettled error about the stopping done, under a derived transaction id.
 func (e *engine) reportStop() error {
 	l, err := e.ledgerOn(e.root)
 	if err != nil {
@@ -978,9 +1119,9 @@ func (e *engine) reportPrompt(name string, d *discussion, l ledger) string {
 	finding, _ := l.halted()
 	var settled, fixed, undiscussed []int64
 	for _, f := range l.findings() {
-		_, proposal, ok := l.settledOf(f.Seq)
+		s, ok := l.settledOf(f.Seq)
 		switch {
-		case ok && l.change(proposal) && !l.needsFix(f.Seq):
+		case ok && changes(s) && !l.needsFix(f.Seq):
 			fixed = append(fixed, f.Seq)
 			settled = append(settled, f.Seq)
 		case ok:

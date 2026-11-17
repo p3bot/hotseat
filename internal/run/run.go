@@ -40,11 +40,9 @@ const (
 	kindExtend    = "extend"
 	kindDeadlock  = "deadlock"
 	kindFixed     = "fixed"
-	kindDiscuss   = "discuss"
-	kindSettled   = "settled"
-	kindHalted    = "halted"
 	kindAggregate = "aggregate"
-	kindIssues    = "issues"
+	// kindSettled is run's announcement of a settle to owner. Nothing reads it as state.
+	kindSettled = "settled"
 
 	roleMember = "hotseat/member"
 	contextBus = "hotseat/bus"
@@ -179,6 +177,8 @@ type engine struct {
 	backlog int64
 	// protocol holds the ledger kinds read so far, in seq order. A stored message never changes, so a build reads only later ones.
 	protocol []client.Message
+	// recs holds the decision records read at start and each one a write returned since.
+	recs records
 }
 
 type slot struct {

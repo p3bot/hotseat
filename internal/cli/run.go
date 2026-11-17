@@ -66,18 +66,25 @@ A finding from a recipient of a set that has not finished opens a discussion
 when its re names that set's turn, or it has no re. Any other finding is
 reported once with error class bad finding.
 When the set's recipients have exited or timed out, run reports each live
-recipient that did not reply with error class no reply, and publishes discuss.
-A set with two or more findings gets one acting-seat launch that publishes
-aggregate: one line per issue, the kept finding first and its dropped
-duplicates after. run publishes issues with that grouping, or each finding
-alone when the aggregate is missing or invalid. run then discusses each kept
-finding one at a time, and then runs the follow-up. Members publish one
-stance per discussion launch: propose, dismiss, agree, object, or stand. A
-finding settles when every live member but the proposer agrees, and the
+recipient that did not reply with error class no reply, and writes the set
+record. A set with two or more findings gets one acting-seat launch that
+publishes aggregate: one line per issue, the kept finding first and its
+dropped duplicates after. run writes the set's grouping record with those
+drops, or with none when the aggregate is missing or invalid. run then
+discusses each kept finding one at a time, and then runs the follow-up, whose
+fixed: <n> is the set's fix records. Members publish one stance per
+discussion launch: propose, dismiss, agree, object, or stand. A finding
+settles when every live member but the proposer agrees. run writes the settle
+record and publishes settled to owner with re the agreed proposal, and the
 finder applies a settled change and publishes fixed. --max-says or
 HOTSEAT_MAX_SAYS defaults to 4 discussion launches per member per finding.
 When nobody can speak, the acting seat publishes extend or deadlock. A
-deadlock stops the run and the seat reports with done.
+deadlock writes the halt record, stops the run, and the seat reports with
+done.
+
+run keeps these decisions as records in the store, keyed by message seq, and
+publishes no discuss, issues, or halted marker. --conversation continues from
+the transcript and the records, so a dump of messages is not a full backup.
 
 Each prompt gives the exact --re for the kind it asks for. A present re that
 names another message rejects a stance, pass, aggregate, extend, or deadlock
@@ -87,8 +94,10 @@ message that caused it as re. bad finding, no reply, bad turn, and unsettled
 take a transaction id derived from their fact, so a continuation stores and
 prints none of them twice.
 
-The stop result is read from the messages stored before the stopping done.
-An unsettled finding prints unsettled, a settled change with no fixed prints
+The stop result is read from the messages and records before the stopping
+done. A settled change is fixed by its fix record, or by a fixed after the
+settle whose re names the finding, from the finder, the seat, or its backup.
+An unsettled finding prints unsettled, a settled change not fixed prints
 unfixed, and run exits non-zero with outcome: deadlock after a deadlock or
 outcome: unsettled otherwise. outcome: done is the only zero exit.
 

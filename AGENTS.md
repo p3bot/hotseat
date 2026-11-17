@@ -21,7 +21,7 @@ Rules that follow from the purpose:
 - A message is identified by its `seq`. A body is never only an id.
 - Findings are discussed one at a time because a fix can make a later finding obsolete.
 
-Note: `run` still publishes its finding markers (`discuss`, `issues`, `settled`, `halted`) as messages. The store holds decision records behind `/record` and `/records`, and hotseat-dsu2 moves `run` onto them and drops the markers.
+`run` keeps its decisions as decision records behind `/record` and `/records`: set, grouping, settle, fix, and halt. A record is a fact keyed by message `seq` and holds no phase, mode, or cursor. This reverses `hotseat-b225`'s "the transcript is the only durable state" and amends `hotseat-r7gj`'s no-phase rule. `run` publishes no marker. Its one message about a decision is `settled`, to `owner` with `re` the agreed proposal, because no participant states a settle, and nothing reads it as state. A continuation needs the records as well as the transcript, so a dump of messages is not a full backup of a run.
 
 ## Contract
 
@@ -77,7 +77,7 @@ Note: lint is not clean on main. The existing findings are unchecked `Close` err
 
 ## Runner
 
-The designs are `hotseat-r7gj` (runner) and `hotseat-b225` (finding discussion). Read one with `tk design get <id> --content`. The code is current.
+The designs are `hotseat-r7gj` (runner), `hotseat-b225` (finding discussion), and `hotseat-k759` (replies and decision records). Read one with `tk design get <id> --content`. The code is current.
 
 Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/implement`, `pre-commit/review`, and `workflow/implement`, which is the chief's workflow. Member-facing text is the roles `hotseat/member` and `hotseat/chief` and the context `hotseat/bus`. A change to that text lands in `library/` first.
 
@@ -88,14 +88,15 @@ Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/impleme
 | `state.go` | Member rows, leftovers on resume, backup, prompts |
 | `findings.go` | Finding protocol: launches, judging, prompts |
 | `discussion.go` | Live state of one finding. No bus or process |
-| `ledger.go` | Pure reading of the transcript |
+| `ledger.go` | Pure reading of the transcript and the decision records |
 
 - A stance is judged only by the live launch window it arrived in. A continuation never replays stances and restarts the open discussion from its finding. History is the messages stored before the continuation started, plus each leftover's messages up to its recorded exit.
 - A protocol error body is `<member>\n<class>`, or `<class>` alone, and its `re` is the message that caused it. `bad finding`, `no reply`, `bad turn`, and `unsettled` take a transaction id from `factTx`, so a continuation stores no second copy. Each class is a `class*` constant in `run.go`. `run.ErrUnresolved` maps to the CLI's reported failure.
+- A settled change is fixed by its fix record, or else by the first creditable `fixed`: after the settle's `after`, `re` naming the finding, from the finder, the seat, or the seat's backup. The stop result and continuation read this one ledger rule. A record end at `after` includes the message at that `seq`.
 - Prompts give the exact `--re` for the kind they ask for. A present `re` other than the one `run` expects rejects the message, and a missing `re` falls back to the `seq` windows. `re` adds a check and never replaces a launch window.
 - Settled, do not reopen:
   - the roster is `name=module:model`, and there is no `HOTSEAT_MEMBERS`;
-  - `mode` is the first line of a turn body, and the database has no phase, mode, or cursor column;
+  - `mode` is the first line of a turn body, and the database has no phase, mode, or cursor column. Decision records are facts keyed by message `seq`, not progress;
   - member rows replace a registration ack;
   - `run.DoneGrace` has no flag;
   - agy has no module, and `herdr` is not a dependency.

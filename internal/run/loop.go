@@ -21,7 +21,10 @@ import (
 func (e *engine) drive() error {
 	e.out.line("conversation", e.name)
 	var wg sync.WaitGroup
-	var err error
+	err := e.loadRecords()
+	if err != nil {
+		return err
+	}
 	if e.continuing {
 		err = e.resume(&wg)
 	} else {
@@ -89,6 +92,10 @@ func (e *engine) resume(wg *sync.WaitGroup) error {
 	}
 	if stop {
 		e.watchLeftovers(wg, live)
+		// A settle whose announcement a crash lost is still stated, even though nothing resumes.
+		if err := e.announceSettles(); err != nil {
+			return err
+		}
 		return e.finishDone(done)
 	}
 	if err := e.requireMinimum(e.binding.Task); err != nil {
@@ -306,6 +313,9 @@ func (e *engine) busErr(err error) error {
 
 func (e *engine) apply(batch []client.Message, historical bool) error {
 	if historical {
+		if err := e.announceSettles(); err != nil {
+			return err
+		}
 		if halted, err := e.reportAgain(); halted || err != nil {
 			return err
 		}
@@ -336,18 +346,18 @@ func (e *engine) apply(batch []client.Message, historical bool) error {
 				return err
 			}
 		case kindTurn:
-			resumed, err := e.resumeIfDiscussed(msg, batch[len(batch)-1].Seq)
+			resumed, err := e.resumeIfRecorded(msg, batch[len(batch)-1].Seq)
 			if err != nil {
 				return err
 			}
 			if resumed {
 				continue
 			}
-			settled, err := e.turnSettled(msg, batch[i+1:])
+			superseded, err := e.turnSuperseded(msg, batch[i+1:])
 			if err != nil {
 				return err
 			}
-			if settled {
+			if superseded {
 				continue
 			}
 			// Launches run inside actTurn, so a done already in hand must close first.
@@ -366,8 +376,8 @@ func (e *engine) apply(batch []client.Message, historical bool) error {
 	return nil
 }
 
-// resumeIfDiscussed continues a set whose discuss marker an earlier process stored, and reports whether it did.
-func (e *engine) resumeIfDiscussed(turn client.Message, seen int64) (bool, error) {
+// resumeIfRecorded continues a set whose set record an earlier process wrote, and reports whether it did.
+func (e *engine) resumeIfRecorded(turn client.Message, seen int64) (bool, error) {
 	if !e.canLaunch() {
 		return false, nil
 	}
@@ -378,15 +388,15 @@ func (e *engine) resumeIfDiscussed(turn client.Message, seen int64) (bool, error
 	if err != nil {
 		return false, e.busErr(err)
 	}
-	if _, ok := l.discussOf(turn.Seq); !ok {
+	if !l.recorded(turn.Seq) {
 		return false, nil
 	}
 	return true, e.resumeSet(turn, seen)
 }
 
-// turnSettled is the rule for a set with no discuss: every recipient has exited or timed out, the follow-up target
-// has a later turn or done, and the ledger gives the set no finding. A bootstrap exit is not that proof.
-func (e *engine) turnSettled(msg client.Message, later []client.Message) (bool, error) {
+// turnSuperseded is the rule for a set with no set record that is skipped: every recipient has exited or timed out,
+// the follow-up target has a later turn or done, and the ledger gives the set no finding. A bootstrap exit is not that proof.
+func (e *engine) turnSuperseded(msg client.Message, later []client.Message) (bool, error) {
 	recips := e.rosterTo(msg.To)
 	if len(recips) == 0 {
 		return false, nil
@@ -608,7 +618,7 @@ func (e *engine) followUp(msg client.Message, seen int64) error {
 			noReply = append(noReply, name)
 		}
 	}
-	if err := e.launchMember(target, launchFollow, e.followPrompt(target, l.fixedSince(msg.Seq), noReply, l.droppedOf(msg.Seq))); err != nil {
+	if err := e.launchMember(target, launchFollow, e.followPrompt(target, l.fixesOf(msg.Seq), noReply, l.droppedOf(msg.Seq))); err != nil {
 		return err
 	}
 	return e.drainHandoff()

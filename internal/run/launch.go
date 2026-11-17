@@ -491,11 +491,6 @@ type post struct {
 	tx   string
 }
 
-func (e *engine) publish(kind, from string, to []string, body string) error {
-	_, err := e.send(post{kind: kind, from: from, to: to, body: body})
-	return err
-}
-
 // send publishes p and reports whether the bus stored a new message. A replay of a stored attempt is success and not new.
 func (e *engine) send(p post) (bool, error) {
 	tx := p.tx
