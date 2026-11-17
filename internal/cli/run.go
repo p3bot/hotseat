@@ -116,8 +116,8 @@ A second run of the same task creates a new conversation unless --conversation
 names the existing one. agy (Antigravity CLI) has no hotseat module. Pass the
 task query when creating. When --conversation names a conversation that is
 not on the bus, the task argument is required.`,
-		Example: `  hotseat run review/ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
-  hotseat run --conversation foo-x234-review-ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"`,
+		Example: `  hotseat run hotseat/ticket/review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
+  hotseat run --conversation foo-x234-ticket-review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),

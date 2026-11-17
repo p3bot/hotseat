@@ -2,6 +2,39 @@
 
 One process hosts named conversations. Callers publish into a transcript and block until a matching message exists or a deadline passes.
 
+## Quickstart
+
+Start a bus, run a task on it, and watch the conversation. `hotseat run` launches each member through `start` and needs `start` and `tk` on `PATH`.
+
+```bash
+hotseat bus start
+hotseat run hotseat/ticket/review --ticket foo-x234 --agents "alpha=hotseat/claude:<model> bravo=hotseat/grok:<model>"
+hotseat attend --conversation foo-x234-ticket-review
+```
+
+`run` prints the conversation name on its `conversation` line. Pass that name to `attend`. A name already taken gains a 4-character code.
+
+| Task | Work | Members |
+| --- | --- | --- |
+| `hotseat/ticket/triage` | Decide whether one ticket enters review: pass, stub, reject, or split | 1 or more |
+| `hotseat/ticket/review` | Review one ticket document, discuss and fix each finding by agreement, then one satisfaction pass | 2 or more |
+| `hotseat/ticket/implement` | The acting seat implements one ticket and leaves it at `review` | 1 or more; only the seat works |
+| `hotseat/pre-commit/review` | Review the pre-commit diff, discuss and fix each finding by agreement, then one satisfaction pass | 2 or more |
+
+A roster entry is `name=module:model`. The member modules are `hotseat/claude` and `hotseat/grok`. The seat is the first name in ASCII byte order unless `--seat` names another. Continue a run that stopped with the conversation open by passing the same roster again:
+
+```bash
+hotseat run --conversation foo-x234-ticket-review --agents "alpha=hotseat/claude:<model> bravo=hotseat/grok:<model>"
+```
+
+To run all four stages for one ticket, start a chief session. The task loads the `hotseat/chief` role, which asks once for any missing model name, then runs triage, ticket review, implementation, and pre-commit review as four conversations:
+
+```bash
+start task hotseat/workflow/implement foo-x234
+```
+
+## Bus
+
 ```bash
 hotseat bus start
 hotseat bus start --store /var/lib/hotseat
@@ -150,8 +183,8 @@ A protocol `error` goes from `run` to `owner`. Its body is the member and the cl
 Stdout is `key: value`, the same text result as the other client commands. The lines name the conversation, each status `run` writes (`launched`, `running`, `exited`, `timed-out`), each executed `turn` with its mode and its `to`, each process exit, each `issue` with each `dropped` duplicate, each opened `finding` with `from`, each accepted `stance` with `from` and `seq`, each `pass` with `from`, each `settled`, `stall`, `extend` with each refreshed name as `to` when it refreshed one, `deadlock` with `from`, `fixed` with `from`, each protocol `error` with `from` when its body names a member and `seq` when its `re` names a message, the `unsettled` and `unfixed` findings at the stop, and a final `outcome`. Registration is on `hotseat member list`. `outcome` is `done`, `deadlock`, `unsettled`, or `error`. It is `done` only when this command exits zero, which is when the acting seat posted `done`, the close succeeded, and no finding is unresolved. A session id, a pid, and the token are not on those lines. agy (Antigravity CLI) has no hotseat module, so it is not a roster module. Pass the task query when creating. When `--conversation` names a conversation that is not on the bus, the task argument is required. A resume launches a member only when `--agents` or `HOTSEAT_AGENTS` is passed again. Without that roster, the resume continues and does not launch.
 
 ```bash
-hotseat run review/ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
-hotseat run --conversation foo-x234-review-ticket --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"
+hotseat run hotseat/ticket/review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
+hotseat run --conversation foo-x234-ticket-review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"
 ```
 
 ## Attend
