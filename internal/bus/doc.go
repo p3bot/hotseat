@@ -29,7 +29,7 @@
 // and answers pass or fail with no token, on every address.
 //
 //	POST /create   {"name":"job","task"?,"ticket"?,"seat"?,"directory"?,"prompts"?,"custom"?,"roster"?}
-//	POST /publish  {"conversation","from","to","body","txid","kind","re"?}
+//	POST /publish  {"conversation","from","to","body","txid","kind","re"?,"holder"?}
 //	POST /read     {"conversation","cursor","limit","name"?,"kinds"?}
 //	POST /wait     {"conversation","cursor","name"?,"deadline"?,"kinds"?}
 //	POST /watch    {"cursor"?,"conversation"?,"rev"?,"limit"?,"deadline"?}
@@ -37,11 +37,12 @@
 //	POST /list     {}
 //	POST /messages {"limit","before"?}
 //	POST /register {"conversation","name"}
-//	POST /member   {"conversation","name","status"?,"pid"?}
-//	POST /session  {"conversation","name"?,"session"?}
+//	POST /member   {"conversation","name","status"?,"pid"?,"holder"?}
+//	POST /session  {"conversation","name"?,"session"?,"holder"?}
 //	POST /members  {"conversation"}
-//	POST /record   {"conversation","record",...}
+//	POST /record   {"conversation","record",...,"holder"}
 //	POST /records  {"conversation"}
+//	POST /lease    {"conversation","lease","holder"?}
 //
 // to is an array. [] is empty. ["all"] is the single value all. Any other
 // array is an ordered list of names. Order is part of the publish identity.
@@ -165,6 +166,28 @@
 // a kept finding of a set that has a grouping, and a fix belongs to a settle
 // whose proposal is not a dismiss. records returns sets, groupings, settles,
 // fixes, and halts, each in key order, and an empty list as [].
+//
+// lease is the conductor lease, a claim that one conductor drives a
+// conversation. It knows nothing about run, kinds, or records. lease selects
+// acquire, renew, release, or get, the conversation must exist, and every
+// selector but get requires holder, a name. acquire succeeds when no live
+// lease exists or this holder has it, and is otherwise refused with
+// remaining, the whole seconds left, rounded up. renew extends this holder's
+// live lease and never creates one. release removes this holder's lease, and
+// releasing one it does not hold changes nothing. get returns held, and when
+// held, since and expires, and never the holder. An ok acquire or renew
+// returns ttl in seconds. LeaseTTL is the time to live, measured on the bus's
+// monotonic clock and checked on each call. Leases live in process memory,
+// never touch the store, change no rev, and wake no wait or watch. A closed
+// conversation can still be leased. The log holds each call and its selector
+// and never the holder.
+//
+// A record write, a member write with a status, and a session write with a
+// session are conductor writes. Each requires holder, and the holder must hold
+// the conversation's live lease or the write is refused and stores nothing,
+// including a replay of a stored record. A publish that carries holder is
+// fenced the same way, and one without it is not checked. The lease check and
+// the write happen under one lock. Reads, register, and close ignore the lease.
 //
 // Timeout returns no messages and writes nothing. Close does not end a wait.
 //

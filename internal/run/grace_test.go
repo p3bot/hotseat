@@ -33,7 +33,7 @@ func (h *harness) goRun(ctx context.Context, cfg Config) <-chan runResult {
 	h.save()
 	go func() {
 		var stdout, stderr lockedBuffer
-		err := executeWithGrace(ctx, cfg, h.grace, &stdout, &stderr)
+		err := executePaced(ctx, cfg, h.pace, &stdout, &stderr)
 		ch <- runResult{stdout: stdout.String(), stderr: stderr.String(), err: err, ended: time.Now()}
 	}()
 	return ch
@@ -80,7 +80,7 @@ func TestDoneSenderThatExitsInTheGraceIsExitedWithItsSession(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
 	cfg.TicketSet = false
-	h.grace = 10 * time.Second
+	h.pace.grace = 10 * time.Second
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
@@ -116,7 +116,7 @@ func TestDoneSenderThatHangsIsKilledAtTheEndOfTheGrace(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
 	cfg.TicketSet = false
-	h.grace = 500 * time.Millisecond
+	h.pace.grace = 500 * time.Millisecond
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
@@ -130,7 +130,7 @@ func TestDoneSenderThatHangsIsKilledAtTheEndOfTheGrace(t *testing.T) {
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
 	}
-	if took := res.ended.Sub(published); took < h.grace || took > 4*time.Second {
+	if took := res.ended.Sub(published); took < h.pace.grace || took > 4*time.Second {
 		t.Fatalf("run returned %s after done", took)
 	}
 	if got := h.memberStatus(name, "alpha"); got != statusTimedOut {
@@ -149,7 +149,7 @@ func TestMemberDueAfterTheDoneSenderInASerialTurnIsNotLaunched(t *testing.T) {
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
 	cfg.TicketSet = false
-	h.grace = 10 * time.Second
+	h.pace.grace = 10 * time.Second
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
@@ -192,7 +192,7 @@ func TestOtherRunningMemberIsStoppedWithoutWaitingForTheDoneSender(t *testing.T)
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
 	cfg.TicketSet = false
-	h.grace = 10 * time.Second
+	h.pace.grace = 10 * time.Second
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
@@ -238,7 +238,7 @@ func TestBackupActingAsSeatGetsTheDoneGrace(t *testing.T) {
 	}
 	cfg := h.base()
 	cfg.TicketSet = false
-	h.grace = 10 * time.Second
+	h.pace.grace = 10 * time.Second
 	h.hold("bravo")
 	cctx, cancel := ctx()
 	defer cancel()
@@ -308,11 +308,11 @@ func TestLeftoverDoneSenderThatExitsInTheGraceFollowsTheShutdownRule(t *testing.
 			}
 			h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha"})
 			launched := statusLaunched
-			h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched, PID: &live})
+			h.setMember("kept", "alpha", launched, &live)
 			if tc.session {
 				n := "alpha"
 				s := "sess-alpha"
-				h.do("session", client.SessionRequest{Conversation: "kept", Name: &n, Session: &s})
+				h.setSession("kept", n, s)
 			}
 			h.publish("kept", "alpha", "done", "yes", nil)
 			cfg := h.base()
@@ -321,7 +321,7 @@ func TestLeftoverDoneSenderThatExitsInTheGraceFollowsTheShutdownRule(t *testing.
 			cfg.TaskSet = false
 			cfg.TicketSet = false
 			cfg.AgentsSet = false
-			h.grace = 10 * time.Second
+			h.pace.grace = 10 * time.Second
 			start := time.Now()
 			stdout, stderr, err := h.run(context.Background(), cfg)
 			if err != nil {
@@ -354,7 +354,7 @@ func TestCancelledCallerEndsTheDoneGraceAtOnce(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
 	cfg.TicketSet = false
-	h.grace = 20 * time.Second
+	h.pace.grace = 20 * time.Second
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
@@ -391,7 +391,7 @@ func (h *harness) closingEngine() (*engine, *lockedBuffer) {
 	}
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
 	var stdout lockedBuffer
-	e, err := newEngine(context.Background(), h.base(), h.grace, &stdout, io.Discard)
+	e, err := newEngine(context.Background(), h.base(), h.pace, &stdout, io.Discard)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -404,6 +404,7 @@ func (h *harness) closingEngine() (*engine, *lockedBuffer) {
 	e.seat = "alpha"
 	e.dir = h.dir
 	e.started = true
+	e.holder = h.engineLease("kept")
 	return e, &stdout
 }
 
@@ -490,7 +491,7 @@ func TestLeftoverThatExitsWhileTheRunClosesPublishesNoError(t *testing.T) {
 	}
 	launched := statusLaunched
 	p := int64(pid)
-	row := h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched, PID: &p})
+	row := h.setMember("kept", "alpha", launched, &p)
 	if row.Member == nil {
 		t.Fatal(row.Reason)
 	}
@@ -516,7 +517,7 @@ func TestDoneSenderThatFailsInTheGraceHandsOffToNobody(t *testing.T) {
 	h.plan.Launch = map[string]runFile{"alpha": {Exit: 1}}
 	cfg := h.base()
 	cfg.TicketSet = false
-	h.grace = 10 * time.Second
+	h.pace.grace = 10 * time.Second
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()

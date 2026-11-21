@@ -358,7 +358,7 @@ func (e *engine) readSession(name string) (string, error) {
 
 func (e *engine) writeStatus(name, status string, pid int64, hasPID bool) error {
 	st := status
-	req := client.MemberRequest{Conversation: e.name, Name: name, Status: &st}
+	req := client.MemberRequest{Conversation: e.name, Name: name, Status: &st, Holder: e.holder}
 	if hasPID {
 		p := pid
 		req.PID = &p
@@ -382,6 +382,7 @@ func (e *engine) storeSession(name, id string) error {
 		Conversation: e.name,
 		Name:         &n,
 		Session:      &s,
+		Holder:       e.holder,
 	})
 	if err != nil {
 		return err
@@ -620,7 +621,7 @@ func (e *engine) stopped() error {
 func (e *engine) shutting() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.closing || e.outcome
+	return e.closing || e.closed
 }
 
 // windDown stops new launches for class and reports whether this call began it.

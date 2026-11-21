@@ -36,7 +36,7 @@ func publisher(t *testing.T, base, conv string) func(kind string) int64 {
 }
 
 func record(conv, kind string, fields map[string]any) map[string]any {
-	body := map[string]any{"conversation": conv, "record": kind}
+	body := map[string]any{"conversation": conv, "record": kind, "holder": testHolder}
 	for k, v := range fields {
 		body[k] = v
 	}
@@ -74,6 +74,7 @@ func readRecords(t *testing.T, base, conv string) (wire, []byte) {
 func TestRecordsForAConversationWithNoRecordsReturnsFiveEmptyArrays(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	_, raw := readRecords(t, base, "job")
 	var got map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &got); err != nil {
@@ -97,6 +98,7 @@ func TestRecordsOfAMissingConversationIsRefused(t *testing.T) {
 func TestRecordResultsAppendToWhatRecordsReturns(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn := put("turn")
 	f1, _, f2, f3 := put("finding"), put("say"), put("finding"), put("finding")
@@ -140,6 +142,7 @@ func TestRecordResultsAppendToWhatRecordsReturns(t *testing.T) {
 func TestRecordReplayReturnsTheStoredRecordAndTheOriginalAfter(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn := put("turn")
 	f1, f2, f3 := put("finding"), put("finding"), put("finding")
@@ -158,6 +161,7 @@ func TestRecordReplayReturnsTheStoredRecordAndTheOriginalAfter(t *testing.T) {
 func TestRecordIgnoresAfterSentByTheCaller(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn := put("turn")
 	high := put("say")
@@ -170,6 +174,7 @@ func TestRecordIgnoresAfterSentByTheCaller(t *testing.T) {
 func TestRecordRefusesAMissingOrUnknownSelector(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	assertRefused(t, mustPost(t, base, PathRecord, map[string]any{"conversation": "job"}), ReasonRecordRequired)
 	assertRefused(t, mustPost(t, base, PathRecord, record("job", "marker", nil)), ReasonRecordBad)
 	assertRefused(t, mustPost(t, base, PathRecord, record("", "halt", map[string]any{"finding": 1})), ReasonConversationRequired)
@@ -179,6 +184,7 @@ func TestRecordRefusesAMissingOrUnknownSelector(t *testing.T) {
 func TestRecordRefusesAMissingOrOutOfRangeField(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	cases := []struct {
 		name   string
 		record string
@@ -216,6 +222,7 @@ func TestRecordRefusesAMissingOrOutOfRangeField(t *testing.T) {
 func TestSetWithARepeatedFindingIsRefusedBeforeTheStore(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn := put("turn")
 	f1, f2 := put("finding"), put("finding")
@@ -228,6 +235,7 @@ func TestSetWithARepeatedFindingIsRefusedBeforeTheStore(t *testing.T) {
 func TestGroupingWithARepeatedDroppedFindingIsRefusedBeforeTheStore(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn := put("turn")
 	f1, f2, f3 := put("finding"), put("finding"), put("finding")
@@ -242,6 +250,7 @@ func TestGroupingWithARepeatedDroppedFindingIsRefusedBeforeTheStore(t *testing.T
 func TestRecordReferencingAMessageOfTheWrongKindIsRefusedWithTheReferenceReason(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn, say, finding := put("turn"), put("say"), put("finding")
 	assertRefused(t, mustPost(t, base, PathRecord, record("job", "set", map[string]any{"turn": say, "findings": []int64{finding}})), ReasonRecordReference)
@@ -254,6 +263,7 @@ func TestRecordReferencingAMessageOfTheWrongKindIsRefusedWithTheReferenceReason(
 func TestReusedFindingAndReusedFixedAreRefusedWithTheReferenceReasonNotUnavailable(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	t1, f1 := put("turn"), put("finding")
 	t2, f2 := put("turn"), put("finding")
@@ -270,6 +280,7 @@ func TestReusedFindingAndReusedFixedAreRefusedWithTheReferenceReasonNotUnavailab
 func TestCrossRowRulesAreRefusedWithTheirOwnReasons(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn := put("turn")
 	f1, f2, f3 := put("finding"), put("finding"), put("finding")
@@ -288,6 +299,7 @@ func TestCrossRowRulesAreRefusedWithTheirOwnReasons(t *testing.T) {
 func TestSecondHaltWithADifferentFindingIsAKeyConflict(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn := put("turn")
 	f1, f2 := put("finding"), put("finding")
@@ -305,6 +317,7 @@ func TestRecordAndRecordsLeaveRevAndWakeNoWatch(t *testing.T) {
 	opt, blocked := blockSignal()
 	base, _, _, _ := startServer(t, opt)
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn, finding := put("turn"), put("finding")
 	rev := currentRev(t, base)
@@ -326,6 +339,7 @@ func TestRecordLogHoldsTheCallAndOutcomeAndNoRecordContent(t *testing.T) {
 	var logs lockedLog
 	base, _, _, _ := startServer(t, Options{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	create(t, base, "job")
+	conduct(t, base, "job")
 	put := publisher(t, base, "job")
 	turn := put("turn")
 	finding := put("finding")

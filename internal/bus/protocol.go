@@ -84,6 +84,13 @@ const (
 	ReasonKeptDropped          = "a kept finding must not itself be dropped"
 	ReasonNotKept              = "finding must be a kept finding of a set that has a grouping"
 	ReasonFixDismissed         = "a fix must belong to a settle whose proposal is not a dismiss"
+	ReasonLeaseRequired        = "lease is required"
+	ReasonLeaseBad             = "lease must be acquire, renew, release, or get"
+	ReasonHolderRequired       = "holder is required"
+	ReasonHolderBad            = "holder must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
+	ReasonConductorHeld        = "conversation has a conductor"
+	ReasonLeaseNotHeld         = "lease is not held"
+	ReasonLeaseWrite           = "write requires the conversation lease"
 	ReasonCursorRequired       = "cursor is required"
 	ReasonCursorRange          = "cursor must be an integer greater than or equal to zero"
 	ReasonLimitRequired        = "limit is required"
@@ -119,6 +126,7 @@ const (
 	PathMembers  = "/members"
 	PathRecord   = "/record"
 	PathRecords  = "/records"
+	PathLease    = "/lease"
 	PathHealth   = "/health"
 )
 

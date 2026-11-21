@@ -115,7 +115,14 @@ the slug is the whole name. A taken bare name gains one 4-character code.
 A second run of the same task creates a new conversation unless --conversation
 names the existing one. agy (Antigravity CLI) has no hotseat module. Pass the
 task query when creating. When --conversation names a conversation that is
-not on the bus, the task argument is required.`,
+not on the bus, the task argument is required.
+
+run holds the conversation's conductor lease while it drives, renews it every
+5s, and releases it at exit. A second run on a conversation another run is
+driving waits once, at most 20s, then exits non-zero with outcome: error and
+conversation has a conductor on stderr, having done nothing. A run that loses
+its lease stops, kills its members, and exits non-zero with outcome: error.
+The lease holder is not printed.`,
 		Example: `  hotseat run hotseat/ticket/review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
   hotseat run --conversation foo-x234-ticket-review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"`,
 		SilenceUsage:  true,

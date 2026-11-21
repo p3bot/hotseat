@@ -83,13 +83,15 @@ var stanceKinds = []string{kindPropose, kindDismiss, kindAgree, kindObject, kind
 
 // Execute runs one conversation.
 // stdout is key: value status. A usage failure writes nothing there.
-// The token value is not written to stdout, stderr, or a prompt.
+// The token value and the lease holder are not written to stdout, stderr, or a prompt.
+// It holds the conversation lease from before it acts on the conversation until it
+// exits, and stops when the lease is lost.
 func Execute(ctx context.Context, cfg Config, stdout, stderr io.Writer) error {
-	return executeWithGrace(ctx, cfg, DoneGrace, stdout, stderr)
+	return executePaced(ctx, cfg, defaultPace(), stdout, stderr)
 }
 
-// executeWithGrace is Execute with the done sender's grace period. Only tests pass a period other than DoneGrace.
-func executeWithGrace(ctx context.Context, cfg Config, grace time.Duration, stdout, stderr io.Writer) error {
+// executePaced is Execute with its timing. Only tests pass a pace other than defaultPace.
+func executePaced(ctx context.Context, cfg Config, p pace, stdout, stderr io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -99,7 +101,7 @@ func executeWithGrace(ctx context.Context, cfg Config, grace time.Duration, stdo
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	e, err := newEngine(ctx, cfg, grace, stdout, stderr)
+	e, err := newEngine(ctx, cfg, p, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -121,7 +123,7 @@ type engine struct {
 	tokenFile string
 	perm      string
 	limit     time.Duration
-	grace     time.Duration
+	pace      pace
 	maxTurns  int
 	maxLaunch int
 	maxSays   int
@@ -130,6 +132,11 @@ type engine struct {
 	tkBin     string
 	stderr    io.Writer
 	out       *statusWriter
+
+	// holder is this run's lease holder id. It fences every conductor write and publish.
+	holder string
+	// leaseEnd stops the lease renewal and waits for it. It is set once the lease is acquired.
+	leaseEnd func()
 
 	roster []agent
 	seat   string
@@ -140,6 +147,8 @@ type engine struct {
 	binding    client.Conversation
 	continuing bool
 	started    bool
+	// reported is set once the outcome line is printed. Only the goroutine running execute touches it.
+	reported bool
 
 	mu       sync.Mutex
 	status   map[string]string
@@ -147,7 +156,8 @@ type engine struct {
 	slots    map[string]*slot
 	acted    int
 	haltErr  error
-	outcome  bool
+	// closed is set once the stopping done closed the conversation.
+	closed   bool
 	closing  bool
 	doneFrom string
 	// doneSeq is the stopping done. Only messages stored before it count toward the stop result.
@@ -185,7 +195,7 @@ type slot struct {
 	mu sync.Mutex
 }
 
-func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, stderr io.Writer) (*engine, error) {
+func newEngine(ctx context.Context, cfg Config, p pace, stdout, stderr io.Writer) (*engine, error) {
 	if cfg.Dir == "" {
 		return nil, errors.New("working directory is required")
 	}
@@ -221,6 +231,10 @@ func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, std
 	if tkBin == "" {
 		tkBin = "tk"
 	}
+	holder, err := mintHolder()
+	if err != nil {
+		return nil, err
+	}
 	child, cancel := context.WithCancel(ctx)
 	e := &engine{
 		root:         ctx,
@@ -229,10 +243,11 @@ func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, std
 		cfg:          cfg,
 		addr:         addr,
 		token:        token,
+		holder:       holder,
 		tokenFile:    cfg.TokenFile,
 		perm:         cfg.permission(),
 		limit:        cfg.timeout(),
-		grace:        grace,
+		pace:         p,
 		maxTurns:     cfg.maxTurns(),
 		maxLaunch:    cfg.maxLaunches(),
 		maxSays:      cfg.maxSays(),
@@ -253,6 +268,7 @@ func newEngine(ctx context.Context, cfg Config, grace time.Duration, stdout, std
 
 func (e *engine) execute() error {
 	defer e.cancel()
+	defer e.endLease()
 	var err error
 	if e.cfg.AgentsSet {
 		e.roster, err = parseAgents(e.cfg.Agents)
@@ -297,6 +313,9 @@ func (e *engine) continueConversation() error {
 	e.dir = conv.Directory
 	e.continuing = true
 	e.started = true
+	if err := e.acquire(true); err != nil {
+		return e.fail(err)
+	}
 	if err := e.ensureRoster(conv.Roster); err != nil {
 		return err
 	}
@@ -383,17 +402,23 @@ func (e *engine) createConversation(suffix bool) error {
 		}
 		e.started = true
 		e.name = name
-		if err := e.publishInstructions(body, rosterNames(e.roster)); err != nil {
-			return e.fail(err)
-		}
-		return e.fail(e.drive())
+		return e.fail(e.begin(body))
 	}
 	e.name = name
 	e.started = true
-	if err := e.publishInstructions(body, rosterNames(e.roster)); err != nil {
-		return e.fail(err)
+	return e.fail(e.begin(body))
+}
+
+// begin takes the lease on a conversation this run created, publishes its task, and drives it.
+// A new conversation has no conductor, so the acquire does not wait.
+func (e *engine) begin(body string) error {
+	if err := e.acquire(false); err != nil {
+		return err
 	}
-	return e.fail(e.drive())
+	if err := e.publishInstructions(body, rosterNames(e.roster)); err != nil {
+		return err
+	}
+	return e.drive()
 }
 
 func (e *engine) mint(bare, id string) (string, error) {
@@ -535,11 +560,19 @@ func (e *engine) fail(err error) error {
 	if err == nil {
 		return nil
 	}
-	if !e.outcome && e.started {
-		e.out.line("outcome", "error")
-		e.outcome = true
+	if e.started {
+		e.printOutcome("error")
 	}
 	return err
+}
+
+// printOutcome prints the final outcome line once.
+func (e *engine) printOutcome(outcome string) {
+	if e.reported {
+		return
+	}
+	e.out.line("outcome", outcome)
+	e.reported = true
 }
 
 func (e *engine) call(ctx context.Context, op string, body any) (client.Result, error) {
@@ -549,6 +582,9 @@ func (e *engine) call(ctx context.Context, op string, body any) (client.Result, 
 	}
 	if res.Outcome == client.OutcomeConnectionFailure {
 		return res, errors.New(res.Reason)
+	}
+	if err := e.haltOnLostLease(res); err != nil {
+		return res, err
 	}
 	return res, nil
 }
@@ -617,6 +653,7 @@ func (e *engine) publishInstructions(body string, to []string) error {
 		Body:         body,
 		TxID:         txInstructions,
 		Kind:         kindInstructions,
+		Holder:       e.holder,
 	})
 	if err != nil {
 		return err

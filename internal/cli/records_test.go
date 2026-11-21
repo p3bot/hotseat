@@ -12,12 +12,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestRecordRoutesHaveNoCommand(t *testing.T) {
+func TestRecordSessionAndLeaseRoutesHaveNoCommand(t *testing.T) {
 	var walk func(*cobra.Command)
 	walk = func(cmd *cobra.Command) {
 		for _, name := range append([]string{cmd.Name()}, cmd.Aliases...) {
-			if name == "record" || name == "records" {
-				t.Fatalf("command %q serves a record route", cmd.CommandPath())
+			if name == "record" || name == "records" || name == "session" || name == "lease" {
+				t.Fatalf("command %q serves a conductor route", cmd.CommandPath())
 			}
 		}
 		for _, sub := range cmd.Commands() {

@@ -72,6 +72,9 @@ func (e *notBus) Error() string {
 
 // Result is one completed call, decoded from the bus JSON.
 // Outcome is ok, timeout, refused, unavailable, or connection_failure.
+// Held, and Since and Expires when held, answer a lease get. TTL answers an
+// ok acquire or renew, and Remaining an acquire refused for another holder,
+// both in whole seconds.
 type Result struct {
 	Outcome        string          `json:"outcome"`
 	Reason         string          `json:"reason,omitempty"`
@@ -98,6 +101,11 @@ type Result struct {
 	Settles        *[]Settle       `json:"settles,omitempty"`
 	Fixes          *[]Fix          `json:"fixes,omitempty"`
 	Halts          *[]Halt         `json:"halts,omitempty"`
+	Held           *bool           `json:"held,omitempty"`
+	Since          string          `json:"since,omitempty"`
+	Expires        string          `json:"expires,omitempty"`
+	TTL            *int64          `json:"ttl,omitempty"`
+	Remaining      *int64          `json:"remaining,omitempty"`
 }
 
 // Message is one transcript entry as the bus returned it.
@@ -186,11 +194,18 @@ type Halt struct {
 	After   int64 `json:"after"`
 }
 
-// RecordWrite is the body of the record operation: SetRecord, GroupingRecord,
+// RecordWrite is one decision record: SetRecord, GroupingRecord,
 // SettleRecord, FixRecord, or HaltRecord. Each sends its own record selector
 // and only its own fields. The bus assigns after.
 type RecordWrite interface {
-	recordBody() any
+	recordBody(holder string) any
+}
+
+// RecordRequest is the record body: one RecordWrite and the holder of the
+// conversation lease, which the bus requires on every record write.
+type RecordRequest struct {
+	Holder string
+	Record RecordWrite
 }
 
 // SetRecord writes a closed turn and its findings. A nil Findings is sent as an empty array.
@@ -200,7 +215,7 @@ type SetRecord struct {
 	Findings     []int64
 }
 
-func (r SetRecord) recordBody() any {
+func (r SetRecord) recordBody(holder string) any {
 	findings := r.Findings
 	if findings == nil {
 		findings = []int64{}
@@ -210,7 +225,8 @@ func (r SetRecord) recordBody() any {
 		Record       string  `json:"record"`
 		Turn         int64   `json:"turn"`
 		Findings     []int64 `json:"findings"`
-	}{r.Conversation, "set", r.Turn, findings}
+		Holder       string  `json:"holder,omitempty"`
+	}{r.Conversation, "set", r.Turn, findings, holder}
 }
 
 // GroupingRecord writes a set's drops. A nil Drops is sent as an empty array.
@@ -220,7 +236,7 @@ type GroupingRecord struct {
 	Drops        []Drop
 }
 
-func (r GroupingRecord) recordBody() any {
+func (r GroupingRecord) recordBody(holder string) any {
 	drops := r.Drops
 	if drops == nil {
 		drops = []Drop{}
@@ -230,7 +246,8 @@ func (r GroupingRecord) recordBody() any {
 		Record       string `json:"record"`
 		Turn         int64  `json:"turn"`
 		Drops        []Drop `json:"drops"`
-	}{r.Conversation, "grouping", r.Turn, drops}
+		Holder       string `json:"holder,omitempty"`
+	}{r.Conversation, "grouping", r.Turn, drops, holder}
 }
 
 // SettleRecord writes the agreed proposal for a finding.
@@ -242,14 +259,15 @@ type SettleRecord struct {
 	ProposalKind string
 }
 
-func (r SettleRecord) recordBody() any {
+func (r SettleRecord) recordBody(holder string) any {
 	return struct {
 		Conversation string `json:"conversation"`
 		Record       string `json:"record"`
 		Finding      int64  `json:"finding"`
 		Proposal     int64  `json:"proposal"`
 		ProposalKind string `json:"proposal_kind"`
-	}{r.Conversation, "settle", r.Finding, r.Proposal, r.ProposalKind}
+		Holder       string `json:"holder,omitempty"`
+	}{r.Conversation, "settle", r.Finding, r.Proposal, r.ProposalKind, holder}
 }
 
 // FixRecord writes the fixed message for a settled finding.
@@ -259,13 +277,14 @@ type FixRecord struct {
 	Fixed        int64
 }
 
-func (r FixRecord) recordBody() any {
+func (r FixRecord) recordBody(holder string) any {
 	return struct {
 		Conversation string `json:"conversation"`
 		Record       string `json:"record"`
 		Finding      int64  `json:"finding"`
 		Fixed        int64  `json:"fixed"`
-	}{r.Conversation, "fix", r.Finding, r.Fixed}
+		Holder       string `json:"holder,omitempty"`
+	}{r.Conversation, "fix", r.Finding, r.Fixed, holder}
 }
 
 // HaltRecord writes the finding a conversation's run stopped on.
@@ -274,12 +293,13 @@ type HaltRecord struct {
 	Finding      int64
 }
 
-func (r HaltRecord) recordBody() any {
+func (r HaltRecord) recordBody(holder string) any {
 	return struct {
 		Conversation string `json:"conversation"`
 		Record       string `json:"record"`
 		Finding      int64  `json:"finding"`
-	}{r.Conversation, "halt", r.Finding}
+		Holder       string `json:"holder,omitempty"`
+	}{r.Conversation, "halt", r.Finding, holder}
 }
 
 // RecordsRequest is the records body.
@@ -303,6 +323,8 @@ type CreateRequest struct {
 // PublishRequest is the publish body. To keeps the caller's order.
 // A nil To is sent as an empty array. Kind is required by the bus.
 // A nil Re omits the field. Any other value is sent, and the bus refuses one below 1.
+// An empty Holder omits the field and the publish is not fenced. Any other
+// holder must hold the conversation lease.
 type PublishRequest struct {
 	Conversation string   `json:"conversation"`
 	From         string   `json:"from"`
@@ -311,6 +333,7 @@ type PublishRequest struct {
 	TxID         string   `json:"txid"`
 	Kind         string   `json:"kind"`
 	Re           *int64   `json:"re,omitempty"`
+	Holder       string   `json:"holder,omitempty"`
 }
 
 // ReadRequest is the read body. A nil Name omits the field.
@@ -358,19 +381,32 @@ type RegisterRequest struct {
 
 // MemberRequest is the member body.
 // A nil Status and a nil PID reads the row. A PID without a Status is refused.
+// A write with a Status requires Holder to hold the conversation lease.
 type MemberRequest struct {
 	Conversation string  `json:"conversation"`
 	Name         string  `json:"name"`
 	Status       *string `json:"status,omitempty"`
 	PID          *int64  `json:"pid,omitempty"`
+	Holder       string  `json:"holder,omitempty"`
 }
 
 // SessionRequest is the session body.
 // A nil Name lists every member. A nil Session reads one id.
+// A write with a Session requires Holder to hold the conversation lease.
 type SessionRequest struct {
 	Conversation string  `json:"conversation"`
 	Name         *string `json:"name,omitempty"`
 	Session      *string `json:"session,omitempty"`
+	Holder       string  `json:"holder,omitempty"`
+}
+
+// LeaseRequest is the lease body. Lease is bus.LeaseAcquire, bus.LeaseRenew,
+// bus.LeaseRelease, or bus.LeaseGet. An empty Holder omits the field, which
+// only get allows.
+type LeaseRequest struct {
+	Conversation string `json:"conversation"`
+	Lease        string `json:"lease"`
+	Holder       string `json:"holder,omitempty"`
 }
 
 // MembersRequest is the members body.
@@ -468,6 +504,7 @@ func committedLaunch(ctx context.Context, address, token string, body any, res R
 	}
 	req.Status = nil
 	req.PID = nil
+	req.Holder = ""
 	return Do(ctx, address, "member", token, req)
 }
 
@@ -517,11 +554,11 @@ func marshalBody(op string, body any) ([]byte, error) {
 		body = req
 	}
 	if op == "record" {
-		w, ok := body.(RecordWrite)
-		if !ok {
+		req, ok := body.(RecordRequest)
+		if !ok || req.Record == nil {
 			return nil, errors.New("record body has the wrong type")
 		}
-		body = w.recordBody()
+		body = req.Record.recordBody(req.Holder)
 	}
 	if body == nil {
 		body = struct{}{}
@@ -577,6 +614,8 @@ func operationPath(op string) (string, error) {
 		return bus.PathRecord, nil
 	case "records":
 		return bus.PathRecords, nil
+	case "lease":
+		return bus.PathLease, nil
 	default:
 		return "", fmt.Errorf("unknown operation %s", op)
 	}

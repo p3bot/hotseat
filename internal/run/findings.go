@@ -166,7 +166,7 @@ func (e *engine) loadRecords() error {
 // writeRecord stores one decision record and keeps every record the result returns. A stored copy is success.
 // A refusal stops the run as a refused publish does.
 func (e *engine) writeRecord(w client.RecordWrite) (client.Result, error) {
-	res, err := e.call(e.root, "record", w)
+	res, err := e.call(e.root, "record", client.RecordRequest{Holder: e.holder, Record: w})
 	if err != nil {
 		return res, err
 	}
@@ -973,17 +973,17 @@ func (e *engine) reportStop() error {
 		e.out.line("unfixed", seqText(seq))
 	}
 	if len(unsettled) == 0 && len(unfixed) == 0 {
-		e.out.line("outcome", "done")
+		e.printOutcome("done")
 		return nil
 	}
 	if _, halted := cut.halted(); halted {
-		e.out.line("outcome", "deadlock")
+		e.printOutcome("deadlock")
 		return ErrUnresolved
 	}
 	if err := e.factErr("", classUnsettled, e.doneSeq, factTx(classUnsettled, seqText(e.doneSeq))); err != nil {
 		return err
 	}
-	e.out.line("outcome", "unsettled")
+	e.printOutcome("unsettled")
 	return ErrUnresolved
 }
 

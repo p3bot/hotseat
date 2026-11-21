@@ -22,6 +22,13 @@
 // decision is settled, to owner, because no participant states a settle.
 // Nothing reads it as state.
 //
+// run holds the conversation's conductor lease from before it acts on the
+// conversation until it exits. It mints a random holder at start, renews the
+// lease in the background, and sends the holder on every record, member
+// status, and session write and every publish. A refused renewal, or a write
+// refused for want of the lease, stops the run. A continuation of a
+// conversation another conductor holds waits once for that lease to run out.
+//
 // Every prompt names the exact --re for the kind it asks for. A message whose
 // re is present and is not the message run expects is rejected under its
 // kind's class. A missing re is judged by the transcript windows. A protocol

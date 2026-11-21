@@ -16,6 +16,22 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
+// asConductor holds conv's lease while writes run, as hotseat run would, and releases it after.
+func asConductor(t *testing.T, ctx context.Context, addr, conv string, writes func(holder string)) {
+	t.Helper()
+	const holder = "test-conductor"
+	lease := func(op string) {
+		t.Helper()
+		res, err := client.Do(ctx, addr, "lease", "", client.LeaseRequest{Conversation: conv, Lease: op, Holder: holder})
+		if err != nil || res.Outcome != bus.OutcomeOK {
+			t.Fatalf("lease %s %v %+v", op, err, res)
+		}
+	}
+	lease(bus.LeaseAcquire)
+	writes(holder)
+	lease(bus.LeaseRelease)
+}
+
 func TestPublishRequiresKind(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := execute(context.Background(), []string{
@@ -60,24 +76,26 @@ func TestMemberListOmitsPidAndSession(t *testing.T) {
 	}
 	pid := int64(424242)
 	status := "launched"
-	if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
-		Conversation: "job", Name: "alpha", Status: &status,
-	}); err != nil || res.Outcome != bus.OutcomeOK {
-		t.Fatalf("launch alpha %v %+v", err, res)
-	}
-	if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
-		Conversation: "job", Name: "bravo", Status: &status, PID: &pid,
-	}); err != nil || res.Outcome != bus.OutcomeOK {
-		t.Fatalf("launch bravo %v %+v", err, res)
-	}
 	const secret = "sess-secret-9f3a"
-	session := secret
-	name := "bravo"
-	if res, err := client.Do(ctx, addr, "session", "", client.SessionRequest{
-		Conversation: "job", Name: &name, Session: &session,
-	}); err != nil || res.Outcome != bus.OutcomeOK || res.Session == nil || res.Session.Session != secret {
-		t.Fatalf("session %v %+v", err, res)
-	}
+	asConductor(t, ctx, addr, "job", func(holder string) {
+		if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
+			Conversation: "job", Name: "alpha", Status: &status, Holder: holder,
+		}); err != nil || res.Outcome != bus.OutcomeOK {
+			t.Fatalf("launch alpha %v %+v", err, res)
+		}
+		if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
+			Conversation: "job", Name: "bravo", Status: &status, PID: &pid, Holder: holder,
+		}); err != nil || res.Outcome != bus.OutcomeOK {
+			t.Fatalf("launch bravo %v %+v", err, res)
+		}
+		session := secret
+		name := "bravo"
+		if res, err := client.Do(ctx, addr, "session", "", client.SessionRequest{
+			Conversation: "job", Name: &name, Session: &session, Holder: holder,
+		}); err != nil || res.Outcome != bus.OutcomeOK || res.Session == nil || res.Session.Session != secret {
+			t.Fatalf("session %v %+v", err, res)
+		}
+	})
 	reg, regRaw := runClient(t, ctx, "member", "register", "--address", addr, "--conversation", "job", "--name", "bravo")
 	if reg.Outcome != bus.OutcomeOK || reg.Member == nil || reg.Member.Status != "registered" || reg.Member.Registered == "" {
 		t.Fatalf("register %s", regRaw)

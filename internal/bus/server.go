@@ -114,6 +114,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST "+PathMembers, s.handleMembers)
 	mux.HandleFunc("POST "+PathRecord, s.handleRecord)
 	mux.HandleFunc("POST "+PathRecords, s.handleRecords)
+	mux.HandleFunc("POST "+PathLease, s.handleLease)
 	mux.HandleFunc("/", s.handleUnknown)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Before the token check, so a missing credential never sees this route.
@@ -226,6 +227,8 @@ func opName(path string) string {
 		return "record"
 	case PathRecords:
 		return "records"
+	case PathLease:
+		return "lease"
 	default:
 		return path
 	}
@@ -284,11 +287,12 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		TxID         *string         `json:"txid"`
 		Kind         *string         `json:"kind"`
 		Re           json.RawMessage `json:"re"`
+		Holder       *string         `json:"holder"`
 	}
 	if !s.decode(w, r, "publish", "", start, &req) {
 		return
 	}
-	in := PublishInput{BodyMissing: req.Body == nil}
+	in := PublishInput{BodyMissing: req.Body == nil, Holder: req.Holder}
 	if req.Conversation != nil {
 		in.Conversation = *req.Conversation
 	}
@@ -498,6 +502,7 @@ func (s *server) handleMember(w http.ResponseWriter, r *http.Request) {
 		Name         *string         `json:"name"`
 		Status       *string         `json:"status"`
 		PID          json.RawMessage `json:"pid"`
+		Holder       *string         `json:"holder"`
 	}
 	if !s.decode(w, r, "member", "", start, &req) {
 		return
@@ -513,7 +518,7 @@ func (s *server) handleMember(w http.ResponseWriter, r *http.Request) {
 		s.finish(w, "member", conv, start, res, rerr)
 		return
 	}
-	res, err := s.svc.Member(r.Context(), conv, *req.Name, req.Status, pid, hasPID)
+	res, err := s.svc.Member(r.Context(), conv, *req.Name, req.Status, pid, hasPID, req.Holder)
 	s.finish(w, "member", conv, start, res, err)
 }
 
@@ -523,6 +528,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		Conversation *string `json:"conversation"`
 		Name         *string `json:"name"`
 		Session      *string `json:"session"`
+		Holder       *string `json:"holder"`
 	}
 	if !s.decode(w, r, "session", "", start, &req) {
 		return
@@ -530,7 +536,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	conv := deref(req.Conversation)
 	name, hasName := optionalName(req.Name)
 	session, hasSession := optionalName(req.Session)
-	res, err := s.svc.Session(r.Context(), conv, name, hasName, session, hasSession)
+	res, err := s.svc.Session(r.Context(), conv, name, hasName, session, hasSession, req.Holder)
 	s.finish(w, "session", conv, start, res, err)
 }
 
@@ -659,6 +665,10 @@ func (s *server) finish(w http.ResponseWriter, op, conv string, start time.Time,
 	if op == "create" {
 		attrs = append(attrs, "already_existed", res.AlreadyExisted)
 	}
+	// The holder is a capability once writes are fenced, so only the selector is logged.
+	if op == "lease" && res.Lease != nil {
+		attrs = append(attrs, "lease", res.Lease.Op)
+	}
 	if res.MatchSeq != 0 {
 		attrs = append(attrs, "match_seq", res.MatchSeq)
 	}
@@ -715,6 +725,7 @@ type wire struct {
 	Settles        *[]wireSettle       `json:"settles,omitempty"`
 	Fixes          *[]wireFix          `json:"fixes,omitempty"`
 	Halts          *[]wireHalt         `json:"halts,omitempty"`
+	wireLease
 }
 
 type wireMessage struct {
@@ -799,6 +810,9 @@ func toWire(op string, res Result) wire {
 		case "record", "records":
 			recordWire(op, res, &out)
 		}
+	}
+	if op == "lease" {
+		leaseWire(res, &out)
 	}
 	return out
 }

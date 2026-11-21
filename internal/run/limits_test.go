@@ -121,7 +121,7 @@ func TestMinimumThatIsNotAPositiveIntegerCreatesNothing(t *testing.T) {
 
 func TestTaskWithoutMinimumRunsWithOneMember(t *testing.T) {
 	h := newHarness(t)
-	h.grace = time.Second
+	h.pace.grace = time.Second
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1"
 	cfg.TicketSet = false
@@ -194,7 +194,7 @@ func TestContinueWithStoredDoneAndDeadLeftoverUnderTheMinimumReportsDone(t *test
 	}
 	h.keptConversation("alpha", "bravo")
 	launched := statusLaunched
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched, PID: &deadPID})
+	h.setMember("kept", "bravo", launched, &deadPID)
 	h.publish("kept", "alpha", "done", "finished", nil)
 	stdout, stderr, err := h.runBounded(h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1"))
 	if err != nil {
@@ -216,8 +216,8 @@ func TestContinueThatFindsTooFewLiveMembersStops(t *testing.T) {
 	h.plan.MinMembers = "2\n"
 	h.keptConversation("alpha", "bravo")
 	launched, timedOut := statusLaunched, statusTimedOut
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &timedOut})
+	h.setMember("kept", "bravo", launched, nil)
+	h.setMember("kept", "bravo", timedOut, nil)
 	h.publish("kept", "alpha", "turn", "mode: parallel\nreview", []string{"alpha"})
 	stdout, _, err := h.runBounded(h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1"))
 	if err == nil || !strings.Contains(err.Error(), classBelowMinimum) {
@@ -242,8 +242,8 @@ func TestResumeThatCannotLaunchDoesNotApplyTheMinimum(t *testing.T) {
 	h.plan.MinMembers = "2\n"
 	h.keptConversation("alpha", "bravo")
 	launched, timedOut := statusLaunched, statusTimedOut
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &timedOut})
+	h.setMember("kept", "bravo", launched, nil)
+	h.setMember("kept", "bravo", timedOut, nil)
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, h.continueKept(""))
@@ -319,7 +319,7 @@ func TestStoppingDoneDuringTheMinimumStopCloses(t *testing.T) {
 	h := newHarness(t)
 	h.plan.MinMembers = "3\n"
 	h.plan.Launch = map[string]runFile{"charlie": {Exit: 1, ExitOn: "mode:"}}
-	h.grace = time.Second
+	h.pace.grace = time.Second
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
 	cfg.TicketSet = false
@@ -356,7 +356,7 @@ func TestStoppingDoneDuringTheMinimumStopCloses(t *testing.T) {
 func TestDoneThatStopsRunningMembersPublishesNoBelowMinimum(t *testing.T) {
 	h := newHarness(t)
 	h.plan.MinMembers = "2\n"
-	h.grace = 300 * time.Millisecond
+	h.pace.grace = 300 * time.Millisecond
 	cfg := h.base()
 	cfg.TicketSet = false
 	cctx, cancel := ctx()
@@ -388,7 +388,7 @@ func TestDoneThatStopsRunningMembersPublishesNoBelowMinimum(t *testing.T) {
 
 func TestLaunchCapStartsNoMoreAndAContinuationLaunchesAgain(t *testing.T) {
 	h := newHarness(t)
-	h.grace = 500 * time.Millisecond
+	h.pace.grace = 500 * time.Millisecond
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
 	cfg.TicketSet = false
@@ -491,9 +491,9 @@ func TestLaunchCapCountsTurnLaunchesAndWaitsForALeftover(t *testing.T) {
 	h.keptConversation("alpha", "bravo", "charlie")
 	launched := statusLaunched
 	live := int64(pid)
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "charlie", Status: &launched, PID: &live})
+	h.setMember("kept", "charlie", launched, &live)
 	n, s := "charlie", "sess-charlie"
-	h.do("session", client.SessionRequest{Conversation: "kept", Name: &n, Session: &s})
+	h.setSession("kept", n, s)
 	h.publish("kept", "alpha", "turn", "mode: parallel\nreview", []string{"bravo"})
 	cfg := h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2")
 	cfg.MaxLaunches = 1

@@ -1108,3 +1108,21 @@ func TestCloseReportsAlreadyClosed(t *testing.T) {
 		t.Fatalf("second close = %+v already=%v err=%v", conv, already, err)
 	}
 }
+
+func TestConversationReturnsTheStoredBindingOrNotFound(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, _, err := st.Create(ctx, "job", Binding{Task: "t", Seat: "alpha", Roster: []string{"alpha"}}); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := st.Conversation(ctx, "job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conv.Name != "job" || conv.Status != StatusOpen || conv.Task != "t" || conv.Seat != "alpha" {
+		t.Fatalf("%+v", conv)
+	}
+	if _, err := st.Conversation(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing: %v", err)
+	}
+}

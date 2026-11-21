@@ -38,7 +38,8 @@ func (s *Service) Register(ctx context.Context, conv, name string) (Result, erro
 // A pid without a status is refused and writes nothing.
 // launched inserts a row. running, exited, and timed-out update an existing row.
 // pid is stored only on those writes. The result does not carry a session id.
-func (s *Service) Member(ctx context.Context, conv, name string, status *string, pid int64, hasPID bool) (Result, error) {
+// A write requires holder to hold the conversation lease. A read ignores holder.
+func (s *Service) Member(ctx context.Context, conv, name string, status *string, pid int64, hasPID bool, holder *string) (Result, error) {
 	if err := requireConversation(conv); err != nil {
 		return asRefused(err)
 	}
@@ -51,10 +52,22 @@ func (s *Service) Member(ctx context.Context, conv, name string, status *string,
 	if status == nil && hasPID {
 		return refused(ReasonPIDNeedsStatus), nil
 	}
+	var fenceBy string
+	if status != nil {
+		var err error
+		if fenceBy, err = requireHolder(holder); err != nil {
+			return asRefused(err)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return Result{}, ErrDropped
+	}
+	if status != nil {
+		if err := s.fence(ctx, conv, fenceBy); err != nil {
+			return s.fail(err, "member")
+		}
 	}
 	var (
 		m   store.Member
@@ -93,8 +106,8 @@ func (s *Service) Members(ctx context.Context, conv string) (Result, error) {
 
 // Session stores, reads, or lists session ids.
 // hasName false lists every member. hasSession false reads one id.
-// An empty session string is refused by the caller before this runs.
-func (s *Service) Session(ctx context.Context, conv, name string, hasName bool, session string, hasSession bool) (Result, error) {
+// A store requires holder to hold the conversation lease. A read ignores holder.
+func (s *Service) Session(ctx context.Context, conv, name string, hasName bool, session string, hasSession bool, holder *string) (Result, error) {
 	if err := requireConversation(conv); err != nil {
 		return asRefused(err)
 	}
@@ -119,12 +132,22 @@ func (s *Service) Session(ctx context.Context, conv, name string, hasName bool, 
 	if hasSession && session == "" {
 		return refused(ReasonSessionEmpty), nil
 	}
+	var fenceBy string
+	if hasSession {
+		var err error
+		if fenceBy, err = requireHolder(holder); err != nil {
+			return asRefused(err)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return Result{}, ErrDropped
 	}
 	if hasSession {
+		if err := s.fence(ctx, conv, fenceBy); err != nil {
+			return s.fail(err, "session")
+		}
 		one, err := s.store.SetSession(ctx, conv, name, session)
 		if err != nil {
 			return s.fail(err, "session")

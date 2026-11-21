@@ -34,6 +34,8 @@ type PublishInput struct {
 	TxID         string
 	Kind         string
 	Re           *int64
+	// Holder, when set, fences the publish to the conversation lease.
+	Holder *string
 }
 
 // Result is one completed protocol call.
@@ -59,6 +61,7 @@ type Result struct {
 	Fix            *store.Fix
 	Halt           *store.Halt
 	Records        *store.Records
+	Lease          *LeaseState
 }
 
 type waiter struct {
@@ -66,8 +69,8 @@ type waiter struct {
 }
 
 // Service applies the bus rules and wakes blocked waits and watches.
-// rev and newest live in process memory. A new process starts rev at a
-// random value below 2^53 and reads newest from the store.
+// rev, newest, and leases live in process memory. A new process starts rev
+// at a random value below 2^53, reads newest from the store, and holds no lease.
 type Service struct {
 	store   *store.Store
 	maxBody int
@@ -78,6 +81,7 @@ type Service struct {
 	mu      sync.Mutex
 	waiters map[string][]*waiter
 	watches []*waiter
+	leases  map[string]lease
 	rev     uint64
 	newest  string
 	cancel  context.CancelFunc
@@ -107,6 +111,7 @@ func newService(ctx context.Context, st *store.Store, opt Options) (*Service, er
 		onBlock: opt.OnBlock,
 		schema:  opt.schema,
 		waiters: make(map[string][]*waiter),
+		leases:  make(map[string]lease),
 		// A random start keeps a restarted bus off a value a caller still holds.
 		rev:    rand.Uint64N(1 << 53),
 		cancel: cancel,
@@ -154,6 +159,11 @@ func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) 
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return Result{}, ErrDropped
+	}
+	if in.Holder != nil {
+		if err := s.fence(ctx, in.Conversation, *in.Holder); err != nil {
+			return s.fail(err, "publish")
+		}
 	}
 	msg, conv, already, err := s.store.Publish(ctx, store.Publish{
 		Conversation: in.Conversation,
@@ -382,6 +392,9 @@ func (s *Service) eval(ctx context.Context, conv string, cursor int64, name stri
 }
 
 func (s *Service) fail(err error, op string) (Result, error) {
+	if reason, ok := reasonOf(err); ok {
+		return refused(reason), nil
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return Result{}, ErrDropped
 	}

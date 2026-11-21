@@ -70,7 +70,8 @@ Note: lint is not clean on main. The existing findings are unchecked `Close` err
 - A write that changes nothing (idempotent publish, a record replay, close of a closed conversation) returns `errNoChange`, so the transaction rolls back.
 - Store sentinels are `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, `ErrLaunched`, `ErrReplyTarget`, `ErrRecordReference`, `ErrKeptDropped`, `ErrNotKept`, and `ErrFixDismissed`. Wrap with `%w` when the caller branches on the cause.
 - Refusal text is a `bus.Reason*` constant. A new reason is a constant beside the others, plus a test whose name states the rule.
-- Session ids, pids, and the token stay off read, wait, list, member list, the page, logs, status lines, and prompts. Decision records stay off read, wait, watch, list, member list, the page, and logs.
+- Session ids, pids, the token, and lease holders stay off read, wait, list, member list, the page, logs, status lines, and prompts. A holder is also off `/lease` `get`. Decision records stay off read, wait, watch, list, member list, the page, and logs.
+- Conductor leases live in `Service` memory under `s.mu`, never in the store. A fenced write (`/record`, `/member` with a status, `/session` with a session, `/publish` with a holder) checks the lease and writes under that one lock. A launch has no fence of its own: `recordLaunch` writes a fenced member row right after `cmd.Start` and kills the process group when it is refused.
 - `from` is caller-supplied. The token does not authenticate the sender.
 - The page listens on loopback only, because it holds the bus token.
 - CLI stdout is `key: value`, and a value with a newline is `key <<N` and then those bytes. Usage errors go to stderr with no stdout. Commands set `SilenceUsage` and `SilenceErrors`. SIGINT and SIGTERM exit `128+signal`, read before the error path.
@@ -84,6 +85,7 @@ Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/impleme
 | File | Owns |
 | --- | --- |
 | `loop.go` | Transcript watch, turns, stop on `done` |
+| `lease.go` | Conductor lease: holder, acquire, renewal, release, lost-lease stop |
 | `launch.go` | Member processes, launch cap, handoff |
 | `state.go` | Member rows, leftovers on resume, backup, prompts |
 | `findings.go` | Finding protocol: launches, judging, prompts |

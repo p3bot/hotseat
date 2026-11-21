@@ -146,6 +146,7 @@ func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip 
 // recordLaunch writes the started process's rows, waits for it, and records how it ended.
 func (e *engine) recordLaunch(pctx context.Context, name string, kind launchKind, a agent, cmd *exec.Cmd, stdout *bytes.Buffer) error {
 	pid := cmd.Process.Pid
+	// Launches have no fence of their own: the fenced row write below kills a process a stale run started.
 	row, err := e.memberRow(name)
 	if err != nil {
 		_ = killGroup(pid)
@@ -321,7 +322,7 @@ func (e *engine) graceFor(name string) time.Duration {
 	if !e.closing || name != e.doneFrom {
 		return 0
 	}
-	return e.grace
+	return e.pace.grace
 }
 
 // markStopped records a member the run killed while stopping. The stop is not a member failure.
@@ -507,6 +508,7 @@ func (e *engine) send(p post) (bool, error) {
 		Body:         p.body,
 		TxID:         tx,
 		Kind:         p.kind,
+		Holder:       e.holder,
 	}
 	if p.re > 0 {
 		req.Re = &p.re

@@ -64,8 +64,10 @@ type harness struct {
 	addr string
 	dir  string
 	plan planFile
-	// grace is the done sender's grace period for runs from this harness.
-	grace time.Duration
+	// pace is the timing of runs from this harness.
+	pace pace
+	// engines maps a conversation to the holder of an engine a test built by hand, which holds its lease.
+	engines map[string]string
 }
 
 type planFile struct {
@@ -149,10 +151,10 @@ func newHarnessClock(t *testing.T, clock func() time.Time) *harness {
 		}
 	})
 	h := &harness{
-		t:     t,
-		addr:  ln.Addr().String(),
-		dir:   dir,
-		grace: DoneGrace,
+		t:    t,
+		addr: ln.Addr().String(),
+		dir:  dir,
+		pace: testPace(),
 		plan: planFile{
 			ID:     "tasks:hotseat/review/ticket",
 			Body:   "Review the ticket.\n",
@@ -165,6 +167,80 @@ func newHarnessClock(t *testing.T, clock func() time.Time) *harness {
 	t.Setenv("HOTSEAT_FAKE_DIR", dir)
 	t.Setenv("HOTSEAT_FAKE_BUS", h.addr)
 	return h
+}
+
+// testPace renews often, so a test that moves the bus clock sees a renewal soon after.
+func testPace() pace {
+	p := defaultPace()
+	p.renew = 50 * time.Millisecond
+	return p
+}
+
+// seedHolder is the conductor an earlier run process was when it wrote what a test seeds.
+const seedHolder = "seed-conductor"
+
+// conduct holds conv's lease as seedHolder while writes run, as an earlier run process did,
+// and releases it, so the run under test acquires at once. On a conversation a hand-built
+// engine holds, the writes run as that engine.
+func (h *harness) conduct(conv string, writes func(holder string)) {
+	h.t.Helper()
+	if holder, ok := h.engines[conv]; ok {
+		writes(holder)
+		return
+	}
+	if res := h.leaseAs(conv, bus.LeaseAcquire, seedHolder); res.Outcome != bus.OutcomeOK {
+		h.t.Fatalf("lease acquire %s: %s", conv, res.Reason)
+	}
+	writes(seedHolder)
+	h.leaseAs(conv, bus.LeaseRelease, seedHolder)
+}
+
+// engineLease acquires conv's lease for an engine a test builds by hand, and returns the holder to give it.
+// The lease is released at cleanup.
+func (h *harness) engineLease(conv string) string {
+	h.t.Helper()
+	const holder = "test-engine"
+	if res := h.leaseAs(conv, bus.LeaseAcquire, holder); res.Outcome != bus.OutcomeOK {
+		h.t.Fatalf("lease acquire %s: %s", conv, res.Reason)
+	}
+	if h.engines == nil {
+		h.engines = make(map[string]string)
+	}
+	h.engines[conv] = holder
+	h.t.Cleanup(func() {
+		delete(h.engines, conv)
+		h.leaseAs(conv, bus.LeaseRelease, holder)
+	})
+	return holder
+}
+
+func (h *harness) leaseAs(conv, op, holder string) client.Result {
+	h.t.Helper()
+	res := h.do("lease", client.LeaseRequest{Conversation: conv, Lease: op, Holder: holder})
+	if op != bus.LeaseAcquire && res.Outcome != bus.OutcomeOK {
+		h.t.Fatalf("lease %s %s: %s", op, conv, res.Reason)
+	}
+	return res
+}
+
+// setMember writes name's status, and its pid when pid is set, as an earlier run process did.
+func (h *harness) setMember(conv, name, status string, pid *int64) client.Result {
+	h.t.Helper()
+	var res client.Result
+	h.conduct(conv, func(holder string) {
+		res = h.do("member", client.MemberRequest{Conversation: conv, Name: name, Status: &status, PID: pid, Holder: holder})
+	})
+	return res
+}
+
+// setSession stores name's session id, as an earlier run process did.
+func (h *harness) setSession(conv, name, session string) {
+	h.t.Helper()
+	h.conduct(conv, func(holder string) {
+		if res := h.do("session", client.SessionRequest{Conversation: conv, Name: &name, Session: &session, Holder: holder}); res.Outcome != bus.OutcomeOK {
+			h.t.Fatalf("session %s: %s", name, res.Reason)
+		}
+	})
 }
 
 func (h *harness) save() {
@@ -203,7 +279,7 @@ func (h *harness) run(ctx context.Context, cfg Config) (string, string, error) {
 	h.t.Helper()
 	h.save()
 	var stdout, stderr bytes.Buffer
-	err := executeWithGrace(ctx, cfg, h.grace, &stdout, &stderr)
+	err := executePaced(ctx, cfg, h.pace, &stdout, &stderr)
 	return stdout.String(), stderr.String(), err
 }
 
@@ -1066,7 +1142,7 @@ func TestTimeoutIsStoredWhenActingSeatReadFails(t *testing.T) {
 		t.Fatal(res.Reason)
 	}
 	launched := statusLaunched
-	wrote := h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched})
+	wrote := h.setMember("kept", "bravo", launched, nil)
 	if wrote.Outcome != bus.OutcomeOK {
 		t.Fatal(wrote.Reason)
 	}
@@ -1080,6 +1156,7 @@ func TestTimeoutIsStoredWhenActingSeatReadFails(t *testing.T) {
 	e := &engine{
 		root:   context.Background(),
 		addr:   addr,
+		holder: h.engineLease("kept"),
 		name:   "kept",
 		seat:   "alpha",
 		roster: []agent{{name: "alpha"}, {name: "bravo"}},
@@ -1167,7 +1244,7 @@ func TestBackupSkipsAMissingRowAndUsesTheNextRegisteredName(t *testing.T) {
 		t.Fatalf("before register name %q err %v", name, err)
 	}
 	launched := statusLaunched
-	wrote := h.do("member", client.MemberRequest{Conversation: "kept", Name: "charlie", Status: &launched})
+	wrote := h.setMember("kept", "charlie", launched, nil)
 	if wrote.Outcome != bus.OutcomeOK {
 		t.Fatal(wrote.Reason)
 	}
@@ -1263,11 +1340,11 @@ func TestDoneFromTheBackupCloses(t *testing.T) {
 	launched := statusLaunched
 	timed := statusTimedOut
 	exited := statusExited
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &timed})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched})
+	h.setMember("kept", "alpha", launched, nil)
+	h.setMember("kept", "alpha", timed, nil)
+	h.setMember("kept", "bravo", launched, nil)
 	h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &exited})
+	h.setMember("kept", "bravo", exited, nil)
 	h.publish("kept", "bravo", "done", "yes", nil)
 	cfg := h.base()
 	cfg.Conversation = "kept"
@@ -1628,6 +1705,11 @@ func TestTurnCapStopsOnTheNextTurn(t *testing.T) {
 		errCh <- err
 	}()
 	name := h.waitName()
+	// The turn cap refuses later launches, so the turns wait for bravo's first launch.
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) && len(launches(h.calls(), "bravo")) < 1 {
+		time.Sleep(20 * time.Millisecond)
+	}
 	h.publish(name, "alpha", "turn", "nope", nil)
 	h.publish(name, "alpha", "turn", "again", nil)
 	err := <-errCh
@@ -1746,7 +1828,7 @@ func TestRestartDeadPidTimesOutBeforeLaunchAndLivePidIsWaited(t *testing.T) {
 	}
 	h.publish("review-ticket-foo-x234", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
 	launched := statusLaunched
-	h.do("member", client.MemberRequest{Conversation: "review-ticket-foo-x234", Name: "alpha", Status: &launched, PID: &deadPID})
+	h.setMember("review-ticket-foo-x234", "alpha", launched, &deadPID)
 	registered := h.do("register", client.RegisterRequest{Conversation: "review-ticket-foo-x234", Name: "alpha"})
 	if registered.Outcome != bus.OutcomeOK {
 		t.Fatal(registered.Reason)
@@ -1824,7 +1906,7 @@ func TestResumeDoesNotSignalAProcessStartedAfterLaunch(t *testing.T) {
 	}
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha"})
 	launched := statusLaunched
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched, PID: &live})
+	h.setMember("kept", "alpha", launched, &live)
 	h.publish("kept", "alpha", "done", "yes", nil)
 	cfg := h.base()
 	cfg.Conversation = "kept"
@@ -1878,13 +1960,13 @@ func TestForeignProcessLimitStopsTheProcess(t *testing.T) {
 	}
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
 	launched := statusLaunched
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched, PID: &live})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched})
+	h.setMember("kept", "alpha", launched, &live)
+	h.setMember("kept", "bravo", launched, nil)
 	if registered := h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"}); registered.Outcome != bus.OutcomeOK {
 		t.Fatal(registered.Reason)
 	}
 	exited := statusExited
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &exited})
+	h.setMember("kept", "bravo", exited, nil)
 	cfg := h.base()
 	cfg.Conversation = "kept"
 	cfg.ConversationSet = true
@@ -1959,7 +2041,7 @@ func TestDoneDuringLivePidWaitStopsBeforeTheLimit(t *testing.T) {
 	}
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha"})
 	launched := statusLaunched
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched, PID: &live})
+	h.setMember("kept", "alpha", launched, &live)
 	cfg := h.base()
 	cfg.Conversation = "kept"
 	cfg.ConversationSet = true
@@ -1968,7 +2050,7 @@ func TestDoneDuringLivePidWaitStopsBeforeTheLimit(t *testing.T) {
 	cfg.AgentsSet = false
 	cfg.Interactive = true
 	cfg.InteractiveSet = true
-	h.grace = 300 * time.Millisecond
+	h.pace.grace = 300 * time.Millisecond
 	cctx, cancel := ctx()
 	defer cancel()
 	errCh := make(chan error, 1)
@@ -2026,18 +2108,18 @@ func TestLivePidBlocksTheNextLaunch(t *testing.T) {
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: bravo\n", []string{"alpha", "bravo"})
 	launched := statusLaunched
 	exited := statusExited
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched, PID: &live})
+	h.setMember("kept", "alpha", launched, &live)
 	n := "alpha"
 	s := "sess-alpha"
-	h.do("session", client.SessionRequest{Conversation: "kept", Name: &n, Session: &s})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched})
+	h.setSession("kept", n, s)
+	h.setMember("kept", "bravo", launched, nil)
 	if registered := h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"}); registered.Outcome != bus.OutcomeOK {
 		t.Fatal(registered.Reason)
 	}
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &exited})
+	h.setMember("kept", "bravo", exited, nil)
 	nb := "bravo"
 	sb := "sess-bravo"
-	h.do("session", client.SessionRequest{Conversation: "kept", Name: &nb, Session: &sb})
+	h.setSession("kept", nb, sb)
 	cfg := h.base()
 	cfg.Conversation = "kept"
 	cfg.ConversationSet = true
@@ -2141,7 +2223,7 @@ func TestStoredDoneStopsALivePidWithoutASession(t *testing.T) {
 	}
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
 	launched := statusLaunched
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched, PID: &live})
+	h.setMember("kept", "alpha", launched, &live)
 	exited := statusExited
 	deadChild := exec.Command("sleep", "0")
 	if err := deadChild.Start(); err != nil {
@@ -2149,8 +2231,8 @@ func TestStoredDoneStopsALivePidWithoutASession(t *testing.T) {
 	}
 	deadPID := int64(deadChild.Process.Pid)
 	_ = deadChild.Wait()
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched, PID: &deadPID})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &exited})
+	h.setMember("kept", "bravo", launched, &deadPID)
+	h.setMember("kept", "bravo", exited, nil)
 	h.publish("kept", "alpha", "done", "yes", nil)
 	cfg := h.base()
 	cfg.Conversation = "kept"
@@ -2159,7 +2241,7 @@ func TestStoredDoneStopsALivePidWithoutASession(t *testing.T) {
 	cfg.TicketSet = false
 	cfg.Interactive = true
 	cfg.InteractiveSet = true
-	h.grace = 300 * time.Millisecond
+	h.pace.grace = 300 * time.Millisecond
 	start := time.Now()
 	stdout, stderr, err := h.run(context.Background(), cfg)
 	if err != nil {
@@ -2207,10 +2289,10 @@ func TestStoredDoneStopsALivePidWithASession(t *testing.T) {
 	}
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
 	launched := statusLaunched
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched, PID: &live})
+	h.setMember("kept", "alpha", launched, &live)
 	n := "alpha"
 	s := "sess-alpha"
-	h.do("session", client.SessionRequest{Conversation: "kept", Name: &n, Session: &s})
+	h.setSession("kept", n, s)
 	exited := statusExited
 	deadChild := exec.Command("sleep", "0")
 	if err := deadChild.Start(); err != nil {
@@ -2218,8 +2300,8 @@ func TestStoredDoneStopsALivePidWithASession(t *testing.T) {
 	}
 	deadPID := int64(deadChild.Process.Pid)
 	_ = deadChild.Wait()
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched, PID: &deadPID})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &exited})
+	h.setMember("kept", "bravo", launched, &deadPID)
+	h.setMember("kept", "bravo", exited, nil)
 	h.publish("kept", "alpha", "done", "yes", nil)
 	cfg := h.base()
 	cfg.Conversation = "kept"
@@ -2228,7 +2310,7 @@ func TestStoredDoneStopsALivePidWithASession(t *testing.T) {
 	cfg.TicketSet = false
 	cfg.Timeout = time.Hour
 	cfg.TimeoutSet = true
-	h.grace = 300 * time.Millisecond
+	h.pace.grace = 300 * time.Millisecond
 	start := time.Now()
 	stdout, stderr, err := h.run(context.Background(), cfg)
 	if err != nil {
@@ -2264,12 +2346,12 @@ func TestRestartSkipsAFinishedTurnAndResumesAfterSay(t *testing.T) {
 	launched := statusLaunched
 	exited := statusExited
 	for _, name := range []string{"alpha", "bravo"} {
-		h.do("member", client.MemberRequest{Conversation: "kept", Name: name, Status: &launched})
+		h.setMember("kept", name, launched, nil)
 		h.do("register", client.RegisterRequest{Conversation: "kept", Name: name})
-		h.do("member", client.MemberRequest{Conversation: "kept", Name: name, Status: &exited})
+		h.setMember("kept", name, exited, nil)
 		n := name
 		s := "sess-" + name
-		h.do("session", client.SessionRequest{Conversation: "kept", Name: &n, Session: &s})
+		h.setSession("kept", n, s)
 	}
 	h.publish("kept", "alpha", "turn", "mode: parallel\nfirst", []string{"bravo"})
 	h.publish("kept", "bravo", "say", "reviewed", []string{"alpha"})
@@ -2322,12 +2404,12 @@ func TestResumeLaunchesAnExitedRecipientWhoHasNotSpoken(t *testing.T) {
 	launched := statusLaunched
 	exited := statusExited
 	for _, name := range []string{"alpha", "bravo"} {
-		h.do("member", client.MemberRequest{Conversation: "kept", Name: name, Status: &launched})
+		h.setMember("kept", name, launched, nil)
 		h.do("register", client.RegisterRequest{Conversation: "kept", Name: name})
-		h.do("member", client.MemberRequest{Conversation: "kept", Name: name, Status: &exited})
+		h.setMember("kept", name, exited, nil)
 		n := name
 		s := "sess-" + name
-		h.do("session", client.SessionRequest{Conversation: "kept", Name: &n, Session: &s})
+		h.setSession("kept", n, s)
 	}
 	h.publish("kept", "alpha", "turn", "mode: parallel\nfirst", []string{"bravo"})
 	h.publish("kept", "alpha", "say", "note", []string{"bravo"})
@@ -2380,12 +2462,12 @@ func TestResumeWithoutRosterWatchesAndALaterRosterLaunches(t *testing.T) {
 	launched := statusLaunched
 	exited := statusExited
 	for _, name := range []string{"alpha", "bravo"} {
-		h.do("member", client.MemberRequest{Conversation: "kept", Name: name, Status: &launched})
+		h.setMember("kept", name, launched, nil)
 		h.do("register", client.RegisterRequest{Conversation: "kept", Name: name})
-		h.do("member", client.MemberRequest{Conversation: "kept", Name: name, Status: &exited})
+		h.setMember("kept", name, exited, nil)
 		n := name
 		s := "sess-" + name
-		h.do("session", client.SessionRequest{Conversation: "kept", Name: &n, Session: &s})
+		h.setSession("kept", n, s)
 	}
 	h.publish("kept", "alpha", "turn", "mode: parallel\nfirst", []string{"bravo"})
 	cfg := h.base()
@@ -2471,11 +2553,11 @@ func TestRestartLaunchesAnOlderRecipientBeforeALaterTurn(t *testing.T) {
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
 	launched := statusLaunched
 	exited := statusExited
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &launched})
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "alpha", Status: &exited})
+	h.setMember("kept", "alpha", launched, nil)
+	h.setMember("kept", "alpha", exited, nil)
 	n := "alpha"
 	s := "sess-alpha"
-	h.do("session", client.SessionRequest{Conversation: "kept", Name: &n, Session: &s})
+	h.setSession("kept", n, s)
 	h.publish("kept", "alpha", "turn", "mode: serial\nold", []string{"bravo"})
 	h.publish("kept", "alpha", "turn", "mode: serial\nnew", []string{"alpha"})
 	cfg := h.base()
@@ -2737,11 +2819,11 @@ func turnLaunches(t *testing.T, live bool, mode string, before, after []note) (i
 		launched := statusLaunched
 		exited := statusExited
 		for _, m := range []string{"alpha", "bravo", "charlie"} {
-			h.do("member", client.MemberRequest{Conversation: name, Name: m, Status: &launched})
-			h.do("member", client.MemberRequest{Conversation: name, Name: m, Status: &exited})
+			h.setMember(name, m, launched, nil)
+			h.setMember(name, m, exited, nil)
 			n := m
 			s := "sess-" + m
-			h.do("session", client.SessionRequest{Conversation: name, Name: &n, Session: &s})
+			h.setSession(name, n, s)
 		}
 		cfg.Conversation = name
 		cfg.ConversationSet = true

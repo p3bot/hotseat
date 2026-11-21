@@ -193,12 +193,14 @@ func (h *harness) recordsOf(conv string) records {
 	return r
 }
 
-// record stores w, as an earlier run process would have.
-func (h *harness) record(w client.RecordWrite) {
+// record stores w, a record of conv, as an earlier run process would have.
+func (h *harness) record(conv string, w client.RecordWrite) {
 	h.t.Helper()
-	if res := h.do("record", w); res.Outcome != bus.OutcomeOK {
-		h.t.Fatalf("record %T: %s", w, res.Reason)
-	}
+	h.conduct(conv, func(holder string) {
+		if res := h.do("record", client.RecordRequest{Holder: holder, Record: w}); res.Outcome != bus.OutcomeOK {
+			h.t.Fatalf("record %T: %s", w, res.Reason)
+		}
+	})
 }
 
 // settledBy is the announcement text for a settle of finding on a proposal of kind by proposer.
@@ -964,11 +966,11 @@ func (h *harness) keptMembers(roster ...string) {
 	h.keptConversation(roster...)
 	launched, exited := statusLaunched, statusExited
 	for _, name := range roster {
-		h.do("member", client.MemberRequest{Conversation: "kept", Name: name, Status: &launched})
+		h.setMember("kept", name, launched, nil)
 		h.do("register", client.RegisterRequest{Conversation: "kept", Name: name})
-		h.do("member", client.MemberRequest{Conversation: "kept", Name: name, Status: &exited})
+		h.setMember("kept", name, exited, nil)
 		n, s := name, "sess-"+name
-		h.do("session", client.SessionRequest{Conversation: "kept", Name: &n, Session: &s})
+		h.setSession("kept", n, s)
 	}
 }
 
@@ -1004,13 +1006,13 @@ func (h *harness) storedErr(member, class string, re int64, tx string) client.Me
 // closed writes the set record of turn with its findings, as an earlier process would have.
 func (h *harness) closed(turn client.Message, findings ...client.Message) {
 	h.t.Helper()
-	h.record(client.SetRecord{Conversation: "kept", Turn: turn.Seq, Findings: seqs(findings)})
+	h.record("kept", client.SetRecord{Conversation: "kept", Turn: turn.Seq, Findings: seqs(findings)})
 }
 
 // settledOn writes the settle record of f on f itself, as an earlier process would have before announcing it.
 func (h *harness) settledOn(f client.Message) {
 	h.t.Helper()
-	h.record(client.SettleRecord{Conversation: "kept", Finding: f.Seq, Proposal: f.Seq, ProposalKind: kindFinding})
+	h.record("kept", client.SettleRecord{Conversation: "kept", Finding: f.Seq, Proposal: f.Seq, ProposalKind: kindFinding})
 }
 
 // finishes scripts the discussion of bravo's finding to its fix and alpha's done.
@@ -1262,7 +1264,7 @@ func (h *harness) leftover(name string) func() {
 	}
 	h.t.Cleanup(stop)
 	running, p := statusRunning, int64(pid)
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: name, Status: &running, PID: &p})
+	h.setMember("kept", name, running, &p)
 	return stop
 }
 
@@ -1444,7 +1446,7 @@ func TestContinueAfterAHaltRecordReportsAgainAndNothingElse(t *testing.T) {
 	turn, f := h.reviewed()
 	h.closed(turn, f)
 	ask := h.publish("kept", "charlie", kindAsk, "which one?", []string{"owner"})
-	h.record(client.HaltRecord{Conversation: "kept", Finding: f.Seq})
+	h.record("kept", client.HaltRecord{Conversation: "kept", Finding: f.Seq})
 	h.script("alpha", stepFile{On: promptReport, Publish: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nreport"}}})
 	res := h.playKept()
 	if !errors.Is(res.err, ErrUnresolved) || !strings.HasSuffix(res.stdout, "unsettled: "+seqOf(f)+"\noutcome: deadlock\n") {
@@ -1676,7 +1678,7 @@ func TestLedgerBuildReadsOnlyNewMessagesAndTheBackupOnce(t *testing.T) {
 	h := newHarness(t)
 	h.keptConversation(abcRoster...)
 	launched := statusLaunched
-	h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo", Status: &launched})
+	h.setMember("kept", "bravo", launched, nil)
 	h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"})
 	h.publish("kept", "alpha", kindTurn, "mode: serial\nfirst", []string{"bravo"})
 	h.publish("kept", "owner", kindTurn, "mode: serial\nsecond", []string{"bravo"})

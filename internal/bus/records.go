@@ -35,6 +35,7 @@ type recordRequest struct {
 	Proposal     json.RawMessage `json:"proposal"`
 	ProposalKind *string         `json:"proposal_kind"`
 	Fixed        json.RawMessage `json:"fixed"`
+	Holder       *string         `json:"holder"`
 }
 
 func (s *server) handleRecord(w http.ResponseWriter, r *http.Request) {
@@ -146,9 +147,11 @@ func rawList(raw json.RawMessage, missing, shape string) ([]json.RawMessage, err
 }
 
 // Record checks a /record body and writes the one decision record it selects:
-// the conversation, the record selector, then that record's fields. Fields
-// of other records are ignored. Repeated findings and repeated dropped
-// findings are refused here, so the store compares sets that hold no repeat.
+// the conversation, the record selector, that record's fields, then the
+// holder, which must hold the conversation lease. Fields of other records
+// are ignored. A replay of a stored record is fenced like any other write.
+// Repeated findings and repeated dropped findings are refused here, so the
+// store compares sets that hold no repeat.
 // It changes no rev and wakes no wait or watch.
 func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error) {
 	conv := deref(req.Conversation)
@@ -168,7 +171,7 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if err != nil {
 			return asRefused(err)
 		}
-		return s.writeRecord(ctx, func(res *Result) (err error) {
+		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
 			var set store.Set
 			set, res.Grouping, res.AlreadyStored, err = s.store.WriteSet(ctx, conv, turn, findings)
 			res.Set = &set
@@ -183,7 +186,7 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if err != nil {
 			return asRefused(err)
 		}
-		return s.writeRecord(ctx, func(res *Result) (err error) {
+		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
 			var g store.Grouping
 			g, res.AlreadyStored, err = s.store.WriteGrouping(ctx, conv, turn, drops)
 			res.Grouping = &g
@@ -205,7 +208,7 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if !validName(kind) {
 			return refused(ReasonProposalKindBad), nil
 		}
-		return s.writeRecord(ctx, func(res *Result) (err error) {
+		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
 			var settle store.Settle
 			settle, res.AlreadyStored, err = s.store.WriteSettle(ctx, conv, finding, proposal, kind)
 			res.Settle = &settle
@@ -220,7 +223,7 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if err != nil {
 			return asRefused(err)
 		}
-		return s.writeRecord(ctx, func(res *Result) (err error) {
+		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
 			var fix store.Fix
 			fix, res.AlreadyStored, err = s.store.WriteFix(ctx, conv, finding, fixed)
 			res.Fix = &fix
@@ -231,7 +234,7 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if err != nil {
 			return asRefused(err)
 		}
-		return s.writeRecord(ctx, func(res *Result) (err error) {
+		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
 			var halt store.Halt
 			halt, res.AlreadyStored, err = s.store.WriteHalt(ctx, conv, finding)
 			res.Halt = &halt
@@ -242,12 +245,19 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 	}
 }
 
-// writeRecord runs one validated store write under the service lock and maps its error.
-func (s *Service) writeRecord(ctx context.Context, write func(*Result) error) (Result, error) {
+// writeRecord runs one validated store write under the service lock and the conversation lease, and maps its error.
+func (s *Service) writeRecord(ctx context.Context, conv string, holder *string, write func(*Result) error) (Result, error) {
+	by, err := requireHolder(holder)
+	if err != nil {
+		return asRefused(err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return Result{}, ErrDropped
+	}
+	if err := s.fence(ctx, conv, by); err != nil {
+		return s.fail(err, "record")
 	}
 	res := Result{Outcome: OutcomeOK}
 	if err := write(&res); err != nil {

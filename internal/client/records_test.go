@@ -75,14 +75,16 @@ func TestRecordResultsDecodeToWhatRecordsReturns(t *testing.T) {
 	}
 	turn, finding := seq("turn", "1"), seq("finding", "2")
 	empty := seq("turn", "3")
-	set := mustDo(t, addr, "record", SetRecord{Conversation: "job", Turn: turn, Findings: []int64{finding}})
+	mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseAcquire, Holder: "h1"})
+	held := func(w RecordWrite) RecordRequest { return RecordRequest{Holder: "h1", Record: w} }
+	set := mustDo(t, addr, "record", held(SetRecord{Conversation: "job", Turn: turn, Findings: []int64{finding}}))
 	if set.Set == nil || set.Grouping == nil || set.AlreadyStored == nil || *set.AlreadyStored {
 		t.Fatalf("set = %+v", set)
 	}
-	none := mustDo(t, addr, "record", SetRecord{Conversation: "job", Turn: empty})
-	settle := mustDo(t, addr, "record", SettleRecord{Conversation: "job", Finding: finding, Proposal: finding, ProposalKind: "finding"})
-	fix := mustDo(t, addr, "record", FixRecord{Conversation: "job", Finding: finding, Fixed: seq("fixed", "4")})
-	halt := mustDo(t, addr, "record", HaltRecord{Conversation: "job", Finding: finding})
+	none := mustDo(t, addr, "record", held(SetRecord{Conversation: "job", Turn: empty}))
+	settle := mustDo(t, addr, "record", held(SettleRecord{Conversation: "job", Finding: finding, Proposal: finding, ProposalKind: "finding"}))
+	fix := mustDo(t, addr, "record", held(FixRecord{Conversation: "job", Finding: finding, Fixed: seq("fixed", "4")}))
+	halt := mustDo(t, addr, "record", held(HaltRecord{Conversation: "job", Finding: finding}))
 
 	got := mustDo(t, addr, "records", RecordsRequest{Conversation: "job"})
 	want := Result{
@@ -124,7 +126,7 @@ func TestEachRecordSendsItsSelectorAndOnlyItsFields(t *testing.T) {
 		{FixRecord{Conversation: "job", Finding: 5, Fixed: 7}, `{"conversation":"job","record":"fix","finding":5,"fixed":7}`},
 		{HaltRecord{Conversation: "job", Finding: 5}, `{"conversation":"job","record":"halt","finding":5}`},
 	} {
-		if _, err := Do(context.Background(), addr, "record", "", tc.req); err != nil {
+		if _, err := Do(context.Background(), addr, "record", "", RecordRequest{Record: tc.req}); err != nil {
 			t.Fatal(err)
 		}
 		mu.Lock()
@@ -134,8 +136,22 @@ func TestEachRecordSendsItsSelectorAndOnlyItsFields(t *testing.T) {
 			t.Fatalf("posted %s %s, want %s", p, body, tc.want)
 		}
 	}
+	if _, err := Do(context.Background(), addr, "record", "", RecordRequest{Holder: "h1", Record: HaltRecord{Conversation: "job", Finding: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if got != `{"conversation":"job","record":"halt","finding":5,"holder":"h1"}` {
+		t.Fatalf("held halt posted %s", got)
+	}
+	mu.Unlock()
 	if _, err := Do(context.Background(), addr, "record", "", RecordsRequest{Conversation: "job"}); err == nil {
-		t.Fatal("record posted a body that is not a RecordWrite")
+		t.Fatal("record posted a body that is not a RecordRequest")
+	}
+	if _, err := Do(context.Background(), addr, "record", "", HaltRecord{Conversation: "job", Finding: 5}); err == nil {
+		t.Fatal("record posted a RecordWrite without its RecordRequest")
+	}
+	if _, err := Do(context.Background(), addr, "record", "", RecordRequest{Holder: "h1"}); err == nil {
+		t.Fatal("record posted a RecordRequest without a record")
 	}
 	if _, err := Do(context.Background(), addr, "records", "", RecordsRequest{Conversation: "job"}); err != nil {
 		t.Fatal(err)
@@ -144,5 +160,41 @@ func TestEachRecordSendsItsSelectorAndOnlyItsFields(t *testing.T) {
 	defer mu.Unlock()
 	if path != bus.PathRecords || got != `{"conversation":"job"}` {
 		t.Fatalf("records posted %s %s", path, got)
+	}
+}
+
+func TestLeaseResultsDecodeAndFencedWritesCarryTheHolder(t *testing.T) {
+	addr := liveBus(t)
+	mustDo(t, addr, "create", CreateRequest{Name: "job", Seat: "alpha", Roster: []string{"alpha"}})
+	acquired := mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseAcquire, Holder: "h1"})
+	if acquired.TTL == nil || *acquired.TTL != 20 {
+		t.Fatalf("acquire = %+v", acquired)
+	}
+	refused, err := Do(context.Background(), addr, "lease", "", LeaseRequest{Conversation: "job", Lease: bus.LeaseAcquire, Holder: "h2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refused.Outcome != bus.OutcomeRefused || refused.Reason != bus.ReasonConductorHeld || refused.Remaining == nil || *refused.Remaining != 20 {
+		t.Fatalf("second acquire = %+v", refused)
+	}
+	got := mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseGet})
+	if got.Held == nil || !*got.Held || got.Since == "" || got.Expires == "" {
+		t.Fatalf("get = %+v", got)
+	}
+	launched := "launched"
+	mustDo(t, addr, "member", MemberRequest{Conversation: "job", Name: "alpha", Status: &launched, Holder: "h1"})
+	name, sess := "alpha", "s1"
+	mustDo(t, addr, "session", SessionRequest{Conversation: "job", Name: &name, Session: &sess, Holder: "h1"})
+	mustDo(t, addr, "publish", PublishRequest{Conversation: "job", From: "run", Body: "b", TxID: "1", Kind: "say", Holder: "h1"})
+	stale, err := Do(context.Background(), addr, "publish", "", PublishRequest{Conversation: "job", From: "run", Body: "b", TxID: "2", Kind: "say", Holder: "h2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.Outcome != bus.OutcomeRefused || stale.Reason != bus.ReasonLeaseWrite {
+		t.Fatalf("stale publish = %+v", stale)
+	}
+	mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseRelease, Holder: "h1"})
+	if got := mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseGet}); got.Held == nil || *got.Held {
+		t.Fatalf("get after release = %+v", got)
 	}
 }

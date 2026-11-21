@@ -32,11 +32,13 @@ func TestAttendPrintsOwnerAskErrorAndDone(t *testing.T) {
 	ctx := context.Background()
 	createRoster(t, ctx, addr, "job", "alpha")
 	launched := "launched"
-	if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
-		Conversation: "job", Name: "alpha", Status: &launched,
-	}); err != nil || res.Outcome != bus.OutcomeOK {
-		t.Fatalf("launch %v %+v", err, res)
-	}
+	asConductor(t, ctx, addr, "job", func(holder string) {
+		if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
+			Conversation: "job", Name: "alpha", Status: &launched, Holder: holder,
+		}); err != nil || res.Outcome != bus.OutcomeOK {
+			t.Fatalf("launch %v %+v", err, res)
+		}
+	})
 	before := memberRows(t, ctx, addr, "job")
 
 	publishAs(t, ctx, addr, "job", "alpha", "say", []string{"owner"}, "side-remark", "say-1")

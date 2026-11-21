@@ -525,6 +525,21 @@ func (s *Store) CloseConversation(ctx context.Context, name string) (Conversatio
 	return conv, already, nil
 }
 
+// Conversation returns one conversation and its binding.
+// A missing conversation returns ErrNotFound.
+func (s *Store) Conversation(ctx context.Context, name string) (Conversation, error) {
+	var conv Conversation
+	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		conv, err = conversationByName(ctx, tx, name)
+		return err
+	})
+	if err != nil {
+		return Conversation{}, err
+	}
+	return conv, nil
+}
+
 // Newest returns at most limit messages across every conversation, highest
 // seq first, each with its conversation. A before greater than zero keeps
 // only messages whose seq is less than before. A before of zero is no bound.

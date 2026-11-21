@@ -37,8 +37,12 @@ func (e *engine) drive() error {
 	e.cancel()
 	wg.Wait()
 	e.mu.Lock()
-	closed := e.outcome
+	closed, halt := e.closed, e.haltErr
 	e.mu.Unlock()
+	// A halt after the close, such as a lost lease, left the stop unrecorded, so it is not a clean stop.
+	if closed && halt != nil {
+		return halt
+	}
 	if errors.Is(err, errDone) || closed {
 		// Members killed by the close write their lines during the wait above.
 		if closed {
@@ -659,7 +663,7 @@ func (e *engine) stops(msg client.Message) (bool, error) {
 // No launch starts once closing is set, and its sender alone keeps running for the grace period.
 func (e *engine) finishDone(done client.Message) error {
 	e.mu.Lock()
-	if e.outcome || e.closing {
+	if e.closed || e.closing {
 		e.mu.Unlock()
 		return errDone
 	}
@@ -675,7 +679,7 @@ func (e *engine) finishDone(done client.Message) error {
 		return fmt.Errorf("close: %s", res.Reason)
 	}
 	e.mu.Lock()
-	e.outcome = true
+	e.closed = true
 	e.mu.Unlock()
 	e.cancel()
 	return errDone

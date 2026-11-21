@@ -254,6 +254,9 @@ func validatePublish(in PublishInput, maxBody int) error {
 	if in.Re != nil && *in.Re < 1 {
 		return rule(ReasonReRange)
 	}
+	if in.Holder != nil && !validName(*in.Holder) {
+		return rule(ReasonHolderBad)
+	}
 	return nil
 }
 
