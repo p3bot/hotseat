@@ -71,9 +71,10 @@ func (e *engine) boot(wg *sync.WaitGroup) {
 	}
 }
 
-// resume settles dead leftovers, stops on a stored stopping done, and only then checks the task minimum.
-// Settling comes first because whether a backup's done stops the run depends on the seat being timed-out.
-// A roster below the minimum leaves a live leftover unwatched and running.
+// resume settles dead leftovers, stops on the stopping done, and only then checks the task minimum.
+// A stop record names that done. With none, the stop rule decides it after settling, because whether a backup's
+// done stops the run depends on the seat being timed-out. A roster below the minimum leaves a live leftover
+// unwatched and running.
 func (e *engine) resume(wg *sync.WaitGroup) error {
 	h, err := e.head()
 	if err != nil {
@@ -90,6 +91,7 @@ func (e *engine) resume(wg *sync.WaitGroup) error {
 	if err != nil {
 		return err
 	}
+	e.noteRuledOut(ruledOutDones(msgs)...)
 	done, stop, err := e.firstStop(msgs)
 	if err != nil {
 		return err
@@ -642,10 +644,48 @@ func (e *engine) firstStop(msgs []client.Message) (client.Message, bool, error) 
 	return client.Message{}, false, nil
 }
 
+// stops reports whether msg is the done that stops the run. Each done is judged once: once a stop is decided or
+// recorded only its done stops, and a done a stored bad done names never does unless the seat sent it. Any other
+// done is judged on current member rows, and one ruled out is stored as bad done so the ruling outlives those rows.
+// Concurrent callers read member rows a moment apart, so the whole ruling holds the rule lock.
 func (e *engine) stops(msg client.Message) (bool, error) {
 	if msg.Kind != kindDone {
 		return false, nil
 	}
+	e.rule.Lock()
+	defer e.rule.Unlock()
+	e.mu.Lock()
+	stop, decided := e.recs.stopped()
+	if e.doneSeq != 0 {
+		stop, decided = client.Stop{Done: e.doneSeq}, true
+	}
+	ruled := e.ruledOut[msg.Seq]
+	e.mu.Unlock()
+	if decided {
+		return msg.Seq == stop.Done, nil
+	}
+	if ruled && msg.From != e.seat {
+		return false, nil
+	}
+	ok, err := e.stopsByRows(msg)
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		e.mu.Lock()
+		e.doneSeq = msg.Seq
+		e.mu.Unlock()
+		return true, nil
+	}
+	if err := e.factErr(msg.From, classBadDone, msg.Seq, factTx(classBadDone, seqText(msg.Seq))); err != nil {
+		return false, err
+	}
+	e.noteRuledOut(msg.Seq)
+	return false, nil
+}
+
+// stopsByRows is the stop rule on current member rows: the seat's done, or the backup's while the seat is timed-out.
+func (e *engine) stopsByRows(msg client.Message) (bool, error) {
 	if msg.From == e.seat {
 		return true, nil
 	}
@@ -659,7 +699,15 @@ func (e *engine) stops(msg client.Message) (bool, error) {
 	return msg.From == backup, nil
 }
 
-// finishDone closes the conversation and stops the run on the stopping done.
+func (e *engine) noteRuledOut(seqs ...int64) {
+	e.mu.Lock()
+	for _, seq := range seqs {
+		e.ruledOut[seq] = true
+	}
+	e.mu.Unlock()
+}
+
+// finishDone stores the stop record, then closes the conversation and stops the run on the stopping done.
 // No launch starts once closing is set, and its sender alone keeps running for the grace period.
 func (e *engine) finishDone(done client.Message) error {
 	e.mu.Lock()
@@ -671,6 +719,9 @@ func (e *engine) finishDone(done client.Message) error {
 	e.doneFrom = done.From
 	e.doneSeq = done.Seq
 	e.mu.Unlock()
+	if _, err := e.writeRecord(client.StopRecord{Conversation: e.name, Done: done.Seq}); err != nil {
+		return err
+	}
 	res, err := e.call(e.root, "close", client.CloseRequest{Conversation: e.name})
 	if err != nil {
 		return err

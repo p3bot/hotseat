@@ -27,6 +27,7 @@ type records struct {
 	settles   []client.Settle
 	fixes     []client.Fix
 	halts     []client.Halt
+	stops     []client.Stop
 }
 
 // add keeps every record a /records or /record result carries that is not already held.
@@ -61,6 +62,12 @@ func (r *records) add(res client.Result) {
 	if res.Halt != nil {
 		r.halts = appendNew(r.halts, haltKey, *res.Halt)
 	}
+	if res.Stops != nil {
+		r.stops = appendNew(r.stops, stopKey, *res.Stops...)
+	}
+	if res.Stop != nil {
+		r.stops = appendNew(r.stops, stopKey, *res.Stop)
+	}
 }
 
 func setKey(s client.Set) int64           { return s.Turn }
@@ -70,6 +77,9 @@ func fixKey(f client.Fix) int64           { return f.Finding }
 
 // haltKey is constant because a conversation holds at most one halt.
 func haltKey(client.Halt) int64 { return 0 }
+
+// stopKey is constant because a conversation holds at most one stop.
+func stopKey(client.Stop) int64 { return 0 }
 
 func appendNew[T any](list []T, key func(T) int64, items ...T) []T {
 	for _, v := range items {
@@ -88,10 +98,20 @@ func (r records) clip() records {
 		settles:   slices.Clip(r.settles),
 		fixes:     slices.Clip(r.fixes),
 		halts:     slices.Clip(r.halts),
+		stops:     slices.Clip(r.stops),
 	}
 }
 
+// stopped returns the stop record, the done that stopped the run.
+func (r records) stopped() (client.Stop, bool) {
+	if len(r.stops) == 0 {
+		return client.Stop{}, false
+	}
+	return r.stops[0], true
+}
+
 // before is the records a stop at seq counts: each with after below seq, and each fix whose fixed is below seq.
+// The stop record is carried whole, since it is the cut and counts toward nothing.
 func (r records) before(seq int64) records {
 	keep := func(after int64) bool { return after < seq }
 	return records{
@@ -100,6 +120,7 @@ func (r records) before(seq int64) records {
 		settles:   filter(r.settles, func(s client.Settle) bool { return keep(s.After) }),
 		fixes:     filter(r.fixes, func(f client.Fix) bool { return keep(f.Fixed) }),
 		halts:     filter(r.halts, func(h client.Halt) bool { return keep(h.After) }),
+		stops:     r.stops,
 	}
 }
 
@@ -121,6 +142,29 @@ func filter[T any](list []T, keep func(T) bool) []T {
 		}
 	}
 	return out
+}
+
+// ruledOutDones returns the seq of every done in msgs that a stored bad done error names.
+// Senders are caller-supplied, so only an error exactly as run stores it counts: its transaction id and body
+// are derived from that done.
+func ruledOutDones(msgs []client.Message) []int64 {
+	senders := make(map[int64]string)
+	for _, m := range msgs {
+		if m.Kind == kindDone {
+			senders[m.Seq] = m.From
+		}
+	}
+	var seqs []int64
+	for _, m := range msgs {
+		if m.Kind != kindError || m.From != fromRun || m.Re == nil || !slices.Equal(m.To, []string{fromOwner}) {
+			continue
+		}
+		from, ok := senders[*m.Re]
+		if ok && m.TxID == factTx(classBadDone, seqText(*m.Re)) && m.Body == errBody(from, classBadDone) {
+			seqs = append(seqs, *m.Re)
+		}
+	}
+	return seqs
 }
 
 // changes reports whether a settle's agreed proposal asks for a fix. Only a dismiss does not.

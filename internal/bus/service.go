@@ -60,6 +60,7 @@ type Result struct {
 	Settle         *store.Settle
 	Fix            *store.Fix
 	Halt           *store.Halt
+	Stop           *store.Stop
 	Records        *store.Records
 	Lease          *LeaseState
 }

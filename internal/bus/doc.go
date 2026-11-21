@@ -146,26 +146,29 @@
 //	settle    {"finding","proposal","proposal_kind"}
 //	fix       {"finding","fixed"}
 //	halt      {"finding"}
+//	stop      {"done"}
 //
 // A set with exactly one finding also writes its grouping with no drops, and
 // returns it beside the set. The result is the stored record in the shape
 // records uses, and already_stored. after is the conversation's highest seq
 // when the record commits. The bus assigns it and ignores one sent. A fix
-// carries settled_after, its settle's after, and has no after. A write that
+// carries settled_after, its settle's after, and has no after. A stop holds
+// only done, the seq of the done message that stopped the run. A write that
 // matches the stored record on its key, ignoring after, returns it and
 // already_stored true and writes nothing. Findings and drops compare as sets.
 // A write that differs on the same key is refused with the transaction id
 // conflict reason. The key is the turn for a set and a grouping, the finding
-// for a settle and a fix, and the conversation for a halt. A repeated seq in
-// findings and a repeated finding in drops are refused. Every reference,
-// kind, CHECK, or uniqueness failure is one reason: a missing message or
-// record, a message of the wrong kind, a finding in another set, a drop that
-// keeps itself or names another set, a proposal_kind that differs from the
-// stored message, and a fixed used by another fix. Three rules have their
-// own reasons: a kept finding is not itself dropped, a settle or a halt names
-// a kept finding of a set that has a grouping, and a fix belongs to a settle
-// whose proposal is not a dismiss. records returns sets, groupings, settles,
-// fixes, and halts, each in key order, and an empty list as [].
+// for a settle and a fix, and the conversation for a halt and a stop. A
+// repeated seq in findings and a repeated finding in drops are refused. Every
+// reference, kind, CHECK, or uniqueness failure is one reason: a missing
+// message or record, a message of the wrong kind such as a stop whose seq is
+// not a done, a finding in another set, a drop that keeps itself or names
+// another set, a proposal_kind that differs from the stored message, and a
+// fixed used by another fix. Three rules have their own reasons: a kept
+// finding is not itself dropped, a settle or a halt names a kept finding of a
+// set that has a grouping, and a fix belongs to a settle whose proposal is not
+// a dismiss. records returns sets, groupings, settles, fixes, halts, and
+// stops, each in key order, and an empty list as [].
 //
 // lease is the conductor lease, a claim that one conductor drives a
 // conversation. It knows nothing about run, kinds, or records. lease selects

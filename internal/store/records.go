@@ -56,6 +56,11 @@ type Halt struct {
 	After   int64
 }
 
+// Stop is the done that stopped a conversation's run.
+type Stop struct {
+	Done int64
+}
+
 // Records is every decision record of one conversation, each list in key order.
 type Records struct {
 	Sets      []Set
@@ -63,6 +68,7 @@ type Records struct {
 	Settles   []Settle
 	Fixes     []Fix
 	Halts     []Halt
+	Stops     []Stop
 }
 
 // WriteSet stores a set and its findings in one transaction.
@@ -342,6 +348,46 @@ func (s *Store) WriteHalt(ctx context.Context, conv string, finding int64) (Halt
 	return halt, already, nil
 }
 
+// WriteStop stores the done that stopped a conversation's run. A
+// conversation holds at most one stop. A seq that is not a done of the
+// conversation returns ErrRecordReference. already is true when the stored
+// stop names the same done. Another done returns ErrConflict.
+func (s *Store) WriteStop(ctx context.Context, conv string, done int64) (Stop, bool, error) {
+	var (
+		stop    Stop
+		already bool
+	)
+	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
+		if _, err := conversationByName(ctx, tx, conv); err != nil {
+			return err
+		}
+		var stored Stop
+		err := tx.QueryRowContext(ctx,
+			`SELECT done FROM stops WHERE conversation = ?`, conv).Scan(&stored.Done)
+		switch {
+		case err == nil:
+			if stored.Done != done {
+				return ErrConflict
+			}
+			stop = stored
+			already = true
+			return errNoChange
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+		if err := insertRecord(ctx, tx,
+			`INSERT INTO stops (conversation, done) VALUES (?, ?)`, conv, done); err != nil {
+			return err
+		}
+		stop = Stop{Done: done}
+		return nil
+	})
+	if err != nil {
+		return Stop{}, false, err
+	}
+	return stop, already, nil
+}
+
 // Records returns every decision record of one conversation. Each list is in
 // key order and is empty rather than nil. A missing conversation returns ErrNotFound.
 func (s *Store) Records(ctx context.Context, conv string) (Records, error) {
@@ -368,6 +414,14 @@ func (s *Store) Records(ctx context.Context, conv string) (Records, error) {
 			err := row.Scan(&h.Finding, &h.After)
 			return h, err
 		}, `SELECT finding, after FROM halts WHERE conversation = ?`, conv)
+		if err != nil {
+			return err
+		}
+		out.Stops, err = queryRows(ctx, tx, func(row rowScanner) (Stop, error) {
+			var st Stop
+			err := row.Scan(&st.Done)
+			return st, err
+		}, `SELECT done FROM stops WHERE conversation = ?`, conv)
 		return err
 	})
 	if err != nil {

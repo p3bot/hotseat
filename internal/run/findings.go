@@ -957,14 +957,18 @@ func (e *engine) reportAgain() (bool, error) {
 	return true, e.report(nil)
 }
 
-// reportStop prints the stop result from the messages and records before the stopping done.
-// An unsettled stop with no halt publishes one unsettled error about the stopping done, under a derived transaction id.
+// reportStop prints the stop result from the messages and records before the done the stop record names.
+// An unsettled stop with no halt publishes one unsettled error about that done, under a derived transaction id.
 func (e *engine) reportStop() error {
 	l, err := e.ledgerOn(e.root)
 	if err != nil {
 		return err
 	}
-	cut := l.before(e.doneSeq)
+	stop, ok := l.recs.stopped()
+	if !ok {
+		return errors.New("closed with no stop record")
+	}
+	cut := l.before(stop.Done)
 	unsettled, unfixed := cut.unresolved()
 	for _, seq := range unsettled {
 		e.out.line("unsettled", seqText(seq))
@@ -980,7 +984,7 @@ func (e *engine) reportStop() error {
 		e.printOutcome("deadlock")
 		return ErrUnresolved
 	}
-	if err := e.factErr("", classUnsettled, e.doneSeq, factTx(classUnsettled, seqText(e.doneSeq))); err != nil {
+	if err := e.factErr("", classUnsettled, stop.Done, factTx(classUnsettled, seqText(stop.Done))); err != nil {
 		return err
 	}
 	e.printOutcome("unsettled")

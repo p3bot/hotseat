@@ -63,6 +63,7 @@ const (
 	classLaunchCap      = "launch cap"
 	classNoReply        = "no reply"
 
+	classBadDone      = "bad done"
 	classBadFinding   = "bad finding"
 	classNoAggregate  = "no aggregate"
 	classBadAggregate = "bad aggregate"
@@ -150,6 +151,8 @@ type engine struct {
 	// reported is set once the outcome line is printed. Only the goroutine running execute touches it.
 	reported bool
 
+	// rule serialises stop rulings so each done is judged once. It is taken before mu, never under it.
+	rule     sync.Mutex
 	mu       sync.Mutex
 	status   map[string]string
 	sessions map[string]string
@@ -160,8 +163,10 @@ type engine struct {
 	closed   bool
 	closing  bool
 	doneFrom string
-	// doneSeq is the stopping done. Only messages stored before it count toward the stop result.
-	doneSeq     int64
+	// doneSeq is the done the stop rule decided on, or zero. It is set before finishDone stores the stop record.
+	doneSeq int64
+	// ruledOut holds every done a stored bad done names. stops never judges one of them again.
+	ruledOut    map[int64]bool
 	handoffFrom string
 	launches    int
 	// inFlight counts member processes this run started or watches and has not yet recorded.
@@ -260,6 +265,7 @@ func newEngine(ctx context.Context, cfg Config, p pace, stdout, stderr io.Writer
 		slots:        make(map[string]*slot),
 		idle:         make(chan struct{}),
 		judged:       make(map[int64]bool),
+		ruledOut:     make(map[int64]bool),
 		leftovers:    make(chan struct{}),
 		leftoverEnds: make(map[string]int64),
 	}

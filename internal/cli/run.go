@@ -26,7 +26,12 @@ func newRunCmd() *cobra.Command {
 		Long: `Run one conversation on a bus that is already listening. run does not start
 the bus and it does not open the database. It publishes the task as owner,
 launches each roster member through start, and exits when the acting seat
-posts done or a safety rail trips.
+posts done or a safety rail trips. The stopping done is the seat's, or the
+backup's while the seat is timed-out. Any other done stored before the stop
+is reported once with error class bad done and never stops the run
+afterwards, including on a continuation. A done after the stop is not judged.
+run stores the stopping done as a stop record before it closes the
+conversation, and a continuation stops on that done.
 
 A turn launches each roster member on its to list that has not timed out,
 unless that member has already answered it. Once that member's earlier
@@ -90,9 +95,9 @@ Each prompt gives the exact --re for the kind it asks for. A present re that
 names another message rejects a stance, pass, aggregate, extend, or deadlock
 under its class, and a fixed with one does not count. A missing re is never
 an error. A protocol error carries the member and class in its body and the
-message that caused it as re. bad finding, no reply, bad turn, and unsettled
-take a transaction id derived from their fact, so a continuation stores and
-prints none of them twice.
+message that caused it as re. bad finding, no reply, bad turn, bad done, and
+unsettled take a transaction id derived from their fact, so a continuation
+stores and prints none of them twice.
 
 The stop result is read from the messages and records before the stopping
 done. A settled change is fixed by its fix record, or by a fixed after the

@@ -21,7 +21,7 @@ Rules that follow from the purpose:
 - A message is identified by its `seq`. A body is never only an id.
 - Findings are discussed one at a time because a fix can make a later finding obsolete.
 
-`run` keeps its decisions as decision records behind `/record` and `/records`: set, grouping, settle, fix, and halt. A record is a fact keyed by message `seq` and holds no phase, mode, or cursor. This reverses `hotseat-b225`'s "the transcript is the only durable state" and amends `hotseat-r7gj`'s no-phase rule. `run` publishes no marker. Its one message about a decision is `settled`, to `owner` with `re` the agreed proposal, because no participant states a settle, and nothing reads it as state. A continuation needs the records as well as the transcript, so a dump of messages is not a full backup of a run.
+`run` keeps its decisions as decision records behind `/record` and `/records`: set, grouping, settle, fix, halt, and stop. A record is a fact keyed by message `seq` and holds no phase, mode, or cursor. This reverses `hotseat-b225`'s "the transcript is the only durable state" and amends `hotseat-r7gj`'s no-phase rule. `run` publishes no marker. Its one message about a decision is `settled`, to `owner` with `re` the agreed proposal, because no participant states a settle, and nothing reads it as state. A continuation needs the records as well as the transcript, so a dump of messages is not a full backup of a run.
 
 ## Contract
 
@@ -66,7 +66,7 @@ Note: lint is not clean on main. The existing findings are unchecked `Close` err
 - One writer. Seq order is commit order only because of it. The flock is on `hotseat.db.lock`, not the database inode, because on macOS flock shares SQLite's lock table and closing any descriptor drops every lock.
 - DSN: `busy_timeout=0` (another holder fails this process instead of stalling it), `journal_mode=WAL`, `locking_mode=EXCLUSIVE` (checked after open), `foreign_keys=1`, `synchronous=FULL` (commit returns after the write is durable), `_txlock=immediate`. `SetMaxOpenConns(1)`.
 - `Open` resolves the directory to an absolute path first, chmods it `0700`, refuses symlinks for the database, wal, shm, and lock, and opens the lock with `O_NOFOLLOW` and mode `0600`.
-- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. The version-1 shape includes the decision record tables `sets`, `set_findings`, `groupings`, `drops`, `settles`, `fixes`, and `halts`. A schema change means deleting the database.
+- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. The version-1 shape includes the decision record tables `sets`, `set_findings`, `groupings`, `drops`, `settles`, `fixes`, `halts`, and `stops`. A schema change means deleting the database.
 - A write that changes nothing (idempotent publish, a record replay, close of a closed conversation) returns `errNoChange`, so the transaction rolls back.
 - Store sentinels are `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, `ErrLaunched`, `ErrReplyTarget`, `ErrRecordReference`, `ErrKeptDropped`, `ErrNotKept`, and `ErrFixDismissed`. Wrap with `%w` when the caller branches on the cause.
 - Refusal text is a `bus.Reason*` constant. A new reason is a constant beside the others, plus a test whose name states the rule.
@@ -93,7 +93,7 @@ Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/impleme
 | `ledger.go` | Pure reading of the transcript and the decision records |
 
 - A stance is judged only by the live launch window it arrived in. A continuation never replays stances and restarts the open discussion from its finding. History is the messages stored before the continuation started, plus each leftover's messages up to its recorded exit.
-- A protocol error body is `<member>\n<class>`, or `<class>` alone, and its `re` is the message that caused it. `bad finding`, `no reply`, `bad turn`, and `unsettled` take a transaction id from `factTx`, so a continuation stores no second copy. Each class is a `class*` constant in `run.go`. `run.ErrUnresolved` maps to the CLI's reported failure.
+- A protocol error body is `<member>\n<class>`, or `<class>` alone, and its `re` is the message that caused it. `bad finding`, `no reply`, `bad turn`, `bad done`, and `unsettled` take a transaction id from `factTx`, so a continuation stores no second copy. Each class is a `class*` constant in `run.go`. `run.ErrUnresolved` maps to the CLI's reported failure.
 - A settled change is fixed by its fix record, or else by the first creditable `fixed`: after the settle's `after`, `re` naming the finding, from the finder, the seat, or the seat's backup. The stop result and continuation read this one ledger rule. A record end at `after` includes the message at that `seq`.
 - Prompts give the exact `--re` for the kind they ask for. A present `re` other than the one `run` expects rejects the message, and a missing `re` falls back to the `seq` windows. `re` adds a check and never replaces a launch window.
 - Settled, do not reopen:

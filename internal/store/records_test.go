@@ -51,7 +51,7 @@ func records(t *testing.T, st *Store) Records {
 func assertNoRecords(t *testing.T, st *Store) {
 	t.Helper()
 	r := records(t, st)
-	if len(r.Sets)+len(r.Groupings)+len(r.Settles)+len(r.Fixes)+len(r.Halts) != 0 {
+	if len(r.Sets)+len(r.Groupings)+len(r.Settles)+len(r.Fixes)+len(r.Halts)+len(r.Stops) != 0 {
 		t.Fatalf("records written: %+v", r)
 	}
 }
@@ -473,10 +473,49 @@ func TestHaltOfAFindingThatIsNotKeptIsRefused(t *testing.T) {
 	}
 }
 
+func TestSecondStopWithADifferentDoneConflicts(t *testing.T) {
+	st, put := recordStore(t)
+	first, second := put("done"), put("done")
+	stop, already, err := st.WriteStop(context.Background(), "job", first)
+	if err != nil || already || stop.Done != first {
+		t.Fatalf("stop = %+v %v %v", stop, already, err)
+	}
+	put("say")
+	again, already, err := st.WriteStop(context.Background(), "job", first)
+	if err != nil || !already || again != stop {
+		t.Fatalf("replay = %+v %v %v", again, already, err)
+	}
+	if _, _, err := st.WriteStop(context.Background(), "job", second); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second stop = %v", err)
+	}
+	if r := records(t, st); !slices.Equal(r.Stops, []Stop{{Done: first}}) {
+		t.Fatalf("stops = %+v", r.Stops)
+	}
+}
+
+func TestStopOfASeqThatIsNotADoneIsAReferenceFailure(t *testing.T) {
+	st, put := recordStore(t)
+	say := put("say")
+	if _, _, err := st.WriteStop(context.Background(), "job", say); !errors.Is(err, ErrRecordReference) {
+		t.Fatalf("say: %v", err)
+	}
+	if _, _, err := st.WriteStop(context.Background(), "job", say+10); !errors.Is(err, ErrRecordReference) {
+		t.Fatalf("missing: %v", err)
+	}
+	if _, _, err := st.Create(context.Background(), "other", Binding{}); err != nil {
+		t.Fatal(err)
+	}
+	done := put("done")
+	if _, _, err := st.WriteStop(context.Background(), "other", done); !errors.Is(err, ErrRecordReference) {
+		t.Fatalf("other conversation: %v", err)
+	}
+	assertNoRecords(t, st)
+}
+
 func TestRecordsListsAreEmptyNotNilAndInKeyOrder(t *testing.T) {
 	st, put := recordStore(t)
 	r := records(t, st)
-	if r.Sets == nil || r.Groupings == nil || r.Settles == nil || r.Fixes == nil || r.Halts == nil {
+	if r.Sets == nil || r.Groupings == nil || r.Settles == nil || r.Fixes == nil || r.Halts == nil || r.Stops == nil {
 		t.Fatalf("nil list: %+v", r)
 	}
 	t1, f1 := put("turn"), put("finding")
@@ -499,7 +538,8 @@ func everyWrite(st *Store, conv string) map[string]error {
 	_, _, settleErr := st.WriteSettle(ctx, conv, 2, 2, "finding")
 	_, _, fixErr := st.WriteFix(ctx, conv, 2, 3)
 	_, _, haltErr := st.WriteHalt(ctx, conv, 2)
-	return map[string]error{"set": setErr, "grouping": groupingErr, "settle": settleErr, "fix": fixErr, "halt": haltErr}
+	_, _, stopErr := st.WriteStop(ctx, conv, 4)
+	return map[string]error{"set": setErr, "grouping": groupingErr, "settle": settleErr, "fix": fixErr, "halt": haltErr, "stop": stopErr}
 }
 
 func TestRecordsOfAMissingConversationIsNotFound(t *testing.T) {

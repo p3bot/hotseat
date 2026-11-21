@@ -720,11 +720,13 @@ type wire struct {
 	Settle         *wireSettle         `json:"settle,omitempty"`
 	Fix            *wireFix            `json:"fix,omitempty"`
 	Halt           *wireHalt           `json:"halt,omitempty"`
+	Stop           *wireStop           `json:"stop,omitempty"`
 	Sets           *[]wireSet          `json:"sets,omitempty"`
 	Groupings      *[]wireGrouping     `json:"groupings,omitempty"`
 	Settles        *[]wireSettle       `json:"settles,omitempty"`
 	Fixes          *[]wireFix          `json:"fixes,omitempty"`
 	Halts          *[]wireHalt         `json:"halts,omitempty"`
+	Stops          *[]wireStop         `json:"stops,omitempty"`
 	wireLease
 }
 

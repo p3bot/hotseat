@@ -309,6 +309,7 @@ func TestTwoFindingsAreDiscussedInOrderAndFixedBeforeTheFollowUp(t *testing.T) {
 			{Finding: f1.Seq, SettledAfter: settled[0].Seq - 1, Fixed: fixed[0].Seq},
 			{Finding: f2.Seq, SettledAfter: settled[1].Seq - 1, Fixed: fixed[1].Seq},
 		},
+		stops: []client.Stop{{Done: first(msgs, "alpha", kindDone).Seq}},
 	}
 	if fmt.Sprint(recs) != fmt.Sprint(wantRecs) || recs.sets[0].After < f2.Seq || recs.groupings[0].After < recs.sets[0].After {
 		t.Fatalf("records %+v\nwant %+v", recs, wantRecs)
@@ -1392,7 +1393,7 @@ func TestStrayFixedLeavesTheSettledChangeUnfixedAtTheStop(t *testing.T) {
 	}
 }
 
-func TestResumeWithoutRosterWritesNoRecordAndAnnouncesNothing(t *testing.T) {
+func TestResumeWithoutRosterWritesOnlyTheStopRecordAndAnnouncesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.keptMembers(abcRoster...)
 	turn, f := h.reviewed()
@@ -1407,10 +1408,11 @@ func TestResumeWithoutRosterWritesNoRecordAndAnnouncesNothing(t *testing.T) {
 	if n := len(ofKind(h.messages("kept"), kindSettled)) + h.launchCount(); n != 0 {
 		t.Fatalf("a resume with no roster announced or launched: %+v", h.calls())
 	}
-	h.publish("kept", "alpha", kindDone, "early", []string{"owner"})
+	done := h.publish("kept", "alpha", kindDone, "early", []string{"owner"})
 	if res := h.awaitRun(ch, 10*time.Second); !errors.Is(res.err, ErrUnresolved) {
 		t.Fatalf("%v\n%s", res.err, res.stdout)
 	}
+	before.stops = []client.Stop{{Done: done.Seq}}
 	if after := h.recordsOf("kept"); fmt.Sprint(after) != fmt.Sprint(before) || len(ofKind(h.messages("kept"), kindSettled)) != 0 {
 		t.Fatalf("records %+v, want %+v", after, before)
 	}

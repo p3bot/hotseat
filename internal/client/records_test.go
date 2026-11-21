@@ -85,6 +85,7 @@ func TestRecordResultsDecodeToWhatRecordsReturns(t *testing.T) {
 	settle := mustDo(t, addr, "record", held(SettleRecord{Conversation: "job", Finding: finding, Proposal: finding, ProposalKind: "finding"}))
 	fix := mustDo(t, addr, "record", held(FixRecord{Conversation: "job", Finding: finding, Fixed: seq("fixed", "4")}))
 	halt := mustDo(t, addr, "record", held(HaltRecord{Conversation: "job", Finding: finding}))
+	stop := mustDo(t, addr, "record", held(StopRecord{Conversation: "job", Done: seq("done", "5")}))
 
 	got := mustDo(t, addr, "records", RecordsRequest{Conversation: "job"})
 	want := Result{
@@ -94,6 +95,7 @@ func TestRecordResultsDecodeToWhatRecordsReturns(t *testing.T) {
 		Settles:   &[]Settle{*settle.Settle},
 		Fixes:     &[]Fix{*fix.Fix},
 		Halts:     &[]Halt{*halt.Halt},
+		Stops:     &[]Stop{*stop.Stop},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("records = %+v\nwant %+v", got, want)
@@ -125,6 +127,7 @@ func TestEachRecordSendsItsSelectorAndOnlyItsFields(t *testing.T) {
 		{SettleRecord{Conversation: "job", Finding: 5, Proposal: 6, ProposalKind: "propose"}, `{"conversation":"job","record":"settle","finding":5,"proposal":6,"proposal_kind":"propose"}`},
 		{FixRecord{Conversation: "job", Finding: 5, Fixed: 7}, `{"conversation":"job","record":"fix","finding":5,"fixed":7}`},
 		{HaltRecord{Conversation: "job", Finding: 5}, `{"conversation":"job","record":"halt","finding":5}`},
+		{StopRecord{Conversation: "job", Done: 8}, `{"conversation":"job","record":"stop","done":8}`},
 	} {
 		if _, err := Do(context.Background(), addr, "record", "", RecordRequest{Record: tc.req}); err != nil {
 			t.Fatal(err)

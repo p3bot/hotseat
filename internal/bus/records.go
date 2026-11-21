@@ -23,6 +23,7 @@ const (
 	recordSettle   = "settle"
 	recordFix      = "fix"
 	recordHalt     = "halt"
+	recordStop     = "stop"
 )
 
 type recordRequest struct {
@@ -35,6 +36,7 @@ type recordRequest struct {
 	Proposal     json.RawMessage `json:"proposal"`
 	ProposalKind *string         `json:"proposal_kind"`
 	Fixed        json.RawMessage `json:"fixed"`
+	Done         json.RawMessage `json:"done"`
 	Holder       *string         `json:"holder"`
 }
 
@@ -240,6 +242,17 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 			res.Halt = &halt
 			return err
 		})
+	case recordStop:
+		done, err := requireSeq(req.Done, ReasonDoneRequired, ReasonDoneRange)
+		if err != nil {
+			return asRefused(err)
+		}
+		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
+			var stop store.Stop
+			stop, res.AlreadyStored, err = s.store.WriteStop(ctx, conv, done)
+			res.Stop = &stop
+			return err
+		})
 	default:
 		return refused(ReasonRecordBad), nil
 	}
@@ -266,7 +279,7 @@ func (s *Service) writeRecord(ctx context.Context, conv string, holder *string, 
 	return res, nil
 }
 
-// Records returns every decision record of one conversation as five lists.
+// Records returns every decision record of one conversation as six lists.
 func (s *Service) Records(ctx context.Context, conv string) (Result, error) {
 	if err := requireConversation(conv); err != nil {
 		return asRefused(err)
@@ -315,6 +328,10 @@ type wireHalt struct {
 	After   int64 `json:"after"`
 }
 
+type wireStop struct {
+	Done int64 `json:"done"`
+}
+
 func toWireSet(s store.Set) wireSet {
 	findings := s.Findings
 	if findings == nil {
@@ -343,6 +360,10 @@ func toWireHalt(h store.Halt) wireHalt {
 	return wireHalt{Finding: h.Finding, After: h.After}
 }
 
+func toWireStop(s store.Stop) wireStop {
+	return wireStop{Done: s.Done}
+}
+
 // recordWire fills the record fields of a /record or /records result.
 func recordWire(op string, res Result, out *wire) {
 	switch op {
@@ -354,6 +375,7 @@ func recordWire(op string, res Result, out *wire) {
 		out.Settle = wirePtr(res.Settle, toWireSettle)
 		out.Fix = wirePtr(res.Fix, toWireFix)
 		out.Halt = wirePtr(res.Halt, toWireHalt)
+		out.Stop = wirePtr(res.Stop, toWireStop)
 	case "records":
 		var recs store.Records
 		if res.Records != nil {
@@ -364,5 +386,6 @@ func recordWire(op string, res Result, out *wire) {
 		out.Settles = wireList(recs.Settles, toWireSettle)
 		out.Fixes = wireList(recs.Fixes, toWireFix)
 		out.Halts = wireList(recs.Halts, toWireHalt)
+		out.Stops = wireList(recs.Stops, toWireStop)
 	}
 }

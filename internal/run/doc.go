@@ -12,15 +12,18 @@
 // schedules the speakers, settles a finding only when every live member but
 // the proposer agrees, launches the finder to apply a settled change, and
 // reports the stop result from the messages and records before the stopping
-// done.
+// done. The stopping done is the seat's, or the backup's while the seat is
+// timed-out. Any other done stored before the stop is stored once as a bad
+// done error and never stops the run afterwards.
 //
 // run keeps its decisions as decision records in the store: a set when a set
-// closes, a grouping of its duplicates, a settle, a fix, and a halt. Records
-// are facts keyed by message seq and hold no phase, mode, or cursor. run reads
-// them once at start and keeps each one a write returns, and a continuation
-// resumes from them and the transcript. The one message run publishes about a
-// decision is settled, to owner, because no participant states a settle.
-// Nothing reads it as state.
+// closes, a grouping of its duplicates, a settle, a fix, a halt, and a stop
+// naming the stopping done, written before the close. Records are facts
+// keyed by message seq and hold no phase, mode, or cursor. run reads them once
+// at start and keeps each one a write returns, and a continuation resumes from
+// them and the transcript. The one message run publishes about a decision is
+// settled, to owner, because no participant states a settle. Nothing reads it
+// as state.
 //
 // run holds the conversation's conductor lease from before it acts on the
 // conversation until it exits. It mints a random holder at start, renews the

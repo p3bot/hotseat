@@ -441,7 +441,8 @@ func TestLaunchThatFindsTheRunClosingStartsNothing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			e, stdout := h.closingEngine()
-			if err := e.finishDone(client.Message{Seq: 1, From: "alpha", Kind: kindDone}); err != errDone {
+			done := h.publish("kept", "alpha", kindDone, "done", []string{"owner"})
+			if err := e.finishDone(done); err != errDone {
 				t.Fatalf("finishDone %v", err)
 			}
 			if err := tc.launch(e); err != nil {
@@ -455,8 +456,9 @@ func TestLaunchThatFindsTheRunClosingStartsNothing(t *testing.T) {
 func TestDoneSeenDuringLaunchSetupStartsNothing(t *testing.T) {
 	h := newHarness(t)
 	e, stdout := h.closingEngine()
+	done := h.publish("kept", "alpha", kindDone, "done", []string{"owner"})
 	started, err := e.launchUnless("bravo", launchFollow, e.followPrompt("bravo", 0, nil, nil), func() (bool, error) {
-		if err := e.finishDone(client.Message{Seq: 1, From: "alpha", Kind: kindDone}); err != errDone {
+		if err := e.finishDone(done); err != errDone {
 			return false, err
 		}
 		return false, nil

@@ -96,11 +96,13 @@ type Result struct {
 	Settle         *Settle         `json:"settle,omitempty"`
 	Fix            *Fix            `json:"fix,omitempty"`
 	Halt           *Halt           `json:"halt,omitempty"`
+	Stop           *Stop           `json:"stop,omitempty"`
 	Sets           *[]Set          `json:"sets,omitempty"`
 	Groupings      *[]Grouping     `json:"groupings,omitempty"`
 	Settles        *[]Settle       `json:"settles,omitempty"`
 	Fixes          *[]Fix          `json:"fixes,omitempty"`
 	Halts          *[]Halt         `json:"halts,omitempty"`
+	Stops          *[]Stop         `json:"stops,omitempty"`
 	Held           *bool           `json:"held,omitempty"`
 	Since          string          `json:"since,omitempty"`
 	Expires        string          `json:"expires,omitempty"`
@@ -194,9 +196,14 @@ type Halt struct {
 	After   int64 `json:"after"`
 }
 
+// Stop is the done that stopped a conversation's run.
+type Stop struct {
+	Done int64 `json:"done"`
+}
+
 // RecordWrite is one decision record: SetRecord, GroupingRecord,
-// SettleRecord, FixRecord, or HaltRecord. Each sends its own record selector
-// and only its own fields. The bus assigns after.
+// SettleRecord, FixRecord, HaltRecord, or StopRecord. Each sends its own
+// record selector and only its own fields. The bus assigns after.
 type RecordWrite interface {
 	recordBody(holder string) any
 }
@@ -300,6 +307,21 @@ func (r HaltRecord) recordBody(holder string) any {
 		Finding      int64  `json:"finding"`
 		Holder       string `json:"holder,omitempty"`
 	}{r.Conversation, "halt", r.Finding, holder}
+}
+
+// StopRecord writes the done that stopped a conversation's run.
+type StopRecord struct {
+	Conversation string
+	Done         int64
+}
+
+func (r StopRecord) recordBody(holder string) any {
+	return struct {
+		Conversation string `json:"conversation"`
+		Record       string `json:"record"`
+		Done         int64  `json:"done"`
+		Holder       string `json:"holder,omitempty"`
+	}{r.Conversation, "stop", r.Done, holder}
 }
 
 // RecordsRequest is the records body.

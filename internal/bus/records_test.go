@@ -57,7 +57,7 @@ func assertRefused(t *testing.T, res wire, reason string) {
 	if res.Outcome != OutcomeRefused || res.Reason != reason {
 		t.Fatalf("got %s %q, want refused %q", res.Outcome, res.Reason, reason)
 	}
-	if res.Set != nil || res.Grouping != nil || res.Settle != nil || res.Fix != nil || res.Halt != nil {
+	if res.Set != nil || res.Grouping != nil || res.Settle != nil || res.Fix != nil || res.Halt != nil || res.Stop != nil {
 		t.Fatalf("refusal carries a record: %+v", res)
 	}
 }
@@ -71,7 +71,7 @@ func readRecords(t *testing.T, base, conv string) (wire, []byte) {
 	return res, raw
 }
 
-func TestRecordsForAConversationWithNoRecordsReturnsFiveEmptyArrays(t *testing.T) {
+func TestRecordsForAConversationWithNoRecordsReturnsSixEmptyArrays(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
@@ -80,7 +80,7 @@ func TestRecordsForAConversationWithNoRecordsReturnsFiveEmptyArrays(t *testing.T
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"sets", "groupings", "settles", "fixes", "halts"} {
+	for _, key := range []string{"sets", "groupings", "settles", "fixes", "halts", "stops"} {
 		if string(got[key]) != "[]" {
 			t.Fatalf("%s = %s in %s", key, got[key], raw)
 		}
@@ -130,10 +130,16 @@ func TestRecordResultsAppendToWhatRecordsReturns(t *testing.T) {
 	held.Fixes = &[]wireFix{*fix.Fix}
 	halt := mustRecord(t, base, record("job", "halt", map[string]any{"finding": f3}))
 	held.Halts = &[]wireHalt{*halt.Halt}
+	done := put("done")
+	stop := mustRecord(t, base, record("job", "stop", map[string]any{"done": done}))
+	if stop.Stop == nil || stop.Stop.Done != done {
+		t.Fatalf("stop = %+v", stop)
+	}
+	held.Stops = &[]wireStop{*stop.Stop}
 
 	got, _ := readRecords(t, base, "job")
 	want, _ := json.Marshal(held)
-	have, _ := json.Marshal(wire{Sets: got.Sets, Groupings: got.Groupings, Settles: got.Settles, Fixes: got.Fixes, Halts: got.Halts})
+	have, _ := json.Marshal(wire{Sets: got.Sets, Groupings: got.Groupings, Settles: got.Settles, Fixes: got.Fixes, Halts: got.Halts, Stops: got.Stops})
 	if string(want) != string(have) {
 		t.Fatalf("records\n%s\nwant\n%s", have, want)
 	}
@@ -211,6 +217,8 @@ func TestRecordRefusesAMissingOrOutOfRangeField(t *testing.T) {
 		{"fix fixed negative", "fix", map[string]any{"finding": 2, "fixed": -1}, ReasonFixedRange},
 		{"halt finding missing", "halt", nil, ReasonFindingRequired},
 		{"halt finding string", "halt", map[string]any{"finding": "2"}, ReasonFindingRange},
+		{"stop done missing", "stop", nil, ReasonDoneRequired},
+		{"stop done zero", "stop", map[string]any{"done": 0}, ReasonDoneRange},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -313,6 +321,36 @@ func TestSecondHaltWithADifferentFindingIsAKeyConflict(t *testing.T) {
 	}
 }
 
+func TestSecondStopWithADifferentDoneIsAKeyConflictAndAReplayIsStored(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	create(t, base, "job")
+	conduct(t, base, "job")
+	put := publisher(t, base, "job")
+	first, second := put("done"), put("done")
+	stored := mustRecord(t, base, record("job", "stop", map[string]any{"done": first}))
+	if stored.AlreadyStored == nil || *stored.AlreadyStored {
+		t.Fatalf("first = %+v", stored)
+	}
+	again := mustRecord(t, base, record("job", "stop", map[string]any{"done": first}))
+	if again.AlreadyStored == nil || !*again.AlreadyStored || again.Stop.Done != first {
+		t.Fatalf("replay = %+v", again)
+	}
+	assertRefused(t, mustPost(t, base, PathRecord, record("job", "stop", map[string]any{"done": second})), ReasonKeyConflict)
+}
+
+func TestStopThatNamesNoDoneIsRefusedWithTheReferenceReason(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	create(t, base, "job")
+	conduct(t, base, "job")
+	put := publisher(t, base, "job")
+	say := put("say")
+	assertRefused(t, mustPost(t, base, PathRecord, record("job", "stop", map[string]any{"done": say})), ReasonRecordReference)
+	assertRefused(t, mustPost(t, base, PathRecord, record("job", "stop", map[string]any{"done": say + 5})), ReasonRecordReference)
+	if got, _ := readRecords(t, base, "job"); len(*got.Stops) != 0 {
+		t.Fatalf("stops = %+v", *got.Stops)
+	}
+}
+
 func TestRecordAndRecordsLeaveRevAndWakeNoWatch(t *testing.T) {
 	opt, blocked := blockSignal()
 	base, _, _, _ := startServer(t, opt)
@@ -389,7 +427,7 @@ func TestWireRecordShapesUseEmptyArrays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"sets":[]`, `"groupings":[]`, `"settles":[]`, `"fixes":[]`, `"halts":[]`} {
+	for _, key := range []string{`"sets":[]`, `"groupings":[]`, `"settles":[]`, `"fixes":[]`, `"halts":[]`, `"stops":[]`} {
 		if !strings.Contains(string(raw), key) {
 			t.Fatalf("%s lacks %s", raw, key)
 		}

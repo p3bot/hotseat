@@ -12,10 +12,11 @@
 //
 // Decision records are hotseat run's insert-only facts about messages: a set
 // closed with its findings, a set's grouping of duplicates, a settle, a fix,
-// and a halt. Each references messages of its conversation by composite
-// foreign keys that also fix the referenced kind (turn, finding, propose,
-// dismiss, fixed). after on a record is the conversation's highest seq when
-// it commits, read in the write transaction. A write that matches the stored
+// a halt, and a stop. Each references messages of its conversation by
+// composite foreign keys that also fix the referenced kind (turn, finding,
+// propose, dismiss, fixed, done). after on a record is the conversation's
+// highest seq when it commits, read in the write transaction. A stop holds
+// only its done and has no after. A write that matches the stored
 // record on its key, ignoring after, returns it and writes nothing. One that
 // differs returns ErrConflict. Every other constraint failure on a record
 // table is ErrRecordReference, and the three rules that span rows are
@@ -179,10 +180,16 @@ var schemaStmts = []string{
   FOREIGN KEY (conversation, finding) REFERENCES set_findings (conversation, finding),
   CHECK (after >= finding)
 ) STRICT`,
+	`CREATE TABLE IF NOT EXISTS stops (
+  conversation TEXT NOT NULL PRIMARY KEY REFERENCES conversations(name),
+  done INTEGER NOT NULL,
+  done_kind TEXT NOT NULL DEFAULT 'done' CHECK (done_kind = 'done'),
+  FOREIGN KEY (conversation, done, done_kind) REFERENCES messages (conversation, seq, kind)
+) STRICT`,
 }
 
 // recordTables are the decision record tables. A version-1 file lacking any of them is ErrSchema.
-var recordTables = []string{"sets", "set_findings", "groupings", "drops", "settles", "fixes", "halts"}
+var recordTables = []string{"sets", "set_findings", "groupings", "drops", "settles", "fixes", "halts", "stops"}
 
 var (
 	// ErrNotFound means the conversation does not exist.
@@ -193,7 +200,7 @@ var (
 	ErrHeld = errors.New("database is held by another process")
 	// ErrSchema means this binary will not serve the file.
 	// The recorded version differs, or a version-1 file lacks kind, re, the binding columns, the member table,
-	// any decision record table (sets, set_findings, groupings, drops, settles, fixes, halts),
+	// any decision record table (sets, set_findings, groupings, drops, settles, fixes, halts, stops),
 	// or the unique keys (conversation, seq) and (conversation, seq, kind) on messages,
 	// or its messages primary key is not seq alone.
 	ErrSchema = errors.New("store schema is not supported by this binary")

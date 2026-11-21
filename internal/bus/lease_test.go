@@ -381,6 +381,26 @@ func TestRecordReplayByAStaleHolderIsRefused(t *testing.T) {
 	}
 }
 
+func TestStopRecordIsFencedByTheLease(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	create(t, base, "job")
+	conduct(t, base, "job")
+	done := publisher(t, base, "job")("done")
+	leaseCall(t, base, "job", LeaseRelease, testHolder)
+	stop := record("job", "stop", map[string]any{"done": done})
+	delete(stop, "holder")
+	assertRefused(t, mustPost(t, base, PathRecord, stop), ReasonHolderRequired)
+	assertRefused(t, mustPost(t, base, PathRecord, withHolder(stop, testHolder)), ReasonLeaseWrite)
+	leaseCall(t, base, "job", LeaseAcquire, "other")
+	assertRefused(t, mustPost(t, base, PathRecord, withHolder(stop, testHolder)), ReasonLeaseWrite)
+	if recs, _ := readRecords(t, base, "job"); len(*recs.Stops) != 0 {
+		t.Fatalf("stops = %+v", *recs.Stops)
+	}
+	leaseCall(t, base, "job", LeaseRelease, "other")
+	conduct(t, base, "job")
+	mustRecord(t, base, withHolder(stop, testHolder))
+}
+
 func TestFencedWriteOnAMissingConversationIsNotFound(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	for path, body := range fencedWrites(1) {
