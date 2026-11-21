@@ -23,7 +23,7 @@ func (e *engine) taskID(query string) (string, error) {
 	}
 	id := strings.TrimRight(out, "\n")
 	if id == "" || strings.ContainsAny(id, "\r\n") {
-		return "", fmt.Errorf("task id must be one line")
+		return "", unusable(errors.New("task id must be one line"))
 	}
 	return id, nil
 }
@@ -48,7 +48,7 @@ func (e *engine) minMembers(id string) (int, error) {
 	}
 	n, err := strconv.Atoi(text)
 	if !allDigits(text) || err != nil || n < 1 {
-		return 0, fmt.Errorf("%s min_members %q is not a positive integer", id, text)
+		return 0, unusable(fmt.Errorf("%s min_members %q is not a positive integer", id, text))
 	}
 	return n, nil
 }
@@ -74,7 +74,7 @@ func (e *engine) checkPermissions() error {
 			if commandDidNotRun(err) {
 				return err
 			}
-			return fmt.Errorf("%s does not define permission %s", a.module, e.perm)
+			return &commandError{text: fmt.Sprintf("%s does not define permission %s", a.module, e.perm), err: err}
 		}
 	}
 	return nil
@@ -99,7 +99,11 @@ func (e *engine) locator(module string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return locatorKeys(out)
+	keys, err := locatorKeys(out)
+	if err != nil {
+		return nil, unusable(err)
+	}
+	return keys, nil
 }
 
 func (e *engine) launchDirectory(ticket string) (string, error) {
@@ -116,11 +120,11 @@ func (e *engine) launchDirectory(ticket string) (string, error) {
 	}
 	roots, err := scopeRoots(out)
 	if err != nil {
-		return "", err
+		return "", unusable(err)
 	}
 	root, ok := roots[scope]
 	if !ok || root == "" {
-		return "", fmt.Errorf("scope %s has no code-root", scope)
+		return "", unusable(fmt.Errorf("scope %s has no code-root", scope))
 	}
 	if filepath.IsAbs(root) {
 		return root, nil

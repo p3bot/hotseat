@@ -1730,6 +1730,13 @@ func TestTurnCapStopsOnTheNextTurn(t *testing.T) {
 	if countBody(msgs, classBadTurn) != 1 || countBody(msgs, classTurnCap) != 1 {
 		t.Fatalf("msgs %+v", msgs)
 	}
+	var capped client.Message
+	for _, m := range ofKind(msgs, kindError) {
+		if m.Body == classTurnCap {
+			capped = m
+		}
+	}
+	h.wantStopError(name, stopProtocol, capped.Seq)
 	conv, _ := h.conv(name)
 	if conv.Status == "closed" {
 		t.Fatal("closed")

@@ -358,7 +358,8 @@ func TestDeadlockWithAWrongReIsBadThenNoDecisionAndWritesNoHalt(t *testing.T) {
 		t.Fatalf("%v\n%s", res.err, res.stdout)
 	}
 	msgs := h.messages(name)
-	wantErrors(t, msgs, errLine("alpha", classBadDeadlock, first(msgs, "alpha", kindDeadlock).Seq), errLine("alpha", classNoDecision, 0))
+	wantErrors(t, msgs, errLine("alpha", classBadDeadlock, first(msgs, "alpha", kindDeadlock).Seq), errLine("alpha", classNoDecision, 0),
+		protocolStopLine(t, msgs, errBody("alpha", classNoDecision)))
 	if c, _ := h.conv(name); c.Status != "open" || len(h.recordsOf(name).halts) != 0 || len(h.launchesWith("alpha", promptReport)) != 0 {
 		t.Fatalf("status %s msgs %+v", c.Status, msgs)
 	}
@@ -390,7 +391,7 @@ func TestFixedWithAWrongReDoesNotCountAndTheFixIsHandedOff(t *testing.T) {
 				t.Fatalf("%v\n%s", res.err, res.stdout)
 			}
 			// Neither wrong fixed is named by an error. Only the handoff's miss is.
-			wantErrors(t, msgs, errLine("alpha", classNoFix, 0))
+			wantErrors(t, msgs, errLine("alpha", classNoFix, 0), protocolStopLine(t, msgs, errBody("alpha", classNoFix)))
 		})
 	}
 }
@@ -496,8 +497,8 @@ func TestRefusedDerivedErrorStopsTheRun(t *testing.T) {
 	if res.err == nil || !strings.Contains(res.err.Error(), "publish error") || !strings.HasSuffix(res.stdout, "outcome: error\n") {
 		t.Fatalf("%v\n%s", res.err, res.stdout)
 	}
-	if n := len(ofKind(h.messages("kept"), kindError)); n != 1 {
-		t.Fatalf("errors %d", n)
+	if got := errorBodies(h.messages("kept")); len(got) != 2 || got[1] != stopRefusal {
+		t.Fatalf("errors %q", got)
 	}
 	if c, _ := h.conv("kept"); c.Status != "open" {
 		t.Fatalf("status %s", c.Status)

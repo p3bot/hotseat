@@ -132,7 +132,22 @@ its lease stops launching and writing, kills no member, waits for the members
 it launched to exit, and exits non-zero with outcome: error. The next holder
 adopts and records its members. A continuation adopts a member process only
 when its host start token matches the one stored with its pid. The lease
-holder is not printed.`,
+holder is not printed.
+
+A run that holds its lease and stops on an error publishes one error from run
+to owner before it waits for any member or releases its lease. The body is
+the class alone: stopped by protocol, with re the halting protocol error
+(turn cap, no backup, no decision, no fix, no report, launch cap, or below
+minimum); stopped by refusal, a bus refusal for any reason but the lease;
+stopped by command, a failed start or tk call or output run cannot use;
+stopped by bus, unavailable or unreachable; stopped by lease; stopped by
+signal; or stopped by run for any other failure. The first cause wins, and
+after a signal the stop is stopped by signal. One member's failed launch in a
+parallel turn stops the others at once. The detail stays on stderr. An
+unresolved stop, a failed stdout write, an exit before the lease is held, and
+a continuation's stored roster below min_members publish none. A member run
+stops is not a member failure, and a --max-turns stop exits non-zero with
+outcome: error, as a launch-cap stop does.`,
 		Example: `  hotseat run hotseat/ticket/review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
   hotseat run --conversation foo-x234-ticket-review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"`,
 		SilenceUsage:  true,

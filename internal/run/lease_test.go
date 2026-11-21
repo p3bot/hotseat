@@ -117,6 +117,7 @@ func TestSecondRunAgainstALiveConductorWaitsOnceThenIsRefusedAndActsOnNothing(t 
 	if n := h.launchCount(); n != 0 {
 		t.Fatalf("launches %d", n)
 	}
+	// Nothing is said before the lease is held, a stop error included.
 	if got := len(h.messages("kept")); got != before {
 		t.Fatalf("messages %d, want %d", got, before)
 	}
@@ -341,6 +342,7 @@ func TestRunThatLosesItsLeaseLeavesItsMemberRunningAndTheNextHolderRecordsIt(t *
 	if strings.Contains(res.stderr, "lease release") {
 		t.Fatalf("the stale run released a lease it no longer held\n%s", res.stderr)
 	}
+	h.wantStopError(name, stopLease, 0)
 	// A boot launch stored no session id, so the adopting run cannot credit a clean exit.
 	h.awaitStatus(name, "alpha", statusTimedOut)
 	if countBody(h.messages(name), classProcessExit) != 1 {
@@ -492,8 +494,10 @@ func TestSignalWhileARunWaitsOnALostLeaseKillsItsLaunchedMembers(t *testing.T) {
 	if !alive(pid) {
 		t.Fatal("alpha died before the signal")
 	}
+	h.awaitBody(name, stopLease)
 	cancel()
 	h.awaitRun(ch, 8*time.Second)
+	h.wantStopError(name, stopLease, 0)
 	if !waitDead(context.Background(), pid, 2*time.Second) {
 		t.Fatal("the signal left alpha running")
 	}
@@ -524,6 +528,7 @@ func TestRefusedConductorWriteStopsARunThatMissedItsRenewals(t *testing.T) {
 	if got := h.memberStatus(name, "alpha"); got != statusLaunched {
 		t.Fatalf("alpha %s", got)
 	}
+	h.wantStopError(name, stopLease, 0)
 }
 
 func TestDoneSenderExitingAfterTheTimeToLiveStillEndsDoneAndReleases(t *testing.T) {
@@ -558,6 +563,7 @@ func TestDoneSenderExitingAfterTheTimeToLiveStillEndsDoneAndReleases(t *testing.
 	if h.leaseHeld(name) {
 		t.Fatal("the run left its lease")
 	}
+	h.wantNoStopError(name)
 }
 
 func TestLeaseLostDuringTheDoneGraceEndsWithErrorNotDone(t *testing.T) {
@@ -587,6 +593,7 @@ func TestLeaseLostDuringTheDoneGraceEndsWithErrorNotDone(t *testing.T) {
 	if got := h.memberStatus(name, "alpha"); got != statusLaunched {
 		t.Fatalf("alpha %s", got)
 	}
+	h.wantStopError(name, stopLease, 0)
 }
 
 func TestHolderIsSentOnEveryConductorWriteAndStaysOffPromptsOutputAndTranscript(t *testing.T) {

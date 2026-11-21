@@ -9,12 +9,10 @@ package run
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"slices"
 	"sync"
 
-	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/client"
 )
 
@@ -34,20 +32,21 @@ func (e *engine) drive() error {
 	if err == nil {
 		err = e.messages()
 	}
+	err = e.halt(err)
 	e.cancel()
 	wg.Wait()
 	e.mu.Lock()
 	closed, halt := e.closed, e.haltErr
 	e.mu.Unlock()
-	// A halt after the close, such as a lost lease, left the stop unrecorded, so it is not a clean stop.
-	if closed && halt != nil {
+	// The first halt is the stop, including one after the close, such as a lost lease, which left the stop unrecorded.
+	if halt != nil {
 		return halt
 	}
-	if errors.Is(err, errDone) || closed {
+	if closed {
 		// Members killed by the close write their lines during the wait above.
-		if closed {
-			return e.reportStop()
-		}
+		return e.reportStop()
+	}
+	if errors.Is(err, errDone) {
 		return nil
 	}
 	return err
@@ -214,7 +213,7 @@ func (e *engine) messages() error {
 			e.dropEye(eye)
 			eye = nil
 			if err != nil {
-				return err
+				return e.halt(err)
 			}
 		case <-e.idle:
 			return e.endWindDown(job, eye, cursor, pending)
@@ -222,7 +221,7 @@ func (e *engine) messages() error {
 	}
 }
 
-// endWindDown ends the watch once a wind-down has no member process in flight.
+// endWindDown ends the watch once a wind-down has stored its error and has no member process in flight.
 // No process can start by then, so the job in hand returns without one. A stopping done stored by then still closes.
 func (e *engine) endWindDown(job chan error, eye *busEye, cursor int64, pending []client.Message) error {
 	e.dropEye(eye)
@@ -245,7 +244,7 @@ func (e *engine) endWindDown(job chan error, eye *busEye, cursor int64, pending 
 	if stop {
 		return e.finishDone(done)
 	}
-	return e.windErr()
+	return e.halt(e.windErr())
 }
 
 type busEye struct {
@@ -282,7 +281,9 @@ func (e *engine) goJob(fn func() error) chan error {
 	return ch
 }
 
+// endJob ends the watch on err. An error stop is noted before the job is cancelled and waited for.
 func (e *engine) endJob(job chan error, eye *busEye, err error) error {
+	err = e.halt(err)
 	if eye != nil {
 		eye.cancel()
 	}
@@ -446,10 +447,7 @@ func (e *engine) actTurn(msg client.Message, historical bool, seen int64) error 
 	case turnWindingDown:
 		return nil
 	case turnCapped:
-		if err := e.publishErr("", classTurnCap); err != nil {
-			return err
-		}
-		return e.noteHalt(errors.New(classTurnCap))
+		return e.haltProtocol("", classTurnCap, false)
 	}
 	if !ok {
 		return e.rejectTurn(msg)
@@ -462,7 +460,7 @@ func (e *engine) actTurn(msg client.Message, historical bool, seen int64) error 
 	e.out.record(turnLine...)
 	for _, name := range msg.To {
 		if name != "" && !nameIn(e.roster, name) {
-			if _, err := e.storeErr(name, classBadTurn, msg.Seq, factTx(classBadTurn, name, seqText(msg.Seq))); err != nil {
+			if _, _, err := e.storeErr(name, classBadTurn, msg.Seq, factTx(classBadTurn, name, seqText(msg.Seq))); err != nil {
 				return err
 			}
 		}
@@ -491,7 +489,7 @@ func (e *engine) actTurn(msg client.Message, historical bool, seen int64) error 
 
 // rejectTurn reports a turn whose body run rejects. Its derived transaction id stores one error however often it is read.
 func (e *engine) rejectTurn(turn client.Message) error {
-	_, err := e.storeErr("", classBadTurn, turn.Seq, factTx(classBadTurn, seqText(turn.Seq)))
+	_, _, err := e.storeErr("", classBadTurn, turn.Seq, factTx(classBadTurn, seqText(turn.Seq)))
 	return err
 }
 
@@ -550,6 +548,7 @@ func (e *engine) runSerial(due []string, msg client.Message, mode, phase string,
 	return nil
 }
 
+// runParallel launches each due member at once. One member's error stop halts the run there, which stops its siblings.
 func (e *engine) runParallel(due []string, msg client.Message, mode, phase string, seen int64) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(due))
@@ -557,21 +556,7 @@ func (e *engine) runParallel(due []string, msg client.Message, mode, phase strin
 		wg.Add(1)
 		go func(name string) {
 			defer wg.Done()
-			if err := e.stopForNewDone(seen); err != nil {
-				errCh <- err
-				return
-			}
-			if err := e.launchForTurn(name, msg, e.turnPrompt(name, msg, mode, phase)); err != nil {
-				errCh <- err
-				return
-			}
-			if err := e.stopForNewDone(seen); err != nil {
-				errCh <- err
-				return
-			}
-			if err := e.drainHandoff(); err != nil {
-				errCh <- err
-			}
+			errCh <- e.halt(e.parallelLaunch(name, msg, mode, phase, seen))
 		}(name)
 	}
 	wg.Wait()
@@ -582,6 +567,20 @@ func (e *engine) runParallel(due []string, msg client.Message, mode, phase strin
 		}
 	}
 	return nil
+}
+
+// parallelLaunch is one member's part of a parallel turn.
+func (e *engine) parallelLaunch(name string, msg client.Message, mode, phase string, seen int64) error {
+	if err := e.stopForNewDone(seen); err != nil {
+		return err
+	}
+	if err := e.launchForTurn(name, msg, e.turnPrompt(name, msg, mode, phase)); err != nil {
+		return err
+	}
+	if err := e.stopForNewDone(seen); err != nil {
+		return err
+	}
+	return e.drainHandoff()
 }
 
 func (e *engine) followUp(msg client.Message, seen int64) error {
@@ -607,10 +606,7 @@ func (e *engine) followUp(msg client.Message, seen int64) error {
 			return err
 		}
 		if next == "" {
-			if err := e.publishErr("", classNoBackup); err != nil {
-				return err
-			}
-			return e.noteHalt(errors.New(classNoBackup))
+			return e.haltProtocol("", classNoBackup, false)
 		}
 		target = next
 	}
@@ -722,12 +718,8 @@ func (e *engine) finishDone(done client.Message) error {
 	if _, err := e.writeRecord(client.StopRecord{Conversation: e.name, Done: done.Seq}); err != nil {
 		return err
 	}
-	res, err := e.call(e.root, "close", client.CloseRequest{Conversation: e.name})
-	if err != nil {
+	if _, err := e.call(e.root, "close", client.CloseRequest{Conversation: e.name}); err != nil {
 		return err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		return fmt.Errorf("close: %s", res.Reason)
 	}
 	e.mu.Lock()
 	e.closed = true
@@ -752,9 +744,6 @@ func (e *engine) readOn(ctx context.Context, cursor int64, kinds []string) ([]cl
 		res, err := e.call(ctx, "read", req)
 		if err != nil {
 			return nil, err
-		}
-		if res.Outcome != bus.OutcomeOK {
-			return nil, fmt.Errorf("read: %s", res.Reason)
 		}
 		if res.Messages == nil || len(*res.Messages) == 0 {
 			e.noteSeen(cursor)
@@ -798,9 +787,6 @@ func (e *engine) waitOn(ctx context.Context, cursor int64) (client.Message, erro
 	})
 	if err != nil {
 		return client.Message{}, err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		return client.Message{}, fmt.Errorf("wait: %s", res.Reason)
 	}
 	if res.Message != nil {
 		return *res.Message, nil

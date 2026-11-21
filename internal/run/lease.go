@@ -67,10 +67,7 @@ func mintHolder() (string, error) {
 // lease runs out and the second acquire succeeds, and a live holder's renewal refuses it again.
 func (e *engine) acquire(wait bool) error {
 	res, err := e.lease(e.root, bus.LeaseAcquire)
-	if err != nil {
-		return err
-	}
-	if wait && res.Outcome == bus.OutcomeRefused && res.Reason == bus.ReasonConductorHeld {
+	if wait && refusedFor(err, bus.ReasonConductorHeld) {
 		d := bus.LeaseTTL
 		if res.Remaining != nil {
 			d = min(time.Duration(*res.Remaining)*time.Second, bus.LeaseTTL)
@@ -78,13 +75,12 @@ func (e *engine) acquire(wait bool) error {
 		if err := e.pace.sleep(e.root, d); err != nil {
 			return err
 		}
-		if res, err = e.lease(e.root, bus.LeaseAcquire); err != nil {
-			return err
-		}
+		_, err = e.lease(e.root, bus.LeaseAcquire)
 	}
-	if res.Outcome != bus.OutcomeOK {
-		return fmt.Errorf("lease: %s", res.Reason)
+	if err != nil {
+		return err
 	}
+	e.leased = true
 	// The renewal outlives the engine's child context: the done sender's grace and the
 	// members recorded after a cancel still make fenced writes.
 	ctx, stop := context.WithCancel(e.root)
@@ -110,16 +106,18 @@ func (e *engine) renew(ctx context.Context, done chan<- struct{}) {
 			return
 		case <-tick.C:
 		}
-		res, err := client.Do(ctx, e.addr, "lease", e.token, client.LeaseRequest{Conversation: e.name, Lease: bus.LeaseRenew, Holder: e.holder})
+		req := client.LeaseRequest{Conversation: e.name, Lease: bus.LeaseRenew, Holder: e.holder}
+		res, err := client.Do(ctx, e.addr, "lease", e.token, req)
 		if ctx.Err() != nil {
 			return
 		}
+		fail := &busError{op: callLabel("lease", req), outcome: res.Outcome, reason: res.Reason}
 		switch {
 		case err != nil:
-			_ = e.noteHalt(fmt.Errorf("lease renew: %w", err))
+			_ = e.noteHalt(fmt.Errorf("%s: %w", fail.op, err))
 			return
 		case res.Outcome == client.OutcomeConnectionFailure:
-			if werr := e.show(fmt.Errorf("lease renew: %s", res.Reason)); werr != nil {
+			if werr := e.show(fail); werr != nil {
 				_ = e.noteHalt(werr)
 				return
 			}
@@ -128,7 +126,7 @@ func (e *engine) renew(ctx context.Context, done chan<- struct{}) {
 			_ = e.loseLease(res.Reason)
 			return
 		default:
-			_ = e.noteHalt(fmt.Errorf("lease renew: %s", res.Reason))
+			_ = e.noteHalt(fail)
 			return
 		}
 	}
@@ -148,16 +146,12 @@ func (e *engine) endLease() {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(e.root), releaseLimit)
 	defer cancel()
-	res, err := e.lease(ctx, bus.LeaseRelease)
-	if err == nil && res.Outcome != bus.OutcomeOK {
-		err = errors.New(res.Reason)
-	}
-	if err != nil {
-		_ = e.show(fmt.Errorf("lease release: %w", err))
+	if _, err := e.lease(ctx, bus.LeaseRelease); err != nil {
+		_ = e.show(err)
 	}
 }
 
-// lease makes one lease call as this run's holder. A transport failure is an error.
+// lease makes one lease call as this run's holder. Any outcome but ok is an error.
 func (e *engine) lease(ctx context.Context, op string) (client.Result, error) {
 	return e.call(ctx, "lease", client.LeaseRequest{Conversation: e.name, Lease: op, Holder: e.holder})
 }

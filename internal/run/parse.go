@@ -158,6 +158,14 @@ func mintCode(r io.Reader) (string, error) {
 	return string(out), nil
 }
 
+// fitInstructions returns body when the bus can store it. A larger body is start output run cannot publish.
+func fitInstructions(body string) (string, error) {
+	if len(body) > bus.DefaultMaxBody {
+		return "", unusable(fmt.Errorf("instruction body exceeds %d bytes", bus.DefaultMaxBody))
+	}
+	return body, nil
+}
+
 func instructionBody(text, seat, ticket string, prompts []string, custom string) string {
 	var b strings.Builder
 	b.WriteString(text)

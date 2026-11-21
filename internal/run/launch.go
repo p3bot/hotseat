@@ -20,7 +20,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/client"
 )
 
@@ -134,7 +133,7 @@ func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip 
 	cmd.Stdout = &stdout
 	started, err := e.startUnlessStopping(cmd)
 	if errors.Is(err, errLaunchCap) {
-		return false, e.publishErr("", classLaunchCap)
+		return false, e.publishWind(classLaunchCap)
 	}
 	if err != nil || !started {
 		return false, err
@@ -377,11 +376,11 @@ func (e *engine) timeout(name, class string, floor bool) error {
 		return err
 	}
 	below := floor && e.windBelowMinimum()
-	if err := e.publishErr(name, class); err != nil {
+	if _, err := e.publishErr(name, class); err != nil {
 		return err
 	}
 	if below {
-		if err := e.publishErr("", classBelowMinimum); err != nil {
+		if err := e.publishWind(classBelowMinimum); err != nil {
 			return err
 		}
 	}
@@ -413,10 +412,7 @@ func (e *engine) drainHandoff() error {
 			return err
 		}
 		if next == "" {
-			if err := e.publishErr("", classNoBackup); err != nil {
-				return err
-			}
-			return e.noteHalt(errors.New(classNoBackup))
+			return e.haltProtocol("", classNoBackup, false)
 		}
 		if err := e.launchMember(next, launchFollow, e.handoffPrompt(from, next)); err != nil {
 			return err
@@ -454,15 +450,28 @@ func mintTx() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
-// publishErr publishes an error that names no message, under a random transaction id, and prints no status group.
-func (e *engine) publishErr(member, class string) error {
-	_, err := e.storeErr(member, class, 0, "")
-	return err
+// publishErr publishes an error that names no message, under a random transaction id, prints no status group,
+// and returns the stored seq.
+func (e *engine) publishErr(member, class string) (int64, error) {
+	seq, _, err := e.storeErr(member, class, 0, "")
+	return seq, err
+}
+
+// haltProtocol publishes the halting protocol error class and stops the run on it. group prints its error group.
+func (e *engine) haltProtocol(member, class string, group bool) error {
+	seq, err := e.publishErr(member, class)
+	if err != nil {
+		return err
+	}
+	if group {
+		e.errGroup(member, class, 0)
+	}
+	return e.noteHalt(&protocolStop{class: class, seq: seq})
 }
 
 // protocolErr publishes a finding-protocol error about the message at re, under a random transaction id, and prints its error group.
 func (e *engine) protocolErr(member, class string, re int64) error {
-	if _, err := e.storeErr(member, class, re, ""); err != nil {
+	if _, _, err := e.storeErr(member, class, re, ""); err != nil {
 		return err
 	}
 	e.errGroup(member, class, re)
@@ -472,7 +481,7 @@ func (e *engine) protocolErr(member, class string, re int64) error {
 // factErr publishes a finding-protocol error under tx, a transaction id derived from its fact, and prints its error group.
 // A continuation that meets the same fact again gets the stored error back and prints nothing.
 func (e *engine) factErr(member, class string, re int64, tx string) error {
-	fresh, err := e.storeErr(member, class, re, tx)
+	_, fresh, err := e.storeErr(member, class, re, tx)
 	if err != nil || !fresh {
 		return err
 	}
@@ -480,9 +489,9 @@ func (e *engine) factErr(member, class string, re int64, tx string) error {
 	return nil
 }
 
-// storeErr publishes an error from run to owner and reports whether the bus stored a new message.
+// storeErr publishes an error from run to owner and returns its seq and whether the bus stored a new message.
 // re is the message it concerns, or zero. An empty tx mints a random transaction id.
-func (e *engine) storeErr(member, class string, re int64, tx string) (bool, error) {
+func (e *engine) storeErr(member, class string, re int64, tx string) (int64, bool, error) {
 	return e.send(post{kind: kindError, from: fromRun, to: []string{fromOwner}, body: errBody(member, class), re: re, tx: tx})
 }
 
@@ -520,13 +529,14 @@ type post struct {
 	tx   string
 }
 
-// send publishes p and reports whether the bus stored a new message. A replay of a stored attempt is success and not new.
-func (e *engine) send(p post) (bool, error) {
+// send publishes p and returns the stored seq and whether the bus stored a new message.
+// A replay of a stored attempt is success and not new.
+func (e *engine) send(p post) (int64, bool, error) {
 	tx := p.tx
 	if tx == "" {
 		var err error
 		if tx, err = mintTx(); err != nil {
-			return false, err
+			return 0, false, err
 		}
 	}
 	req := client.PublishRequest{
@@ -543,10 +553,10 @@ func (e *engine) send(p post) (bool, error) {
 	}
 	res, err := e.call(e.root, "publish", req)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
-	if res.Outcome != bus.OutcomeOK {
-		return false, fmt.Errorf("publish %s: %s", p.kind, res.Reason)
+	if res.Message == nil {
+		return 0, false, fmt.Errorf("publish %s: ok with no message", p.kind)
 	}
-	return res.AlreadyStored == nil || !*res.AlreadyStored, nil
+	return res.Message.Seq, res.AlreadyStored == nil || !*res.AlreadyStored, nil
 }

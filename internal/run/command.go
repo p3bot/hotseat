@@ -9,7 +9,6 @@ package run
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -38,6 +37,7 @@ func runExternal(ctx context.Context, bin, dir string, w io.Writer, stdin io.Rea
 	return stdout.String(), nil
 }
 
+// commandFailure is a failed start or tk call: its stderr and stdout, or the exec error when both are empty.
 func commandFailure(bin, stdout, stderr string, err error) error {
 	var parts []string
 	if text := strings.TrimSpace(stderr); text != "" {
@@ -46,8 +46,9 @@ func commandFailure(bin, stdout, stderr string, err error) error {
 	if text := strings.TrimSpace(stdout); text != "" {
 		parts = append(parts, text)
 	}
-	if len(parts) == 0 {
-		return fmt.Errorf("%s: %w", bin, err)
+	text := bin + ": " + err.Error()
+	if len(parts) > 0 {
+		text = bin + ": " + strings.Join(parts, "\n")
 	}
-	return fmt.Errorf("%s: %s", bin, strings.Join(parts, "\n"))
+	return &commandError{text: text, err: err}
 }

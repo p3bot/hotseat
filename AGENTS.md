@@ -92,9 +92,10 @@ Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/impleme
 | `findings.go` | Finding protocol: launches, judging, prompts |
 | `discussion.go` | Live state of one finding. No bus or process |
 | `ledger.go` | Pure reading of the transcript and the decision records |
+| `stop.go` | Stop errors: the `stop*` classes, typed causes, and the one stop error `noteHalt` publishes |
 
 - A stance is judged only by the live launch window it arrived in. A continuation never replays stances and restarts the open discussion from its finding. History is the messages stored before the continuation started, plus each leftover's messages up to its recorded exit.
-- A protocol error body is `<member>\n<class>`, or `<class>` alone, and its `re` is the message that caused it. `bad finding`, `no reply`, `bad turn`, `bad done`, and `unsettled` take a transaction id from `factTx`, so a continuation stores no second copy. Each class is a `class*` constant in `run.go`. `run.ErrUnresolved` maps to the CLI's reported failure.
+- A protocol error body is `<member>\n<class>`, or `<class>` alone, and its `re` is the message that caused it. `bad finding`, `no reply`, `bad turn`, `bad done`, and `unsettled` take a transaction id from `factTx`, so a continuation stores no second copy. Each class is a `class*` constant in `run.go`. The stop classes are a separate set, `stop*` constants in `stop.go`. `run.ErrUnresolved` maps to the CLI's reported failure.
 - A settled change is fixed by its fix record, or else by the first creditable `fixed`: after the settle's `after`, `re` naming the finding, from the finder, the seat, or the seat's backup. The stop result and continuation read this one ledger rule. A record end at `after` includes the message at that `seq`.
 - Prompts give the exact `--re` for the kind they ask for. A present `re` other than the one `run` expects rejects the message, and a missing `re` falls back to the `seq` windows. `re` adds a check and never replaces a launch window.
 - Settled, do not reopen:

@@ -141,6 +141,8 @@ type engine struct {
 	holder string
 	// leaseEnd stops the lease renewal and waits for it. It is set once the lease is acquired.
 	leaseEnd func()
+	// leased is set once the lease is acquired, before any goroutine starts. Only then is a stop said to owner.
+	leased bool
 
 	roster []agent
 	seat   string
@@ -162,6 +164,9 @@ type engine struct {
 	slots    map[string]*slot
 	acted    int
 	haltErr  error
+	// say is held by noteHalt from recording the first halt until its stop error is published, so no caller cancels before it.
+	// It is taken before mu.
+	say sync.Mutex
 	// closed is set once the stopping done closed the conversation.
 	closed   bool
 	closing  bool
@@ -175,7 +180,9 @@ type engine struct {
 	// inFlight counts member processes this run started or watches and has not yet recorded.
 	inFlight  int
 	windClass string
-	// idle is closed once windClass is set and inFlight is zero.
+	// windSeq is the error windClass published, or zero until it is stored.
+	windSeq int64
+	// idle is closed once windClass has its stored error and inFlight is zero.
 	idle       chan struct{}
 	idleClosed bool
 
@@ -387,9 +394,9 @@ func (e *engine) createConversation(suffix bool) error {
 	if e.cfg.InstructionsSet {
 		custom = e.cfg.Instructions
 	}
-	body := instructionBody(text, seat, ticket, prompts, custom)
-	if len(body) > bus.DefaultMaxBody {
-		return fmt.Errorf("instruction body exceeds %d bytes", bus.DefaultMaxBody)
+	body, err := fitInstructions(instructionBody(text, seat, ticket, prompts, custom))
+	if err != nil {
+		return err
 	}
 	var name string
 	if suffix {
@@ -543,7 +550,7 @@ func (e *engine) requireMinimum(task string) error {
 		return err
 	}
 	if len(e.roster) < n {
-		return fmt.Errorf("roster has %d members and task %s requires %d", len(e.roster), task, n)
+		return &rosterRefusal{have: len(e.roster), task: task, want: n}
 	}
 	e.minimum = n
 	return nil
@@ -569,9 +576,14 @@ func (e *engine) promptList() []string {
 	return strings.Fields(e.cfg.Prompts)
 }
 
+// fail ends a run that returns err. It is the stop point of an error stop that reached it without passing noteHalt,
+// such as one before drive or a failed stop report. An unresolved stop is not an error stop.
 func (e *engine) fail(err error) error {
 	if err == nil {
 		return nil
+	}
+	if !errors.Is(err, ErrUnresolved) {
+		err = e.halt(err)
 	}
 	if e.started {
 		e.printOutcome("error")
@@ -588,27 +600,42 @@ func (e *engine) printOutcome(outcome string) {
 	e.reported = true
 }
 
+// call makes one bus call. Any outcome but ok is a *busError, after a refusal for want of the lease stops the run.
 func (e *engine) call(ctx context.Context, op string, body any) (client.Result, error) {
 	res, err := client.Do(ctx, e.addr, op, e.token, body)
 	if err != nil {
 		return res, err
 	}
-	if res.Outcome == client.OutcomeConnectionFailure {
-		return res, errors.New(res.Reason)
-	}
 	if err := e.haltOnLostLease(res); err != nil {
 		return res, err
 	}
+	if res.Outcome != bus.OutcomeOK {
+		return res, &busError{op: callLabel(op, body), outcome: res.Outcome, reason: res.Reason}
+	}
 	return res, nil
+}
+
+// callLabel names a call in its error: the route, and the kind, member, or lease operation it concerns.
+func callLabel(op string, body any) string {
+	switch req := body.(type) {
+	case client.PublishRequest:
+		return op + " " + req.Kind
+	case client.MemberRequest:
+		return op + " " + req.Name
+	case client.SessionRequest:
+		if req.Name != nil {
+			return op + " " + *req.Name
+		}
+	case client.LeaseRequest:
+		return op + " " + req.Lease
+	}
+	return op
 }
 
 func (e *engine) find(name string) (client.Conversation, bool, error) {
 	res, err := e.call(e.root, "list", struct{}{})
 	if err != nil {
 		return client.Conversation{}, false, err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		return client.Conversation{}, false, fmt.Errorf("list: %s", res.Reason)
 	}
 	if res.Conversations == nil {
 		return client.Conversation{}, false, nil
@@ -625,9 +652,6 @@ func (e *engine) taken() (map[string]bool, error) {
 	res, err := e.call(e.root, "list", struct{}{})
 	if err != nil {
 		return nil, err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		return nil, fmt.Errorf("list: %s", res.Reason)
 	}
 	names := make(map[string]bool)
 	if res.Conversations != nil {
@@ -649,17 +673,11 @@ func (e *engine) create(name, task, ticket, seat, dir string, prompts []string, 
 		Custom:    custom,
 		Roster:    rosterNames(e.roster),
 	})
-	if err != nil {
-		return res, err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		return res, fmt.Errorf("create: %s", res.Reason)
-	}
-	return res, nil
+	return res, err
 }
 
 func (e *engine) publishInstructions(body string, to []string) error {
-	res, err := e.call(e.root, "publish", client.PublishRequest{
+	_, err := e.call(e.root, "publish", client.PublishRequest{
 		Conversation: e.name,
 		From:         fromOwner,
 		To:           to,
@@ -668,11 +686,5 @@ func (e *engine) publishInstructions(body string, to []string) error {
 		Kind:         kindInstructions,
 		Holder:       e.holder,
 	})
-	if err != nil {
-		return err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		return fmt.Errorf("publish instructions: %s", res.Reason)
-	}
-	return nil
+	return err
 }

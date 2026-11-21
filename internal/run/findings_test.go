@@ -131,6 +131,18 @@ func errLine(member, class string, re int64) string {
 	return line
 }
 
+// protocolStopLine is the stop error errorBodies lists for a halt on the stored error whose body is body: its re names that error.
+func protocolStopLine(t *testing.T, msgs []client.Message, body string) string {
+	t.Helper()
+	for _, m := range ofKind(msgs, kindError) {
+		if m.Body == body {
+			return errLine("", stopProtocol, m.Seq)
+		}
+	}
+	t.Fatalf("no error %q in %+v", body, msgs)
+	return ""
+}
+
 // launchesWith are the launches of name whose prompt holds text, in call order.
 func (h *harness) launchesWith(name, text string) []call {
 	var out []call
@@ -461,6 +473,8 @@ func TestDeadlockHaltsReportsAndExitsUnresolved(t *testing.T) {
 	if !strings.HasSuffix(res.stdout, "unsettled: "+seqOf(f)+"\noutcome: deadlock\n") || !strings.Contains(res.stdout, "deadlock: "+seqOf(f)+"\nfrom: a3\n") {
 		t.Fatalf("stdout\n%s", res.stdout)
 	}
+	// An unresolved stop is not an error stop.
+	h.wantNoStopError(name)
 	report := h.launchesWith("a3", promptReport)
 	if len(report) != 1 || !strings.Contains(report[0].Stdin, "finding: "+seqOf(f)+"\n") || !strings.Contains(report[0].Stdin, "disagree: a1\n") {
 		t.Fatalf("report %+v", report)
@@ -875,7 +889,7 @@ func TestStallLaunchWithNoSingleDecisionStopsWithTheConversationOpen(t *testing.
 				t.Fatalf("%v\n%s", res.err, res.stdout)
 			}
 			msgs := h.messages(name)
-			wantErrors(t, msgs, "alpha\nno decision")
+			wantErrors(t, msgs, "alpha\nno decision", protocolStopLine(t, msgs, "alpha\nno decision"))
 			if c, _ := h.conv(name); c.Status != "open" || len(h.recordsOf(name).halts) != 0 {
 				t.Fatalf("status %s", c.Status)
 			}
@@ -916,7 +930,8 @@ func TestReportLaunchWithNoDoneStopsWithTheConversationOpen(t *testing.T) {
 	if c, _ := h.conv(name); c.Status != "open" {
 		t.Fatalf("status %s", c.Status)
 	}
-	wantErrors(t, h.messages(name), "alpha\nno report")
+	msgs := h.messages(name)
+	wantErrors(t, msgs, "alpha\nno report", protocolStopLine(t, msgs, "alpha\nno report"))
 }
 
 func TestFindingOutsideARunningSetIsReportedAndOpensNothing(t *testing.T) {
@@ -1578,7 +1593,7 @@ func TestLaunchCapStopsADiscussionWithTheConversationOpen(t *testing.T) {
 	if len(h.recordsOf(name).sets) != 1 || len(ofKind(msgs, kindSettled)) != 0 || h.launchCount() != 5 {
 		t.Fatalf("launches %d msgs %+v", h.launchCount(), msgs)
 	}
-	wantErrors(t, msgs, classLaunchCap)
+	wantErrors(t, msgs, classLaunchCap, protocolStopLine(t, msgs, classLaunchCap))
 	if c, _ := h.conv(name); c.Status != "open" {
 		t.Fatalf("status %s", c.Status)
 	}
@@ -1597,7 +1612,7 @@ func TestMemberLostBelowTheMinimumStopsADiscussion(t *testing.T) {
 	if len(ofKind(msgs, kindSettled)) != 0 || len(h.launchesWith("bravo", promptFix))+len(h.launchesWith("bravo", promptStall)) != 0 {
 		t.Fatalf("calls %+v", h.calls())
 	}
-	wantErrors(t, msgs, errLine("alpha", classProcessExit, 0), classBelowMinimum)
+	wantErrors(t, msgs, errLine("alpha", classProcessExit, 0), classBelowMinimum, protocolStopLine(t, msgs, classBelowMinimum))
 	if c, _ := h.conv(name); c.Status != "open" {
 		t.Fatalf("status %s", c.Status)
 	}
@@ -1747,7 +1762,8 @@ func TestAcceptedPassAndExtendCountTowardTheTurnCap(t *testing.T) {
 		if res.err == nil || res.err.Error() != classTurnCap || strings.Contains(res.stdout, "pass: ") {
 			t.Fatalf("%v\n%s", res.err, res.stdout)
 		}
-		wantErrors(t, h.messages(name), classTurnCap)
+		msgs := h.messages(name)
+		wantErrors(t, msgs, classTurnCap, protocolStopLine(t, msgs, classTurnCap))
 	})
 	t.Run("extend", func(t *testing.T) {
 		h := newHarness(t)
@@ -1758,7 +1774,8 @@ func TestAcceptedPassAndExtendCountTowardTheTurnCap(t *testing.T) {
 		if res.err == nil || res.err.Error() != classTurnCap || strings.Contains(res.stdout, "extend: ") {
 			t.Fatalf("%v\n%s", res.err, res.stdout)
 		}
-		wantErrors(t, h.messages(name), classTurnCap)
+		msgs := h.messages(name)
+		wantErrors(t, msgs, classTurnCap, protocolStopLine(t, msgs, classTurnCap))
 	})
 	t.Run("extend that refreshes nobody", func(t *testing.T) {
 		h := newHarness(t)
@@ -1770,7 +1787,7 @@ func TestAcceptedPassAndExtendCountTowardTheTurnCap(t *testing.T) {
 			t.Fatalf("%v\n%s", res.err, res.stdout)
 		}
 		msgs := h.messages(name)
-		wantErrors(t, msgs, errLine("zulu", classBadExtend, first(msgs, "alpha", kindExtend).Seq), classTurnCap)
+		wantErrors(t, msgs, errLine("zulu", classBadExtend, first(msgs, "alpha", kindExtend).Seq), classTurnCap, protocolStopLine(t, msgs, classTurnCap))
 	})
 }
 

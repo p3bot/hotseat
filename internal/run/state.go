@@ -67,9 +67,9 @@ func (e *engine) ensureInstructions(conv client.Conversation) error {
 	if err != nil {
 		return err
 	}
-	body := instructionBody(text, conv.Seat, conv.Ticket, conv.Prompts, conv.Custom)
-	if len(body) > bus.DefaultMaxBody {
-		return fmt.Errorf("instruction body exceeds %d bytes", bus.DefaultMaxBody)
+	body, err := fitInstructions(instructionBody(text, conv.Seat, conv.Ticket, conv.Prompts, conv.Custom))
+	if err != nil {
+		return err
 	}
 	return e.publishInstructions(body, conv.Roster)
 }
@@ -332,14 +332,14 @@ func alive(pid int) bool {
 
 func (e *engine) memberRow(name string) (*client.Member, error) {
 	res, err := e.call(e.root, "member", client.MemberRequest{Conversation: e.name, Name: name})
+	if refusedFor(err, bus.ReasonMemberMissing) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	if res.Outcome == bus.OutcomeRefused && res.Reason == bus.ReasonMemberMissing {
-		return nil, nil
-	}
-	if res.Outcome != bus.OutcomeOK || res.Member == nil {
-		return nil, fmt.Errorf("member %s: %s", name, res.Reason)
+	if res.Member == nil {
+		return nil, fmt.Errorf("member %s: ok with no member", name)
 	}
 	return res.Member, nil
 }
@@ -350,14 +350,14 @@ func (e *engine) readSession(name string) (string, error) {
 		Conversation: e.name,
 		Name:         &n,
 	})
+	if refusedFor(err, bus.ReasonMemberMissing) {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
-	if res.Outcome == bus.OutcomeRefused && res.Reason == bus.ReasonMemberMissing {
-		return "", nil
-	}
-	if res.Outcome != bus.OutcomeOK || res.Session == nil {
-		return "", fmt.Errorf("session %s: %s", name, res.Reason)
+	if res.Session == nil {
+		return "", fmt.Errorf("session %s: ok with no session", name)
 	}
 	return res.Session.Session, nil
 }
@@ -371,12 +371,8 @@ func (e *engine) writeStatus(name, status string, id procID) error {
 		req.PID = &p
 		req.Start = id.start
 	}
-	res, err := e.call(e.root, "member", req)
-	if err != nil {
+	if _, err := e.call(e.root, "member", req); err != nil {
 		return err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		return fmt.Errorf("member %s: %s", name, res.Reason)
 	}
 	e.setLocal(name, status)
 	e.out.record([2]string{"member", name}, [2]string{"status", status})
@@ -386,7 +382,7 @@ func (e *engine) writeStatus(name, status string, id procID) error {
 func (e *engine) storeSession(name, id string) error {
 	n := name
 	s := id
-	res, err := e.call(e.root, "session", client.SessionRequest{
+	_, err := e.call(e.root, "session", client.SessionRequest{
 		Conversation: e.name,
 		Name:         &n,
 		Session:      &s,
@@ -394,9 +390,6 @@ func (e *engine) storeSession(name, id string) error {
 	})
 	if err != nil {
 		return err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		return fmt.Errorf("session %s: %s", name, res.Reason)
 	}
 	e.setSession(name, id)
 	return nil
@@ -607,15 +600,24 @@ func (e *engine) takeTurn() turnTake {
 	return turnTaken
 }
 
+// noteHalt is the run's one stop point. It keeps the first error stop, publishes its stop error once,
+// and only then cancels, so the error is said before any member is stopped or waited for.
+// A later caller waits for that publish and returns its own err. Anything that is not an error stop returns the kept halt.
 func (e *engine) noteHalt(err error) error {
-	if err == nil || errors.Is(err, errStopped) || errors.Is(err, errDone) {
+	if !e.isErrorStop(err) {
 		return e.stopped()
 	}
+	e.say.Lock()
 	e.mu.Lock()
-	if e.haltErr == nil {
+	first := e.haltErr == nil
+	if first {
 		e.haltErr = err
 	}
 	e.mu.Unlock()
+	if first {
+		e.sayStop(err)
+	}
+	e.say.Unlock()
 	e.cancel()
 	return err
 }
@@ -645,7 +647,6 @@ func (e *engine) windDownLocked(class string) bool {
 		return false
 	}
 	e.windClass = class
-	e.idleIfQuietLocked()
 	return true
 }
 
@@ -655,10 +656,27 @@ func (e *engine) windingDown() bool {
 	return e.windClass != ""
 }
 
+// windErr is the stop of a wind-down that no stopping done closed: the protocol error it published.
 func (e *engine) windErr() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return errors.New(e.windClass)
+	return &protocolStop{class: e.windClass, seq: e.windSeq}
+}
+
+// publishWind publishes the error of the wind-down that class began, and keeps its seq for the stop.
+// Only then can the wind-down end, so its stop error always names a stored error.
+func (e *engine) publishWind(class string) error {
+	seq, err := e.publishErr("", class)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	if e.windClass == class && e.windSeq == 0 {
+		e.windSeq = seq
+		e.idleIfQuietLocked()
+	}
+	e.mu.Unlock()
+	return nil
 }
 
 // addInFlight counts a leftover process this run watches. A launch is counted where it starts.
@@ -677,7 +695,7 @@ func (e *engine) doneInFlight() {
 }
 
 func (e *engine) idleIfQuietLocked() {
-	if e.windClass != "" && e.inFlight == 0 && !e.idleClosed {
+	if e.windSeq != 0 && e.inFlight == 0 && !e.idleClosed {
 		close(e.idle)
 		e.idleClosed = true
 	}
@@ -688,7 +706,7 @@ func (e *engine) enforceMinimum() error {
 	if !e.windBelowMinimum() {
 		return nil
 	}
-	return e.publishErr("", classBelowMinimum)
+	return e.publishWind(classBelowMinimum)
 }
 
 // windBelowMinimum winds the run down when fewer roster members than the task minimum are live, and reports whether this call began it.

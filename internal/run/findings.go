@@ -16,7 +16,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/client"
 )
 
@@ -154,9 +153,6 @@ func (e *engine) loadRecords() error {
 	if err != nil {
 		return err
 	}
-	if res.Outcome != bus.OutcomeOK {
-		return fmt.Errorf("records: %s", res.Reason)
-	}
 	e.mu.Lock()
 	e.recs.add(res)
 	e.mu.Unlock()
@@ -169,9 +165,6 @@ func (e *engine) writeRecord(w client.RecordWrite) (client.Result, error) {
 	res, err := e.call(e.root, "record", client.RecordRequest{Holder: e.holder, Record: w})
 	if err != nil {
 		return res, err
-	}
-	if res.Outcome != bus.OutcomeOK {
-		return res, fmt.Errorf("record: %s", res.Reason)
 	}
 	e.mu.Lock()
 	e.recs.add(res)
@@ -187,7 +180,7 @@ func (e *engine) announce(l ledger, s client.Settle) error {
 	if proposer == "" {
 		return fmt.Errorf("announce finding %d: proposal %d is not in the transcript", s.Finding, s.Proposal)
 	}
-	_, err := e.send(post{
+	_, _, err := e.send(post{
 		kind: kindSettled,
 		from: fromRun,
 		to:   []string{fromOwner},
@@ -703,10 +696,7 @@ func (e *engine) judgeTurn(d *discussion, speaker string, w window) (string, err
 	case turnWindingDown:
 		return "", nil
 	case turnCapped:
-		if err := e.publishErr("", classTurnCap); err != nil {
-			return "", err
-		}
-		return "", e.noteHalt(errors.New(classTurnCap))
+		return "", e.haltProtocol("", classTurnCap, false)
 	}
 	e.out.record([2]string{"pass", to}, [2]string{"from", speaker})
 	return to, nil
@@ -746,10 +736,7 @@ func (e *engine) actingOrStop() (string, error) {
 	if err != nil || seat != "" {
 		return seat, err
 	}
-	if err := e.publishErr("", classNoBackup); err != nil {
-		return "", err
-	}
-	return "", e.noteHalt(errors.New(classNoBackup))
+	return "", e.haltProtocol("", classNoBackup, false)
 }
 
 // fix launches the finder to apply the agreed proposal and writes the fix record for the first counted fixed.
@@ -785,10 +772,7 @@ func (e *engine) fix(finding int64, finder string, proposal int64) error {
 	if e.quiet() {
 		return e.halting()
 	}
-	if err := e.protocolErr(seat, classNoFix, 0); err != nil {
-		return err
-	}
-	return e.noteHalt(errors.New(classNoFix))
+	return e.haltProtocol(seat, classNoFix, true)
 }
 
 // fixed writes the fix record for a counted fixed and prints its status.
@@ -847,10 +831,7 @@ func (e *engine) stall(d *discussion) (bool, error) {
 				}
 				continue
 			}
-			if err := e.protocolErr(seat, classNoDecision, 0); err != nil {
-				return false, err
-			}
-			return false, e.noteHalt(errors.New(classNoDecision))
+			return false, e.haltProtocol(seat, classNoDecision, true)
 		}
 		if len(deadlocks) == 1 {
 			e.out.record([2]string{"deadlock", seqText(d.finding)}, [2]string{"from", seat})
@@ -885,10 +866,7 @@ func (e *engine) extend(d *discussion, seat string, ext client.Message) (bool, e
 	case turnWindingDown:
 		return false, nil
 	case turnCapped:
-		if err := e.publishErr("", classTurnCap); err != nil {
-			return false, err
-		}
-		return false, e.noteHalt(errors.New(classTurnCap))
+		return false, e.haltProtocol("", classTurnCap, false)
 	}
 	if len(refreshed) == 0 {
 		return true, nil
@@ -932,10 +910,7 @@ func (e *engine) report(d *discussion) error {
 		if e.quiet() {
 			return e.halting()
 		}
-		if err := e.protocolErr(seat, classNoReport, 0); err != nil {
-			return err
-		}
-		return e.noteHalt(errors.New(classNoReport))
+		return e.haltProtocol(seat, classNoReport, true)
 	}
 }
 

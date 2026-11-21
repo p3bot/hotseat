@@ -35,6 +35,12 @@
 // A continuation of a conversation another conductor holds waits once for
 // that lease to run out.
 //
+// A run that held its lease and stops on an error publishes one error to
+// owner whose body is its stop class, stopped by protocol, refusal, command,
+// bus, lease, signal, or run, before it waits for any member or releases the
+// lease. Each cause is typed where it enters run, and the first one is the
+// stop. Every error after a signal is its fallout, so that stop is the signal.
+//
 // A member row stores the pid and the host's start token for that process,
 // read right after the launch. A continuation adopts a live process only when
 // its token equals the stored one, so a reused pid is never adopted and no

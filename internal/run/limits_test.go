@@ -154,6 +154,8 @@ func TestContinueBelowTaskMinimumWithoutDoneFails(t *testing.T) {
 	if conv, _ := h.conv("kept"); conv.Status == "closed" {
 		t.Fatal("closed")
 	}
+	// The roster check refuses the request as it does on create, so no stop error is said.
+	h.wantNoStopError("kept")
 	if n := h.launchCount(); n != 0 {
 		t.Fatalf("launches %d", n)
 	}
@@ -307,9 +309,7 @@ func TestMemberLostBelowMinimumLetsTheOtherFinishAndStops(t *testing.T) {
 		t.Fatalf("launches alpha %d bravo %d", a, b)
 	}
 	msgs := h.messages(name)
-	if countKind(msgs, kindError) != 2 || countBody(msgs, classBelowMinimum) != 1 || countBody(msgs, classProcessExit) != 1 {
-		t.Fatalf("msgs %+v", msgs)
-	}
+	wantErrors(t, msgs, errLine("alpha", classProcessExit, 0), classBelowMinimum, protocolStopLine(t, msgs, classBelowMinimum))
 	if conv, _ := h.conv(name); conv.Status == "closed" {
 		t.Fatal("closed")
 	}
