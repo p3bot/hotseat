@@ -146,6 +146,7 @@ func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip 
 // recordLaunch writes the started process's rows, waits for it, and records how it ended.
 func (e *engine) recordLaunch(pctx context.Context, name string, kind launchKind, a agent, cmd *exec.Cmd, stdout *bytes.Buffer) error {
 	pid := cmd.Process.Pid
+	proc := launchedProc(pid)
 	// Launches have no fence of their own: the fenced row write below kills a process a stale run started.
 	row, err := e.memberRow(name)
 	if err != nil {
@@ -154,14 +155,14 @@ func (e *engine) recordLaunch(pctx context.Context, name string, kind launchKind
 		return err
 	}
 	if row == nil {
-		if err := e.writeStatus(name, statusLaunched, int64(pid), true); err != nil {
+		if err := e.writeStatus(name, statusLaunched, proc); err != nil {
 			_ = killGroup(pid)
 			_ = cmd.Wait()
 			return err
 		}
 	}
 	if kind != launchBoot {
-		if err := e.writeStatus(name, statusRunning, int64(pid), true); err != nil {
+		if err := e.writeStatus(name, statusRunning, proc); err != nil {
 			_ = killGroup(pid)
 			_ = cmd.Wait()
 			return err
@@ -173,6 +174,10 @@ func (e *engine) recordLaunch(pctx context.Context, name string, kind launchKind
 		exitLine = append(exitLine, [2]string{"code", fmt.Sprintf("%d", code)})
 	}
 	e.out.record(exitLine...)
+	// Every write a stale run makes is refused, so the next holder records this member.
+	if e.leaseLost() {
+		return e.stopped()
+	}
 	// A zero exit is the member's result, including when the run is already closing.
 	if waitErr == nil {
 		keys, err := e.locator(a.module)
@@ -189,17 +194,17 @@ func (e *engine) recordLaunch(pctx context.Context, name string, kind launchKind
 		if err := e.storeSession(name, id); err != nil {
 			return err
 		}
-		return e.writeStatus(name, statusExited, 0, false)
+		return e.writeStatus(name, statusExited, procID{})
 	}
-	if e.child.Err() != nil && errors.Is(pctx.Err(), context.Canceled) {
+	if errors.Is(context.Cause(pctx), errLimit) {
+		return e.markTimeout(name, classProcessLimit)
+	}
+	if e.child.Err() != nil && pctx.Err() != nil {
 		// The run killed the process. timed-out is not a live pid, and this path does not hand off.
 		if err := e.markStopped(name); err != nil {
 			return err
 		}
 		return errStopped
-	}
-	if errors.Is(pctx.Err(), context.DeadlineExceeded) {
-		return e.markTimeout(name, classProcessLimit)
 	}
 	return e.markTimeout(name, classProcessExit)
 }
@@ -279,39 +284,62 @@ func (e *engine) startUnlessStopping(cmd *exec.Cmd) (bool, error) {
 }
 
 // processCtx returns the context of one member process and its release, which the caller calls after the process is waited.
-// The run's stop cancels it at once, except for the sender of the stopping done, which gets graceFor(name) to exit.
-// It derives from the caller's context, so a signal still kills the process at once.
+// The context derives from the caller's, so a signal still kills the process at once. guard decides every other end.
 func (e *engine) processCtx(name string) (context.Context, func()) {
-	ctx, cancel := context.WithCancel(e.root)
-	pctx, limitCancel := ctx, context.CancelFunc(func() {})
-	if e.limit > 0 {
-		pctx, limitCancel = context.WithTimeout(ctx, e.limit)
-	}
+	pctx, cancel := context.WithCancelCause(e.root)
 	exited := make(chan struct{})
 	watched := make(chan struct{})
 	go func() {
 		defer close(watched)
-		select {
-		case <-exited:
-			return
-		case <-e.child.Done():
+		if cause := e.guard(name, exited); cause != nil {
+			cancel(cause)
 		}
-		if d := e.graceFor(name); d > 0 {
-			timer := time.NewTimer(d)
-			defer timer.Stop()
-			select {
-			case <-exited:
-			case <-pctx.Done():
-			case <-timer.C:
-			}
-		}
-		cancel()
 	}()
 	return pctx, func() {
 		close(exited)
 		<-watched
-		limitCancel()
-		cancel()
+		cancel(nil)
+	}
+}
+
+// guard waits for a member process to exit and returns why the run ends it first: errLimit at the process limit,
+// or errStopped once the run stops, after graceFor(name) for the sender of the stopping done.
+// It returns nil when the process exits, and nil once the lease is lost, because a stale run kills no member.
+func (e *engine) guard(name string, exited <-chan struct{}) error {
+	var limit, grace <-chan time.Time
+	if e.limit > 0 {
+		t := time.NewTimer(e.limit)
+		defer t.Stop()
+		limit = t.C
+	}
+	stopping := e.child.Done()
+	for {
+		select {
+		case <-exited:
+			return nil
+		case <-limit:
+			if e.leaseLost() {
+				return nil
+			}
+			return errLimit
+		case <-grace:
+			if e.leaseLost() {
+				return nil
+			}
+			return errStopped
+		case <-stopping:
+			stopping = nil
+			if e.leaseLost() {
+				return nil
+			}
+			d := e.graceFor(name)
+			if d <= 0 {
+				return errStopped
+			}
+			t := time.NewTimer(d)
+			defer t.Stop()
+			grace = t.C
+		}
 	}
 }
 
@@ -327,7 +355,7 @@ func (e *engine) graceFor(name string) time.Duration {
 
 // markStopped records a member the run killed while stopping. The stop is not a member failure.
 func (e *engine) markStopped(name string) error {
-	return e.writeStatus(name, statusTimedOut, 0, false)
+	return e.writeStatus(name, statusTimedOut, procID{})
 }
 
 // markTimeout records a member failure and applies the task minimum.
@@ -345,7 +373,7 @@ func (e *engine) recordTimeout(name, class string) error {
 func (e *engine) timeout(name, class string, floor bool) error {
 	// The acting check has to see the old status. A failed read still records the death.
 	acting, actErr := e.isActing(name)
-	if err := e.writeStatus(name, statusTimedOut, 0, false); err != nil {
+	if err := e.writeStatus(name, statusTimedOut, procID{}); err != nil {
 		return err
 	}
 	below := floor && e.windBelowMinimum()

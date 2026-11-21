@@ -223,12 +223,22 @@ func (h *harness) leaseAs(conv, op, holder string) client.Result {
 	return res
 }
 
-// setMember writes name's status, and its pid when pid is set, as an earlier run process did.
+// setMember writes name's status, and its pid with the start token read now when pid is set, as an earlier run process did.
 func (h *harness) setMember(conv, name, status string, pid *int64) client.Result {
+	h.t.Helper()
+	start := ""
+	if pid != nil {
+		start, _ = startToken(int(*pid))
+	}
+	return h.setMemberProc(conv, name, status, pid, start)
+}
+
+// setMemberProc writes name's status, pid, and start token as given.
+func (h *harness) setMemberProc(conv, name, status string, pid *int64, start string) client.Result {
 	h.t.Helper()
 	var res client.Result
 	h.conduct(conv, func(holder string) {
-		res = h.do("member", client.MemberRequest{Conversation: conv, Name: name, Status: &status, PID: pid, Holder: holder})
+		res = h.do("member", client.MemberRequest{Conversation: conv, Name: name, Status: &status, PID: pid, Start: start, Holder: holder})
 	})
 	return res
 }
@@ -1858,7 +1868,7 @@ func TestRestartDeadPidTimesOutBeforeLaunchAndLivePidIsWaited(t *testing.T) {
 	}
 }
 
-func TestProcessStartMatchesALaunchRecordedAfterIt(t *testing.T) {
+func TestSameLaunchIsAnExactStartTokenMatch(t *testing.T) {
 	child := exec.Command("sleep", "30")
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
@@ -1868,24 +1878,25 @@ func TestProcessStartMatchesALaunchRecordedAfterIt(t *testing.T) {
 		_ = child.Process.Kill()
 		_, _ = child.Process.Wait()
 	})
-	old := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
-	if sameLaunch(pid, old) {
-		t.Fatal("process started after the launch matched it")
+	id := launchedProc(pid)
+	if id.start == "" {
+		t.Skip("this platform has no start token")
+	}
+	if !sameLaunch(id) {
+		t.Fatal("the process did not match its own token")
+	}
+	for _, other := range []procID{{pid: pid}, {pid: pid, start: id.start + "0"}, {pid: pid, start: "other/" + id.start}} {
+		if sameLaunch(other) {
+			t.Fatalf("matched %+v", other)
+		}
 	}
 	if !alive(pid) {
 		t.Fatal("match check signalled the process")
 	}
-	if !sameLaunch(pid, time.Now().UTC().Format(time.RFC3339Nano)) {
-		t.Fatal("process did not match a launch recorded after it started")
-	}
-	start, ok := processStart(pid)
-	if !ok || time.Since(start) > 30*time.Second || start.After(time.Now().Add(launchSkew)) {
-		t.Fatalf("start %v ok %v", start, ok)
-	}
 }
 
-func TestResumeDoesNotSignalAProcessStartedAfterLaunch(t *testing.T) {
-	h := newHarnessClock(t, func() time.Time { return time.Now().Add(-2 * time.Hour) })
+func TestResumeDoesNotAdoptOrSignalALiveProcessWhoseStartTokenDiffers(t *testing.T) {
+	h := newHarness(t)
 	child := exec.Command("sleep", "30")
 	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := child.Start(); err != nil {
@@ -1897,6 +1908,10 @@ func TestResumeDoesNotSignalAProcessStartedAfterLaunch(t *testing.T) {
 		_, _ = child.Process.Wait()
 	})
 	live := int64(pid)
+	token, ok := startToken(pid)
+	if !ok {
+		t.Skip("this platform has no start token")
+	}
 	res := h.do("create", client.CreateRequest{
 		Name: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha",
 		Directory: h.dir, Roster: []string{"alpha"},
@@ -1905,8 +1920,7 @@ func TestResumeDoesNotSignalAProcessStartedAfterLaunch(t *testing.T) {
 		t.Fatal(res.Reason)
 	}
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha"})
-	launched := statusLaunched
-	h.setMember("kept", "alpha", launched, &live)
+	h.setMemberProc("kept", "alpha", statusLaunched, &live, token+"1")
 	h.publish("kept", "alpha", "done", "yes", nil)
 	cfg := h.base()
 	cfg.Conversation = "kept"
@@ -1921,7 +1935,7 @@ func TestResumeDoesNotSignalAProcessStartedAfterLaunch(t *testing.T) {
 		t.Fatal(err, stdout, stderr)
 	}
 	if !alive(pid) {
-		t.Fatal("signalled a process that started after the launch")
+		t.Fatal("signalled a process whose start token differs")
 	}
 	if h.member("kept", "alpha").Status != statusTimedOut {
 		t.Fatalf("status %s", h.member("kept", "alpha").Status)
@@ -1929,8 +1943,8 @@ func TestResumeDoesNotSignalAProcessStartedAfterLaunch(t *testing.T) {
 	if countBody(h.messages("kept"), classProcessExit) == 0 {
 		t.Fatalf("msgs %+v", h.messages("kept"))
 	}
-	if strings.Contains(stdout+stderr, fmt.Sprint(pid)) {
-		t.Fatalf("pid leaked\n%s\n%s", stdout, stderr)
+	if strings.Contains(stdout+stderr, fmt.Sprint(pid)) || strings.Contains(stdout+stderr, token) {
+		t.Fatalf("pid or token leaked\n%s\n%s", stdout, stderr)
 	}
 	conv, _ := h.conv("kept")
 	if conv.Status != "closed" {

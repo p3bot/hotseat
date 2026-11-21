@@ -14,7 +14,7 @@ import (
 )
 
 // Register sets the registered time from the bus clock.
-// Status becomes registered only when the row is launched.
+// Status becomes registered only when the row is launched. The route returns the public row, with no pid or start.
 func (s *Service) Register(ctx context.Context, conv, name string) (Result, error) {
 	if err := requireConversation(conv); err != nil {
 		return asRefused(err)
@@ -35,11 +35,12 @@ func (s *Service) Register(ctx context.Context, conv, name string) (Result, erro
 }
 
 // Member reads one row when status and pid are both absent.
-// A pid without a status is refused and writes nothing.
+// A pid without a status, or a start without a pid, is refused and writes nothing.
 // launched inserts a row. running, exited, and timed-out update an existing row.
-// pid is stored only on those writes. The result does not carry a session id.
+// pid and start are stored only on those writes, and a pid write without start clears the stored start.
+// start is the caller's opaque start token for the pid. The result does not carry a session id.
 // A write requires holder to hold the conversation lease. A read ignores holder.
-func (s *Service) Member(ctx context.Context, conv, name string, status *string, pid int64, hasPID bool, holder *string) (Result, error) {
+func (s *Service) Member(ctx context.Context, conv, name string, status *string, pid int64, hasPID bool, start *string, holder *string) (Result, error) {
 	if err := requireConversation(conv); err != nil {
 		return asRefused(err)
 	}
@@ -51,6 +52,16 @@ func (s *Service) Member(ctx context.Context, conv, name string, status *string,
 	}
 	if status == nil && hasPID {
 		return refused(ReasonPIDNeedsStatus), nil
+	}
+	var token string
+	if start != nil {
+		if !validStart(*start) {
+			return refused(ReasonStart), nil
+		}
+		if !hasPID {
+			return refused(ReasonStartNeedsPID), nil
+		}
+		token = *start
 	}
 	var fenceBy string
 	if status != nil {
@@ -77,9 +88,9 @@ func (s *Service) Member(ctx context.Context, conv, name string, status *string,
 	case status == nil:
 		m, err = s.store.Member(ctx, conv, name)
 	case *status == store.MemberLaunched:
-		m, err = s.store.LaunchMember(ctx, conv, name, s.now(), pid, hasPID)
+		m, err = s.store.LaunchMember(ctx, conv, name, s.now(), pid, hasPID, token)
 	default:
-		m, err = s.store.SetMemberStatus(ctx, conv, name, *status, pid, hasPID)
+		m, err = s.store.SetMemberStatus(ctx, conv, name, *status, pid, hasPID, token)
 	}
 	if err != nil {
 		return s.fail(err, "member")
@@ -87,7 +98,7 @@ func (s *Service) Member(ctx context.Context, conv, name string, status *string,
 	return Result{Outcome: OutcomeOK, Member: &m}, nil
 }
 
-// Members returns roster rows in roster order, without session ids or pids.
+// Members returns roster rows in roster order, without session ids, pids, or starts.
 func (s *Service) Members(ctx context.Context, conv string) (Result, error) {
 	if err := requireConversation(conv); err != nil {
 		return asRefused(err)

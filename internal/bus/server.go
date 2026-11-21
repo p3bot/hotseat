@@ -502,6 +502,7 @@ func (s *server) handleMember(w http.ResponseWriter, r *http.Request) {
 		Name         *string         `json:"name"`
 		Status       *string         `json:"status"`
 		PID          json.RawMessage `json:"pid"`
+		Start        *string         `json:"start"`
 		Holder       *string         `json:"holder"`
 	}
 	if !s.decode(w, r, "member", "", start, &req) {
@@ -518,7 +519,7 @@ func (s *server) handleMember(w http.ResponseWriter, r *http.Request) {
 		s.finish(w, "member", conv, start, res, rerr)
 		return
 	}
-	res, err := s.svc.Member(r.Context(), conv, *req.Name, req.Status, pid, hasPID, req.Holder)
+	res, err := s.svc.Member(r.Context(), conv, *req.Name, req.Status, pid, hasPID, req.Start, req.Holder)
 	s.finish(w, "member", conv, start, res, err)
 }
 
@@ -761,9 +762,11 @@ type wireMemberPublic struct {
 	Registered string `json:"registered"`
 }
 
+// wireMember is a member row. PID and Start are set only on a one-row member read or write.
 type wireMember struct {
 	wireMemberPublic
-	PID *int64 `json:"pid,omitempty"`
+	PID   *int64  `json:"pid,omitempty"`
+	Start *string `json:"start,omitempty"`
 }
 
 type wireSession struct {
@@ -800,7 +803,11 @@ func toWire(op string, res Result) wire {
 			more, rev := res.More, res.Rev
 			out.More = &more
 			out.Rev = &rev
-		case "register", "member":
+		case "register":
+			out.Member = wirePtr(res.Member, func(m store.Member) wireMember {
+				return wireMember{wireMemberPublic: publicMember(m)}
+			})
+		case "member":
 			out.Member = wirePtr(res.Member, toWireMember)
 		case "members":
 			out.Members = wireList(res.Members, publicMember)
@@ -864,6 +871,10 @@ func toWireMember(m store.Member) wireMember {
 	if m.HasPID {
 		pid := m.PID
 		out.PID = &pid
+	}
+	if m.Start != "" {
+		start := m.Start
+		out.Start = &start
 	}
 	return out
 }

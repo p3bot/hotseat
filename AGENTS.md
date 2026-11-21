@@ -66,12 +66,12 @@ Note: lint is not clean on main. The existing findings are unchecked `Close` err
 - One writer. Seq order is commit order only because of it. The flock is on `hotseat.db.lock`, not the database inode, because on macOS flock shares SQLite's lock table and closing any descriptor drops every lock.
 - DSN: `busy_timeout=0` (another holder fails this process instead of stalling it), `journal_mode=WAL`, `locking_mode=EXCLUSIVE` (checked after open), `foreign_keys=1`, `synchronous=FULL` (commit returns after the write is durable), `_txlock=immediate`. `SetMaxOpenConns(1)`.
 - `Open` resolves the directory to an absolute path first, chmods it `0700`, refuses symlinks for the database, wal, shm, and lock, and opens the lock with `O_NOFOLLOW` and mode `0600`.
-- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. The version-1 shape includes the decision record tables `sets`, `set_findings`, `groupings`, `drops`, `settles`, `fixes`, `halts`, and `stops`. A schema change means deleting the database.
+- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. The version-1 shape includes the members `start` column, the host start token stored beside `pid`, and the decision record tables `sets`, `set_findings`, `groupings`, `drops`, `settles`, `fixes`, `halts`, and `stops`. A schema change means deleting the database.
 - A write that changes nothing (idempotent publish, a record replay, close of a closed conversation) returns `errNoChange`, so the transaction rolls back.
 - Store sentinels are `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, `ErrLaunched`, `ErrReplyTarget`, `ErrRecordReference`, `ErrKeptDropped`, `ErrNotKept`, and `ErrFixDismissed`. Wrap with `%w` when the caller branches on the cause.
 - Refusal text is a `bus.Reason*` constant. A new reason is a constant beside the others, plus a test whose name states the rule.
-- Session ids, pids, the token, and lease holders stay off read, wait, list, member list, the page, logs, status lines, and prompts. A holder is also off `/lease` `get`. Decision records stay off read, wait, watch, list, member list, the page, and logs.
-- Conductor leases live in `Service` memory under `s.mu`, never in the store. A fenced write (`/record`, `/member` with a status, `/session` with a session, `/publish` with a holder) checks the lease and writes under that one lock. A launch has no fence of its own: `recordLaunch` writes a fenced member row right after `cmd.Start` and kills the process group when it is refused.
+- Session ids, pids, member start tokens, the token, and lease holders stay off read, wait, list, member list, `/register`, the page, logs, status lines, and prompts. Pids and start tokens appear only on a one-row `/member` read or write. A holder is also off `/lease` `get`. Decision records stay off read, wait, watch, list, member list, the page, and logs.
+- Conductor leases live in `Service` memory under `s.mu`, never in the store. A fenced write (`/record`, `/member` with a status, `/session` with a session, `/publish` with a holder) checks the lease and writes under that one lock. A launch has no fence of its own: `recordLaunch` writes a fenced member row right after `cmd.Start` and kills the process group when it is refused. That is the only member a lost lease kills. `run` then waits for the members it launched and stops watching the ones it adopted, and the next holder adopts them by start token.
 - `from` is caller-supplied. The token does not authenticate the sender.
 - The page listens on loopback only, because it holds the bus token.
 - CLI stdout is `key: value`, and a value with a newline is `key <<N` and then those bytes. Usage errors go to stderr with no stdout. Commands set `SilenceUsage` and `SilenceErrors`. SIGINT and SIGTERM exit `128+signal`, read before the error path.
@@ -85,9 +85,10 @@ Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/impleme
 | File | Owns |
 | --- | --- |
 | `loop.go` | Transcript watch, turns, stop on `done` |
-| `lease.go` | Conductor lease: holder, acquire, renewal, release, lost-lease stop |
+| `lease.go` | Conductor lease: holder, acquire, renewal, release, lost-lease stop that leaves members running |
 | `launch.go` | Member processes, launch cap, handoff |
-| `state.go` | Member rows, leftovers on resume, backup, prompts |
+| `state.go` | Member rows, process identity, leftovers on resume, backup, prompts |
+| `proc_*.go` | Per-platform zombie check and start token |
 | `findings.go` | Finding protocol: launches, judging, prompts |
 | `discussion.go` | Live state of one finding. No bus or process |
 | `ledger.go` | Pure reading of the transcript and the decision records |

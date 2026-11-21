@@ -117,6 +117,9 @@ type engine struct {
 	root   context.Context
 	child  context.Context
 	cancel context.CancelFunc
+	// held ends with cause errLeaseLost when the lease is lost, or when root ends.
+	held     context.Context
+	loseHeld context.CancelCauseFunc
 
 	cfg       Config
 	addr      string
@@ -241,10 +244,13 @@ func newEngine(ctx context.Context, cfg Config, p pace, stdout, stderr io.Writer
 		return nil, err
 	}
 	child, cancel := context.WithCancel(ctx)
+	held, loseHeld := context.WithCancelCause(ctx)
 	e := &engine{
 		root:         ctx,
 		child:        child,
 		cancel:       cancel,
+		held:         held,
+		loseHeld:     loseHeld,
 		cfg:          cfg,
 		addr:         addr,
 		token:        token,
@@ -273,6 +279,7 @@ func newEngine(ctx context.Context, cfg Config, p pace, stdout, stderr io.Writer
 }
 
 func (e *engine) execute() error {
+	defer e.loseHeld(nil)
 	defer e.cancel()
 	defer e.endLease()
 	var err error

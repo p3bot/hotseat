@@ -210,16 +210,7 @@ func writeVersion1(t *testing.T, messages ...string) string {
 	stmts = append(stmts,
 		`INSERT INTO messages (conversation, time, sender, recipients, body, txid, kind)
 			VALUES ('job', 't', 'alice', '[]', 'keep', 'k', 'say')`,
-		`CREATE TABLE members (
-			conversation TEXT NOT NULL REFERENCES conversations(name),
-			name TEXT NOT NULL,
-			launched TEXT NOT NULL,
-			registered TEXT NOT NULL,
-			status TEXT NOT NULL,
-			session TEXT NOT NULL,
-			pid INTEGER,
-			PRIMARY KEY (conversation, name)
-		) STRICT`,
+		schemaStmt(t, "members"),
 	)
 	stmts = append(stmts, recordStmts(t)...)
 	for _, stmt := range stmts {
@@ -238,17 +229,22 @@ func recordStmts(t *testing.T) []string {
 	t.Helper()
 	var out []string
 	for _, table := range recordTables {
-		prefix := "CREATE TABLE IF NOT EXISTS " + table + " ("
-		for _, stmt := range schemaStmts {
-			if strings.HasPrefix(stmt, prefix) {
-				out = append(out, stmt)
-			}
-		}
-	}
-	if len(out) != len(recordTables) {
-		t.Fatalf("found %d record statements for %d tables", len(out), len(recordTables))
+		out = append(out, schemaStmt(t, table))
 	}
 	return out
+}
+
+// schemaStmt returns the statement this binary creates table with.
+func schemaStmt(t *testing.T, table string) string {
+	t.Helper()
+	prefix := "CREATE TABLE IF NOT EXISTS " + table + " ("
+	for _, stmt := range schemaStmts {
+		if strings.HasPrefix(stmt, prefix) {
+			return stmt
+		}
+	}
+	t.Fatalf("no statement creates %s", table)
+	return ""
 }
 
 func TestOpenRejectsVersion1WithoutReOrBothMessageKeys(t *testing.T) {

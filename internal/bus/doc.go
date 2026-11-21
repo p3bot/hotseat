@@ -37,7 +37,7 @@
 //	POST /list     {}
 //	POST /messages {"limit","before"?}
 //	POST /register {"conversation","name"}
-//	POST /member   {"conversation","name","status"?,"pid"?,"holder"?}
+//	POST /member   {"conversation","name","status"?,"pid"?,"start"?,"holder"?}
 //	POST /session  {"conversation","name"?,"session"?,"holder"?}
 //	POST /members  {"conversation"}
 //	POST /record   {"conversation","record",...,"holder"}
@@ -128,12 +128,16 @@
 // all wakes every named waiter except the sender.
 //
 // register sets the registered time. The status becomes registered only when
-// the row is launched. member inserts launched and updates running, exited,
-// and timed-out. A pid without a status is refused and writes nothing. A call
-// with neither returns the row. The member response has no session id.
-// members returns name, launched time, registered time, and status, in roster
-// order, with no session id and no pid. session stores and returns session
-// ids for its caller. Those ids stay off read, wait, list, and members.
+// the row is launched. It returns the public row: name, status, launched time,
+// and registered time, with no pid and no start. member inserts launched and
+// updates running, exited, and timed-out. A pid without a status, or a start
+// without a pid, is refused and writes nothing. start is the caller's opaque
+// start token for that pid, stored beside it and replaced or cleared with it.
+// A call with neither status nor pid returns the row, including pid and start.
+// The member response has no session id. members returns name, launched time,
+// registered time, and status, in roster order, with no session id, no pid,
+// and no start. session stores and returns session ids for its caller. Those
+// ids stay off read, wait, list, and members.
 //
 // record writes one of hotseat run's decision records and records reads them.
 // Neither has a command. Records are absent from read, wait, watch, list,

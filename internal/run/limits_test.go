@@ -553,7 +553,7 @@ func TestActingSeatLostBelowMinimumQueuesNoHandoff(t *testing.T) {
 	h := newHarness(t)
 	e, _ := h.closingEngine()
 	e.minimum = 2
-	if err := e.writeStatus("alpha", statusLaunched, int64(os.Getpid()), true); err != nil {
+	if err := e.writeStatus("alpha", statusLaunched, launchedProc(os.Getpid())); err != nil {
 		t.Fatal(err)
 	}
 	e.setLocal("alpha", statusRunning)

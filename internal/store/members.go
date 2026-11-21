@@ -17,8 +17,8 @@ import (
 // A second launch of that name returns ErrLaunched and writes nothing.
 // A name outside the roster returns ErrNotRoster and writes nothing.
 // A missing conversation returns ErrNotFound and writes nothing.
-// pid is stored only when hasPID is set. The registered time stays empty.
-func (s *Store) LaunchMember(ctx context.Context, conv, name, now string, pid int64, hasPID bool) (Member, error) {
+// pid and its start token are stored only when hasPID is set, and an empty start stores none. The registered time stays empty.
+func (s *Store) LaunchMember(ctx context.Context, conv, name, now string, pid int64, hasPID bool, start string) (Member, error) {
 	var out Member
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
 		if err := requireRosterName(ctx, tx, conv, name); err != nil {
@@ -31,19 +31,22 @@ func (s *Store) LaunchMember(ctx context.Context, conv, name, now string, pid in
 		if found {
 			return ErrLaunched
 		}
-		var pidVal any
+		var pidVal, startVal any
 		if hasPID {
 			pidVal = pid
+			startVal = nullable(start)
+		} else {
+			pid, start = 0, ""
 		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO members (
-				conversation, name, launched, registered, status, session, pid
-			) VALUES (?, ?, ?, '', ?, '', ?)`,
-			conv, name, now, MemberLaunched, pidVal)
+				conversation, name, launched, registered, status, session, pid, start
+			) VALUES (?, ?, ?, '', ?, '', ?, ?)`,
+			conv, name, now, MemberLaunched, pidVal, startVal)
 		if err != nil {
 			return err
 		}
-		out = Member{Name: name, Status: MemberLaunched, Launched: now, PID: pid, HasPID: hasPID}
+		out = Member{Name: name, Status: MemberLaunched, Launched: now, PID: pid, HasPID: hasPID, Start: start}
 		return nil
 	})
 	if err != nil {
@@ -53,9 +56,10 @@ func (s *Store) LaunchMember(ctx context.Context, conv, name, now string, pid in
 }
 
 // SetMemberStatus updates an existing row to running, exited, or timed-out.
-// pid replaces the stored pid when hasPID is set, and is left unchanged otherwise.
+// pid and start replace the stored pid and start token when hasPID is set, and are left unchanged otherwise.
+// An empty start with a pid clears the stored token, because it belonged to the old pid.
 // A missing row returns ErrNotMember and writes nothing.
-func (s *Store) SetMemberStatus(ctx context.Context, conv, name, status string, pid int64, hasPID bool) (Member, error) {
+func (s *Store) SetMemberStatus(ctx context.Context, conv, name, status string, pid int64, hasPID bool, start string) (Member, error) {
 	var out Member
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
 		if err := requireRosterName(ctx, tx, conv, name); err != nil {
@@ -70,11 +74,12 @@ func (s *Store) SetMemberStatus(ctx context.Context, conv, name, status string, 
 		}
 		if hasPID {
 			_, err = tx.ExecContext(ctx, `
-				UPDATE members SET status = ?, pid = ?
+				UPDATE members SET status = ?, pid = ?, start = ?
 				WHERE conversation = ? AND name = ?`,
-				status, pid, conv, name)
+				status, pid, nullable(start), conv, name)
 			cur.PID = pid
 			cur.HasPID = true
+			cur.Start = start
 		} else {
 			_, err = tx.ExecContext(ctx, `
 				UPDATE members SET status = ?
@@ -167,7 +172,7 @@ func (s *Store) Members(ctx context.Context, conv string) ([]Member, error) {
 			return err
 		}
 		out, err = queryRows(ctx, tx, scanMember, `
-			SELECT name, launched, registered, status, pid
+			SELECT name, launched, registered, status, pid, start
 			FROM members WHERE conversation = ?`, conv)
 		if err != nil {
 			return err
@@ -294,7 +299,7 @@ func rosterOf(ctx context.Context, tx *sql.Tx, conv string) ([]string, error) {
 
 func memberByName(ctx context.Context, tx *sql.Tx, conv, name string) (Member, bool, error) {
 	m, err := scanMember(tx.QueryRowContext(ctx, `
-		SELECT name, launched, registered, status, pid
+		SELECT name, launched, registered, status, pid, start
 		FROM members WHERE conversation = ? AND name = ?`,
 		conv, name))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -306,18 +311,28 @@ func memberByName(ctx context.Context, tx *sql.Tx, conv, name string) (Member, b
 	return m, true, nil
 }
 
-// scanMember reads name, launched, registered, status, and pid.
+// scanMember reads name, launched, registered, status, pid, and start.
 func scanMember(row rowScanner) (Member, error) {
 	var m Member
 	var pid sql.NullInt64
-	if err := row.Scan(&m.Name, &m.Launched, &m.Registered, &m.Status, &pid); err != nil {
+	var start sql.NullString
+	if err := row.Scan(&m.Name, &m.Launched, &m.Registered, &m.Status, &pid, &start); err != nil {
 		return Member{}, err
 	}
 	if pid.Valid {
 		m.PID = pid.Int64
 		m.HasPID = true
 	}
+	m.Start = start.String
 	return m, nil
+}
+
+// nullable stores an empty string as NULL.
+func nullable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func orderByRoster[T any](roster []string, rows []T, name func(T) string) []T {

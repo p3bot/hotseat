@@ -29,8 +29,20 @@
 // conversation until it exits. It mints a random holder at start, renews the
 // lease in the background, and sends the holder on every record, member
 // status, and session write and every publish. A refused renewal, or a write
-// refused for want of the lease, stops the run. A continuation of a
-// conversation another conductor holds waits once for that lease to run out.
+// refused for want of the lease, stops the run without killing a member: it
+// waits for the members it launched, stops watching the members it adopted,
+// writes nothing more, and leaves every member for the next holder to adopt.
+// A continuation of a conversation another conductor holds waits once for
+// that lease to run out.
+//
+// A member row stores the pid and the host's start token for that process,
+// read right after the launch. A continuation adopts a live process only when
+// its token equals the stored one, so a reused pid is never adopted and no
+// host time is compared with a bus time.
+//
+// Only the holder enforces the process limit. A run that lost its lease or
+// died enforces none, and a continuation gives each process it adopts the
+// full limit, counted from adoption.
 //
 // Every prompt names the exact --re for the kind it asks for. A message whose
 // re is present and is not the message run expects is rejected under its

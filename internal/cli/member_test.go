@@ -42,7 +42,7 @@ func TestPublishRequiresKind(t *testing.T) {
 	}
 }
 
-func TestMemberListOmitsPidAndSession(t *testing.T) {
+func TestMemberRegisterAndListOmitPidStartAndSession(t *testing.T) {
 	addr, stop := startBus(t)
 	defer stop()
 	ctx := context.Background()
@@ -75,6 +75,7 @@ func TestMemberListOmitsPidAndSession(t *testing.T) {
 		t.Fatalf("name-only\n%s", plainRaw)
 	}
 	pid := int64(424242)
+	const token = "boot-7c1e/313131"
 	status := "launched"
 	const secret = "sess-secret-9f3a"
 	asConductor(t, ctx, addr, "job", func(holder string) {
@@ -84,7 +85,7 @@ func TestMemberListOmitsPidAndSession(t *testing.T) {
 			t.Fatalf("launch alpha %v %+v", err, res)
 		}
 		if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
-			Conversation: "job", Name: "bravo", Status: &status, PID: &pid, Holder: holder,
+			Conversation: "job", Name: "bravo", Status: &status, PID: &pid, Start: token, Holder: holder,
 		}); err != nil || res.Outcome != bus.OutcomeOK {
 			t.Fatalf("launch bravo %v %+v", err, res)
 		}
@@ -100,11 +101,14 @@ func TestMemberListOmitsPidAndSession(t *testing.T) {
 	if reg.Outcome != bus.OutcomeOK || reg.Member == nil || reg.Member.Status != "registered" || reg.Member.Registered == "" {
 		t.Fatalf("register %s", regRaw)
 	}
+	if strings.Contains(regRaw, "424242") || strings.Contains(regRaw, token) || strings.Contains(regRaw, "pid:") || strings.Contains(regRaw, "start:") {
+		t.Fatalf("register leaked\n%s", regRaw)
+	}
 	rows, listRaw := runClient(t, ctx, "member", "list", "--address", addr, "--conversation", "job")
 	if rows.Members == nil || len(*rows.Members) != 2 || (*rows.Members)[0].Name != "bravo" || (*rows.Members)[0].Status != "registered" || (*rows.Members)[1].Name != "alpha" || (*rows.Members)[1].Status != "launched" {
 		t.Fatalf("members %+v\n%s", rows.Members, listRaw)
 	}
-	if strings.Contains(listRaw, secret) || strings.Contains(listRaw, "424242") || strings.Contains(listRaw, "pid:") || strings.Contains(listRaw, "session:") {
+	if strings.Contains(listRaw, secret) || strings.Contains(listRaw, "424242") || strings.Contains(listRaw, token) || strings.Contains(listRaw, "pid:") || strings.Contains(listRaw, "start:") || strings.Contains(listRaw, "session:") {
 		t.Fatalf("list leaked\n%s", listRaw)
 	}
 	if !strings.Contains(listRaw, "launched:") || !strings.Contains(listRaw, "registered:") || !strings.Contains(listRaw, "status: registered") {

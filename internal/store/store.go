@@ -108,6 +108,7 @@ var schemaStmts = []string{
   status TEXT NOT NULL CHECK (status IN ('launched', 'registered', 'running', 'exited', 'timed-out')),
   session TEXT NOT NULL,
   pid INTEGER,
+  start TEXT CHECK (start IS NULL OR pid IS NOT NULL),
   PRIMARY KEY (conversation, name)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS sets (
@@ -277,7 +278,7 @@ type Publish struct {
 }
 
 // Member is one roster row without its session id.
-// PID is set only when HasPID is true.
+// PID is set only when HasPID is true. Start is the host's start token for that pid, or empty when none was read.
 type Member struct {
 	Name       string
 	Status     string
@@ -285,6 +286,7 @@ type Member struct {
 	Registered string
 	PID        int64
 	HasPID     bool
+	Start      string
 }
 
 // MemberSession is a roster name and the session id stored for it.
@@ -919,6 +921,12 @@ func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 			return false, err
 		}
 	}
+	if ok, err := tableExists(ctx, tx, "members"); err != nil || !ok {
+		return false, err
+	}
+	if ok, err := columnExists(ctx, tx, "members", "start"); err != nil || !ok {
+		return false, err
+	}
 	seqKey, err := seqIsPrimaryKey(ctx, tx)
 	if err != nil || !seqKey {
 		return false, err
@@ -1006,6 +1014,8 @@ func columnExists(ctx context.Context, tx *sql.Tx, table, col string) (bool, err
 		q = `SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = ?`
 	case "conversations":
 		q = `SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = ?`
+	case "members":
+		q = `SELECT COUNT(*) FROM pragma_table_info('members') WHERE name = ?`
 	default:
 		return false, fmt.Errorf("unknown table %s", table)
 	}

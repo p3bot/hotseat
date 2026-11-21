@@ -19,11 +19,23 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
+// procID identifies one member process: its pid and the host's start token for it.
+// The zero value is no process. An empty start is a process whose token was not read.
+type procID struct {
+	pid   int
+	start string
+}
+
+// launchedProc reads the start token of a process run just started. A process already gone gets none.
+func launchedProc(pid int) procID {
+	start, _ := startToken(pid)
+	return procID{pid: pid, start: start}
+}
+
 // liveProc is a member process still running from an earlier run.
 type liveProc struct {
-	name     string
-	pid      int
-	launched string
+	name string
+	id   procID
 }
 
 var (
@@ -31,24 +43,14 @@ var (
 	errNotLaunch = errors.New("pid is not the launched process")
 )
 
-// launchSkew covers clock grain between process start and the stored launch time.
-const launchSkew = 2 * time.Second
-
-// sameLaunch reports whether pid began at or before launched.
-// The row is written after the process starts. An unreadable start time does not match.
-func sameLaunch(pid int, launched string) bool {
-	if pid <= 0 || launched == "" {
+// sameLaunch reports whether id's pid is still the process its row recorded: the live start token equals the stored one.
+// A row with no token never matches, and neither does a pid whose token cannot be read.
+func sameLaunch(id procID) bool {
+	if id.pid <= 0 || id.start == "" {
 		return false
 	}
-	start, ok := processStart(pid)
-	if !ok {
-		return false
-	}
-	at, err := time.Parse(time.RFC3339Nano, launched)
-	if err != nil {
-		return false
-	}
-	return !start.After(at.Add(launchSkew))
+	start, ok := startToken(id.pid)
+	return ok && start == id.start
 }
 
 func (e *engine) ensureInstructions(conv client.Conversation) error {
@@ -112,18 +114,12 @@ func (e *engine) reapDead() ([]liveProc, error) {
 		default:
 			continue
 		}
-		pid := 0
+		var id procID
 		if row.PID != nil {
-			pid = int(*row.PID)
+			id = procID{pid: int(*row.PID), start: row.Start}
 		}
-		if pid > 0 && alive(pid) {
-			if !sameLaunch(pid, row.Launched) {
-				if err := e.recordTimeout(a.name, classProcessExit); err != nil {
-					return nil, err
-				}
-				continue
-			}
-			live = append(live, liveProc{name: a.name, pid: pid, launched: row.Launched})
+		if alive(id.pid) && sameLaunch(id) {
+			live = append(live, liveProc{name: a.name, id: id})
 			continue
 		}
 		if err := e.recordTimeout(a.name, classProcessExit); err != nil {
@@ -134,8 +130,13 @@ func (e *engine) reapDead() ([]liveProc, error) {
 }
 
 // watchLocked waits for a leftover process. The caller holds that member's slot.
+// Once the lease is lost it stops watching and leaves the process running, unsignalled and unrecorded,
+// for the next holder to adopt: this run holds no pipe for it, and every write it could make is refused.
 func (e *engine) watchLocked(proc liveProc) error {
-	err := e.waitForeign(proc.pid, proc.launched)
+	err := e.waitForeign(proc.id)
+	if e.leaseLost() {
+		return nil
+	}
 	if errors.Is(err, context.Canceled) {
 		return e.settleCancelled(proc)
 	}
@@ -158,11 +159,11 @@ func (e *engine) limitForeign(proc liveProc) error {
 	if e.child.Err() != nil || e.shutting() {
 		return e.settleCancelled(proc)
 	}
-	serr := e.stopForeign(proc.pid, proc.launched)
+	serr := e.stopForeign(proc.id)
 	if errors.Is(serr, errNotLaunch) {
 		return e.markTimeout(proc.name, classProcessExit)
 	}
-	if serr != nil || alive(proc.pid) {
+	if serr != nil || alive(proc.id.pid) {
 		return e.noteHalt(errors.New(classProcessLimit))
 	}
 	return e.markTimeout(proc.name, classProcessLimit)
@@ -178,16 +179,19 @@ func (e *engine) exitedForeign(name string) error {
 		return e.markTimeout(name, classProcessExit)
 	}
 	e.setSession(name, id)
-	return e.writeStatus(name, statusExited, 0, false)
+	return e.writeStatus(name, statusExited, procID{})
 }
 
 // settleCancelled stops a leftover process because the run is ending, and does not record a process-limit failure.
-// The sender of the stopping done first gets its grace period to exit.
+// The sender of the stopping done first gets its grace period to exit. A lease lost meanwhile leaves the process running.
 func (e *engine) settleCancelled(proc liveProc) error {
 	if d := e.graceFor(proc.name); d > 0 {
-		waitDead(e.root, proc.pid, d)
+		waitDead(e.held, proc.id.pid, d)
 	}
-	if err := e.stopForeign(proc.pid, proc.launched); err != nil && !errors.Is(err, errNotLaunch) && alive(proc.pid) {
+	if e.leaseLost() {
+		return nil
+	}
+	if err := e.stopForeign(proc.id); err != nil && !errors.Is(err, errNotLaunch) && alive(proc.id.pid) {
 		return err
 	}
 	if !e.shutting() {
@@ -205,22 +209,23 @@ func (e *engine) settleShutdown(name string) error {
 	}
 	if id != "" {
 		e.setSession(name, id)
-		return e.writeStatus(name, statusExited, 0, false)
+		return e.writeStatus(name, statusExited, procID{})
 	}
 	switch e.localStatus(name) {
 	case statusExited, statusTimedOut:
 		return nil
 	}
-	return e.writeStatus(name, statusTimedOut, 0, false)
+	return e.writeStatus(name, statusTimedOut, procID{})
 }
 
 // stopForeign ends the process from this launch. The pid is not reported.
-// A start time that is not this launch is left alone.
-func (e *engine) stopForeign(pid int, launched string) error {
+// A process whose start token is not this launch's is left alone.
+func (e *engine) stopForeign(id procID) error {
+	pid := id.pid
 	if !alive(pid) {
 		return nil
 	}
-	if !sameLaunch(pid, launched) {
+	if !sameLaunch(id) {
 		return errNotLaunch
 	}
 	// A cancelled run is already done, so this wait cannot use that context.
@@ -242,7 +247,7 @@ func (e *engine) stopForeign(pid int, launched string) error {
 	if !alive(pid) {
 		return nil
 	}
-	if !sameLaunch(pid, launched) {
+	if !sameLaunch(id) {
 		return errNotLaunch
 	}
 	if err := signalTree(pid, syscall.SIGKILL); err != nil && alive(pid) {
@@ -287,7 +292,8 @@ func signalTree(pid int, sig syscall.Signal) error {
 	return perr
 }
 
-func (e *engine) waitForeign(pid int, launched string) error {
+func (e *engine) waitForeign(id procID) error {
+	pid := id.pid
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	var deadline time.Time
@@ -298,7 +304,7 @@ func (e *engine) waitForeign(pid int, launched string) error {
 		if !alive(pid) {
 			return nil
 		}
-		if !sameLaunch(pid, launched) {
+		if !sameLaunch(id) {
 			return errNotLaunch
 		}
 		if !deadline.IsZero() && !time.Now().Before(deadline) {
@@ -356,12 +362,14 @@ func (e *engine) readSession(name string) (string, error) {
 	return res.Session.Session, nil
 }
 
-func (e *engine) writeStatus(name, status string, pid int64, hasPID bool) error {
+// writeStatus writes name's status, and id's pid and start token when id is a process.
+func (e *engine) writeStatus(name, status string, id procID) error {
 	st := status
 	req := client.MemberRequest{Conversation: e.name, Name: name, Status: &st, Holder: e.holder}
-	if hasPID {
-		p := pid
+	if id.pid > 0 {
+		p := int64(id.pid)
 		req.PID = &p
+		req.Start = id.start
 	}
 	res, err := e.call(e.root, "member", req)
 	if err != nil {

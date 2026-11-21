@@ -140,13 +140,15 @@ type Conversation struct {
 }
 
 // Member is one roster row as a member route returned it.
-// Session is not a field. PID is absent until a call sets it.
+// Session is not a field. PID and Start come only from a one-row member read or write,
+// and each is absent until a call sets it.
 type Member struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Launched   string `json:"launched"`
 	Registered string `json:"registered"`
 	PID        *int64 `json:"pid,omitempty"`
+	Start      string `json:"start,omitempty"`
 }
 
 // Session is a member name and the session id stored for it.
@@ -402,13 +404,15 @@ type RegisterRequest struct {
 }
 
 // MemberRequest is the member body.
-// A nil Status and a nil PID reads the row. A PID without a Status is refused.
+// A nil Status and a nil PID reads the row. A PID without a Status, or a Start without a PID, is refused.
+// Start is the host's start token for PID. An empty Start with a PID clears the stored one.
 // A write with a Status requires Holder to hold the conversation lease.
 type MemberRequest struct {
 	Conversation string  `json:"conversation"`
 	Name         string  `json:"name"`
 	Status       *string `json:"status,omitempty"`
 	PID          *int64  `json:"pid,omitempty"`
+	Start        string  `json:"start,omitempty"`
 	Holder       string  `json:"holder,omitempty"`
 }
 
@@ -526,6 +530,7 @@ func committedLaunch(ctx context.Context, address, token string, body any, res R
 	}
 	req.Status = nil
 	req.PID = nil
+	req.Start = ""
 	req.Holder = ""
 	return Do(ctx, address, "member", token, req)
 }

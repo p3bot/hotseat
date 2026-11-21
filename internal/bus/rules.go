@@ -357,6 +357,23 @@ func decodeStringList(raw []byte, shape string) ([]string, error) {
 	return names, nil
 }
 
+// maxStartLen bounds a start token. Linux tokens are a boot id and a tick count.
+const maxStartLen = 128
+
+// validStart reports whether s is a start token the bus stores: printable ASCII with no spaces.
+// The bus does not interpret it.
+func validStart(s string) bool {
+	if len(s) < 1 || len(s) > maxStartLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
+}
+
 // parsePositive reports an optional integer field such as pid or re. Absent and null are unset.
 // Any other value that is not an integer greater than zero is refused with reason,
 // so a float or a string names the field instead of the whole request.

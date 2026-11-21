@@ -52,12 +52,12 @@ func writeResult(w io.Writer, res client.Result) error {
 		}
 	}
 	if res.Member != nil {
-		lw.member(*res.Member, true)
+		lw.member(*res.Member)
 	}
 	if res.Members != nil {
 		lw.header("members")
 		for _, m := range *res.Members {
-			lw.member(m, false)
+			lw.member(m)
 		}
 	}
 	return lw.err
@@ -165,13 +165,11 @@ func (lw *lineWriter) message(msg client.Message) {
 	lw.framed("body", msg.Body)
 }
 
-func (lw *lineWriter) member(m client.Member, pid bool) {
+// member prints the public row. A pid or start token is never printed.
+func (lw *lineWriter) member(m client.Member) {
 	lw.header("member")
 	lw.plain("name", m.Name)
 	lw.plain("status", m.Status)
 	lw.plain("launched", m.Launched)
 	lw.plain("registered", m.Registered)
-	if pid && m.PID != nil {
-		lw.integer("pid", *m.PID)
-	}
 }

@@ -9,7 +9,7 @@
 package run
 
 import (
-	"time"
+	"fmt"
 
 	"golang.org/x/sys/unix"
 )
@@ -26,12 +26,13 @@ func zombie(pid int) bool {
 	return kp.Proc.P_stat == darwinZombie
 }
 
-// processStart is when pid was created. ok is false when the time cannot be read.
-func processStart(pid int) (time.Time, bool) {
+// startToken identifies pid's process by its kinfo_proc start time.
+// ok is false when the time cannot be read, as for a pid that is gone.
+func startToken(pid int) (string, bool) {
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
-		return time.Time{}, false
+		return "", false
 	}
 	tv := kp.Proc.P_starttime
-	return time.Unix(tv.Sec, int64(tv.Usec)*1000), true
+	return fmt.Sprintf("%d.%06d", tv.Sec, tv.Usec), true
 }

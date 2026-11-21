@@ -503,7 +503,7 @@ func TestLeftoverThatExitsWhileTheRunClosesPublishesNoError(t *testing.T) {
 	e.closing = true
 	e.doneFrom = "alpha"
 	e.mu.Unlock()
-	if err := e.watchLocked(liveProc{name: "alpha", pid: pid, launched: row.Member.Launched}); err != nil {
+	if err := e.watchLocked(liveProc{name: "alpha", id: procID{pid: pid}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.memberStatus("kept", "alpha"); got != statusTimedOut {

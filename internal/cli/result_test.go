@@ -310,7 +310,7 @@ func parseResult(raw []byte) (client.Result, error) {
 	if ok, err := c.ifHeader("member"); err != nil {
 		return res, err
 	} else if ok {
-		member, err := c.memberFields(true)
+		member, err := c.memberFields()
 		if err != nil {
 			return res, err
 		}
@@ -331,7 +331,7 @@ func parseResult(raw []byte) (client.Result, error) {
 			if _, err := c.next(); err != nil {
 				return res, err
 			}
-			member, err := c.memberFields(false)
+			member, err := c.memberFields()
 			if err != nil {
 				return res, err
 			}
@@ -408,7 +408,7 @@ func (c *textCursor) conversation() (client.Conversation, error) {
 	return conv, nil
 }
 
-func (c *textCursor) memberFields(pid bool) (client.Member, error) {
+func (c *textCursor) memberFields() (client.Member, error) {
 	var m client.Member
 	var err error
 	m.Name, err = c.value("name")
@@ -427,18 +427,6 @@ func (c *textCursor) memberFields(pid bool) (client.Member, error) {
 	if err != nil {
 		return m, err
 	}
-	if !pid || c.i >= len(c.raw) {
-		return m, nil
-	}
-	f, err := c.peek()
-	if err != nil || f.key != "pid" {
-		return m, err
-	}
-	n, err := c.integer("pid")
-	if err != nil {
-		return m, err
-	}
-	m.PID = &n
 	return m, nil
 }
 

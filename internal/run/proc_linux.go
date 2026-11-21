@@ -13,11 +13,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
-// procStartTicks is USER_HZ. /proc starttime uses that unit, and Linux fixes it at 100.
-const procStartTicks = 100
+// bootIDPath names this boot. starttime counts from boot, so a token needs both.
+const bootIDPath = "/proc/sys/kernel/random/boot_id"
 
 // startTimeField is the 1-based index of starttime in /proc/pid/stat.
 const startTimeField = 22
@@ -48,41 +47,28 @@ func zombie(pid int) bool {
 	return fields[0] == "Z"
 }
 
-// processStart is when pid was created. ok is false when the time cannot be read.
-func processStart(pid int) (time.Time, bool) {
+// startToken identifies pid's process: the boot id and the raw starttime ticks.
+// ok is false when either cannot be read, as for a pid that is gone.
+func startToken(pid int) (string, bool) {
 	fields, ok := procStatFields(pid)
 	if !ok {
-		return time.Time{}, false
+		return "", false
 	}
 	// Fields after comm start at stat field 3.
 	idx := startTimeField - 3
-	if idx < 0 || idx >= len(fields) {
-		return time.Time{}, false
+	if idx >= len(fields) {
+		return "", false
 	}
-	ticks, err := strconv.ParseUint(fields[idx], 10, 64)
+	if _, err := strconv.ParseUint(fields[idx], 10, 64); err != nil {
+		return "", false
+	}
+	boot, err := os.ReadFile(bootIDPath)
 	if err != nil {
-		return time.Time{}, false
+		return "", false
 	}
-	raw, err := os.ReadFile("/proc/stat")
-	if err != nil {
-		return time.Time{}, false
+	id := strings.TrimSpace(string(boot))
+	if id == "" {
+		return "", false
 	}
-	var btime int64
-	found := false
-	for _, line := range strings.Split(string(raw), "\n") {
-		if !strings.HasPrefix(line, "btime ") {
-			continue
-		}
-		btime, err = strconv.ParseInt(strings.TrimPrefix(line, "btime "), 10, 64)
-		if err != nil {
-			return time.Time{}, false
-		}
-		found = true
-		break
-	}
-	if !found {
-		return time.Time{}, false
-	}
-	elapsed := time.Duration(ticks) * time.Second / procStartTicks
-	return time.Unix(btime, 0).Add(elapsed), true
+	return id + "/" + fields[idx], true
 }

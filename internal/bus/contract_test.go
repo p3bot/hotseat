@@ -311,7 +311,7 @@ func TestRegisterKeepsStatusExceptWhenLaunched(t *testing.T) {
 	}
 	at = at.Add(time.Minute)
 	registered := mustPost(t, base, PathRegister, map[string]any{"conversation": "job", "name": "alpha"})
-	if registered.Outcome != OutcomeOK || registered.Member == nil || registered.Member.Status != "registered" || registered.Member.Registered == "" || registered.Member.Launched == registered.Member.Registered {
+	if registered.Outcome != OutcomeOK || registered.Member == nil || registered.Member.Status != "registered" || registered.Member.Registered == "" || registered.Member.Launched == registered.Member.Registered || registered.Member.PID != nil {
 		t.Fatalf("register %+v", registered.Member)
 	}
 	at = at.Add(time.Minute)
@@ -479,6 +479,69 @@ func TestPidWithoutAStatusIsRefused(t *testing.T) {
 	}
 }
 
+func TestStartWithoutAPidIsRefusedAndWritesNothing(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	mustPost(t, base, PathCreate, map[string]any{
+		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+	})
+	conduct(t, base, "job")
+	res := mustPost(t, base, PathMember, map[string]any{
+		"conversation": "job", "name": "alpha", "status": "launched", "start": "boot/1", "holder": testHolder,
+	})
+	if res.Outcome != OutcomeRefused || res.Reason != ReasonStartNeedsPID || res.Member != nil {
+		t.Fatalf("start without pid %+v", res)
+	}
+	got := mustPost(t, base, PathMember, map[string]any{"conversation": "job", "name": "alpha"})
+	if got.Outcome != OutcomeRefused || got.Reason != ReasonMemberMissing {
+		t.Fatalf("row %+v", got)
+	}
+}
+
+func TestStartMustBePrintableASCIIWithNoSpaces(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	mustPost(t, base, PathCreate, map[string]any{
+		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+	})
+	conduct(t, base, "job")
+	for _, start := range []string{"", "boot 1", "boot\n1", "booté1", strings.Repeat("a", 129)} {
+		res := mustPost(t, base, PathMember, map[string]any{
+			"conversation": "job", "name": "alpha", "status": "launched", "pid": 4242, "start": start, "holder": testHolder,
+		})
+		if res.Outcome != OutcomeRefused || res.Reason != ReasonStart {
+			t.Fatalf("start %q %+v", start, res)
+		}
+	}
+}
+
+func TestPidWriteReplacesTheStartTokenAndAPidWriteWithoutOneClearsIt(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	mustPost(t, base, PathCreate, map[string]any{
+		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+	})
+	conduct(t, base, "job")
+	mustPost(t, base, PathMember, map[string]any{
+		"conversation": "job", "name": "alpha", "status": "launched", "pid": 41, "start": "boot/1", "holder": testHolder,
+	})
+	moved := mustPost(t, base, PathMember, map[string]any{
+		"conversation": "job", "name": "alpha", "status": "running", "pid": 42, "start": "boot/2", "holder": testHolder,
+	})
+	if moved.Member == nil || moved.Member.PID == nil || *moved.Member.PID != 42 || moved.Member.Start == nil || *moved.Member.Start != "boot/2" {
+		t.Fatalf("relaunch %+v", moved.Member)
+	}
+	kept := mustPost(t, base, PathMember, map[string]any{
+		"conversation": "job", "name": "alpha", "status": "exited", "holder": testHolder,
+	})
+	if kept.Member == nil || kept.Member.Start == nil || *kept.Member.Start != "boot/2" {
+		t.Fatalf("status write %+v", kept.Member)
+	}
+	cleared := mustPost(t, base, PathMember, map[string]any{
+		"conversation": "job", "name": "alpha", "status": "running", "pid": 43, "holder": testHolder,
+	})
+	if cleared.Member == nil || cleared.Member.PID == nil || *cleared.Member.PID != 43 || cleared.Member.Start != nil {
+		t.Fatalf("pid without start %+v", cleared.Member)
+	}
+}
+
 func TestPidMustBeAPositiveInteger(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
@@ -495,7 +558,7 @@ func TestPidMustBeAPositiveInteger(t *testing.T) {
 	}
 }
 
-func TestSessionStaysOffTheTranscriptListAndLog(t *testing.T) {
+func TestSessionPidAndStartStayOffRegisterTheTranscriptListAndLog(t *testing.T) {
 	var logs bytes.Buffer
 	base, _, _, _ := startServer(t, Options{
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
@@ -507,8 +570,9 @@ func TestSessionStaysOffTheTranscriptListAndLog(t *testing.T) {
 	mustPost(t, base, PathMember, map[string]any{
 		"conversation": "job", "name": "alpha", "status": "launched", "holder": testHolder,
 	})
+	const token = "boot-7c1e/313131"
 	mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "bravo", "status": "launched", "pid": 424242, "holder": testHolder,
+		"conversation": "job", "name": "bravo", "status": "launched", "pid": 424242, "start": token, "holder": testHolder,
 	})
 	const secret = "sess-secret-9f3a"
 	set := mustPost(t, base, PathSession, map[string]any{
@@ -535,6 +599,11 @@ func TestSessionStaysOffTheTranscriptListAndLog(t *testing.T) {
 		t.Fatal("session route hid the id from its caller")
 	}
 	_, memberBody := mustRaw(t, base, PathMember, map[string]any{"conversation": "job", "name": "bravo"})
+	reg, registerBody := mustRaw(t, base, PathRegister, map[string]any{"conversation": "job", "name": "bravo"})
+	if reg.Outcome != OutcomeOK || reg.Member == nil || reg.Member.Name != "bravo" || reg.Member.Status != "registered" || reg.Member.Launched == "" || reg.Member.Registered == "" {
+		t.Fatalf("register %s", registerBody)
+	}
+	registerRaw := string(registerBody)
 	_, listBody := mustRaw(t, base, PathMembers, map[string]any{"conversation": "job"})
 	publishKind(t, base, "alice", "say", []string{"bravo"}, "hello", "m1")
 	_, readBody := mustRaw(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
@@ -544,6 +613,7 @@ func TestSessionStaysOffTheTranscriptListAndLog(t *testing.T) {
 	readRaw := string(readBody)
 	for _, part := range []struct{ name, body string }{
 		{"member", memberRaw},
+		{"register", registerRaw},
 		{"members", listRaw},
 		{"read", readRaw},
 		{"list", string(listConv)},
@@ -554,6 +624,7 @@ func TestSessionStaysOffTheTranscriptListAndLog(t *testing.T) {
 		}
 	}
 	for _, part := range []struct{ name, body string }{
+		{"register", registerRaw},
 		{"members", listRaw},
 		{"read", readRaw},
 		{"list", string(listConv)},
@@ -562,11 +633,19 @@ func TestSessionStaysOffTheTranscriptListAndLog(t *testing.T) {
 		if strings.Contains(part.body, "424242") {
 			t.Fatalf("%s leaked the pid\n%s", part.name, part.body)
 		}
+		if strings.Contains(part.body, token) {
+			t.Fatalf("%s leaked the start token\n%s", part.name, part.body)
+		}
 	}
-	if strings.Contains(listRaw, `"pid"`) || strings.Contains(listRaw, `"session"`) {
-		t.Fatalf("members %s", listRaw)
+	for _, part := range []struct{ name, body string }{
+		{"register", registerRaw},
+		{"members", listRaw},
+	} {
+		if strings.Contains(part.body, `"pid"`) || strings.Contains(part.body, `"start"`) || strings.Contains(part.body, `"session"`) {
+			t.Fatalf("%s %s", part.name, part.body)
+		}
 	}
-	if strings.Contains(memberRaw, `"session"`) || !strings.Contains(memberRaw, `"pid":424242`) {
+	if strings.Contains(memberRaw, `"session"`) || !strings.Contains(memberRaw, `"pid":424242`) || !strings.Contains(memberRaw, `"start":"`+token+`"`) {
 		t.Fatalf("member %s", memberRaw)
 	}
 }

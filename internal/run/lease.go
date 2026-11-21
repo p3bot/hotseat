@@ -125,7 +125,7 @@ func (e *engine) renew(ctx context.Context, done chan<- struct{}) {
 			}
 		case res.Outcome == bus.OutcomeOK:
 		case res.Outcome == bus.OutcomeRefused && res.Reason == bus.ReasonLeaseNotHeld:
-			_ = e.noteHalt(fmt.Errorf("%w: %s", errLeaseLost, res.Reason))
+			_ = e.loseLease(res.Reason)
 			return
 		default:
 			_ = e.noteHalt(fmt.Errorf("lease renew: %s", res.Reason))
@@ -135,14 +135,17 @@ func (e *engine) renew(ctx context.Context, done chan<- struct{}) {
 }
 
 // endLease stops the renewal and releases the lease, so a later get reports it free at once.
-// It runs once drive has returned and every member is recorded. A failed release is reported
-// and leaves the run's result alone, because the lease runs out by itself within bus.LeaseTTL.
+// It runs once drive has returned. A lost lease is not released, and its members are left for the next holder to record.
+// A failed release is reported and leaves the run's result alone, because the lease runs out by itself within bus.LeaseTTL.
 func (e *engine) endLease() {
 	if e.leaseEnd == nil {
 		return
 	}
 	e.leaseEnd()
 	e.leaseEnd = nil
+	if e.leaseLost() {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(e.root), releaseLimit)
 	defer cancel()
 	res, err := e.lease(ctx, bus.LeaseRelease)
@@ -165,5 +168,17 @@ func (e *engine) haltOnLostLease(res client.Result) error {
 	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonLeaseWrite {
 		return nil
 	}
-	return e.noteHalt(fmt.Errorf("%w: %s", errLeaseLost, res.Reason))
+	return e.loseLease(res.Reason)
+}
+
+// loseLease stops the engine for a lost lease. held ends first, so whatever sees the stop also sees the loss
+// and leaves every member process running for the next holder to adopt.
+func (e *engine) loseLease(reason string) error {
+	e.loseHeld(errLeaseLost)
+	return e.noteHalt(fmt.Errorf("%w: %s", errLeaseLost, reason))
+}
+
+// leaseLost reports whether this run lost its lease. A signal alone is not a loss.
+func (e *engine) leaseLost() bool {
+	return errors.Is(context.Cause(e.held), errLeaseLost)
 }

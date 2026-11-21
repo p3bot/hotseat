@@ -61,6 +61,8 @@ const (
 	ReasonAlreadyLaunched      = "member is already launched"
 	ReasonPID                  = "pid must be an integer greater than zero"
 	ReasonPIDNeedsStatus       = "a pid requires a status"
+	ReasonStart                = "start must be 1 to 128 printable ASCII characters with no spaces"
+	ReasonStartNeedsPID        = "a start requires a pid"
 	ReasonSessionEmpty         = "session must not be empty"
 	ReasonRecordRequired       = "record is required"
 	ReasonRecordBad            = "record must be set, grouping, settle, fix, halt, or stop"

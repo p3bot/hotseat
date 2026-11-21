@@ -50,7 +50,9 @@ are absent, the seat is the first roster name in ASCII byte order.
 
 --max-turns or HOTSEAT_MAX_TURNS defaults to 500 turn messages. --timeout or
 HOTSEAT_TIMEOUT limits one member process. The default is 8h. It is not a
-limit on the conversation. --interactive or a non-empty HOTSEAT_INTERACTIVE
+limit on the conversation. Only the run holding the lease enforces it: a run
+that lost its lease or died enforces none, and a continuation gives each
+process it adopts the full limit from adoption. --interactive or a non-empty HOTSEAT_INTERACTIVE
 disables that process limit and leaves the turn cap. --permission or
 HOTSEAT_PERMISSION defaults to auto.
 
@@ -126,8 +128,11 @@ run holds the conversation's conductor lease while it drives, renews it every
 5s, and releases it at exit. A second run on a conversation another run is
 driving waits once, at most 20s, then exits non-zero with outcome: error and
 conversation has a conductor on stderr, having done nothing. A run that loses
-its lease stops, kills its members, and exits non-zero with outcome: error.
-The lease holder is not printed.`,
+its lease stops launching and writing, kills no member, waits for the members
+it launched to exit, and exits non-zero with outcome: error. The next holder
+adopts and records its members. A continuation adopts a member process only
+when its host start token matches the one stored with its pid. The lease
+holder is not printed.`,
 		Example: `  hotseat run hotseat/ticket/review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
   hotseat run --conversation foo-x234-ticket-review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model"`,
 		SilenceUsage:  true,

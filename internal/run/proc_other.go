@@ -8,14 +8,12 @@
 
 package run
 
-import "time"
-
 // zombie reports whether pid is a zombie. This platform has no status read.
 func zombie(int) bool {
 	return false
 }
 
-// processStart is when pid was created. This platform has no start-time read.
-func processStart(int) (time.Time, bool) {
-	return time.Time{}, false
+// startToken identifies pid's process. This platform has no token, so no process is adopted.
+func startToken(int) (string, bool) {
+	return "", false
 }
