@@ -199,6 +199,64 @@ type ledger struct {
 	found  []client.Message
 }
 
+// buildLedger is the ledger of one conversation from bus reads: the binding's roster and seat, the member rows, the
+// transcript, and the decision records. Messages of kinds a ledger does not read are ignored.
+// A turn sender's follow-up target is itself while it is a roster member that has not timed out, and otherwise the
+// seat's backup. The backup is a fixer only while a settled change has no fix record.
+func buildLedger(roster []string, seat string, rows []client.Member, msgs []client.Message, recs records) ledger {
+	backup := backupOf(roster, seat, rows)
+	targets := make(map[string]string)
+	for _, m := range msgs {
+		if m.Kind != kindTurn {
+			continue
+		}
+		if _, ok := targets[m.From]; ok {
+			continue
+		}
+		if followsItself(roster, m.From, rowStatus(rows, m.From)) {
+			targets[m.From] = m.From
+		} else {
+			targets[m.From] = backup
+		}
+	}
+	fixers := []string{seat}
+	if backup != "" && recs.awaitsFix() {
+		fixers = append(fixers, backup)
+	}
+	return newLedger(filter(msgs, func(m client.Message) bool { return slices.Contains(ledgerKinds, m.Kind) }), recs, roster, targets, fixers)
+}
+
+// Outcomes of a stop result.
+const (
+	outcomeDone      = "done"
+	outcomeDeadlock  = "deadlock"
+	outcomeUnsettled = "unsettled"
+)
+
+// stopResult is what a run that a done stopped reports: each kept finding with no settle, each settled change with no
+// fix, and the outcome.
+type stopResult struct {
+	unsettled []int64
+	unfixed   []int64
+	outcome   string
+}
+
+// stopResultAt is the stop result of a done at seq, read from the ledger cut before it. With nothing unresolved the
+// outcome is done. Otherwise it is deadlock when a halt is below the done, and unsettled when none is.
+func (l ledger) stopResultAt(done int64) stopResult {
+	cut := l.before(done)
+	r := stopResult{outcome: outcomeDone}
+	r.unsettled, r.unfixed = cut.unresolved()
+	if len(r.unsettled) == 0 && len(r.unfixed) == 0 {
+		return r
+	}
+	r.outcome = outcomeUnsettled
+	if _, halted := cut.halted(); halted {
+		r.outcome = outcomeDeadlock
+	}
+	return r
+}
+
 func newLedger(msgs []client.Message, recs records, roster []string, targets map[string]string, fixers []string) ledger {
 	l := ledger{
 		msgs:    msgs,
@@ -507,6 +565,25 @@ func (l ledger) unresolved() (unsettled, unfixed []int64) {
 		}
 	}
 	return unsettled, unfixed
+}
+
+// underWay is the finding being worked on: the first kept finding in seq order whose discussion has started and
+// that has no settle, or settled on a change with no fix. It is false when there is none or a halt names it, since
+// findings are worked one at a time and a halt ends every discussion.
+func (l ledger) underWay() (int64, bool) {
+	for _, f := range l.findings() {
+		if _, started := l.discussionStart(f.Seq); !started {
+			continue
+		}
+		if _, settled := l.settled[f.Seq]; settled && !l.needsFix(f.Seq) {
+			continue
+		}
+		if halted, ok := l.halted(); ok && halted == f.Seq {
+			return 0, false
+		}
+		return f.Seq, true
+	}
+	return 0, false
 }
 
 // discussionStart is where the discussion of a finding begins: the latest of where its set's discussions opened and

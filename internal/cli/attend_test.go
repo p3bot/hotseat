@@ -110,18 +110,18 @@ func TestAttendRestartsFromZeroUnlessCursorIsSet(t *testing.T) {
 	done := publishAs(t, ctx, addr, "job", "alpha", "done", []string{"owner"}, "done-body", "done-1")
 
 	args := []string{"attend", "--address", addr, "--conversation", "job"}
-	first, stderr, err := runAttend(t, args...)
+	first, stderr, err := runCommand(t, args...)
 	if err != nil || stderr != "" {
 		t.Fatalf("first %v %s\n%s", err, stderr, first)
 	}
 	if !strings.Contains(first, "ask-body") || !strings.Contains(first, "error-body") || !strings.Contains(first, "done-body") || strings.Contains(first, "say-body") {
 		t.Fatalf("first\n%s", first)
 	}
-	second, stderr, err := runAttend(t, args...)
+	second, stderr, err := runCommand(t, args...)
 	if err != nil || stderr != "" || second != first {
 		t.Fatalf("second %v %s\n%s\n%s", err, stderr, second, first)
 	}
-	third, stderr, err := runAttend(t, "attend", "--address", addr, "--conversation", "job", "--cursor", strconv.FormatInt(ask.Seq, 10))
+	third, stderr, err := runCommand(t, "attend", "--address", addr, "--conversation", "job", "--cursor", strconv.FormatInt(ask.Seq, 10))
 	if err != nil || stderr != "" || strings.Contains(third, "ask-body") || strings.Contains(third, "say-body") || !strings.Contains(third, "error-body") || !strings.Contains(third, "done-body") {
 		t.Fatalf("cursor %v %s\n%s", err, stderr, third)
 	}
@@ -145,7 +145,7 @@ func TestAttendDoneToAllExitsZero(t *testing.T) {
 	ctx := context.Background()
 	create(t, ctx, addr, "job")
 	publishAs(t, ctx, addr, "job", "alpha", "done", []string{"all"}, "broadcast-done", "d1")
-	out, stderr, err := runAttend(t, "attend", "--address", addr, "--conversation", "job")
+	out, stderr, err := runCommand(t, "attend", "--address", addr, "--conversation", "job")
 	if err != nil || stderr != "" || !strings.Contains(out, "kind: done\n") || !strings.Contains(out, "to: all\n") || !strings.Contains(out, "broadcast-done") {
 		t.Fatalf("err %v stderr %s\n%s", err, stderr, out)
 	}
@@ -197,7 +197,7 @@ func TestAttendRefusedWaitExitsNonZero(t *testing.T) {
 	isolateAttend(t)
 	addr, stop := startBus(t)
 	t.Cleanup(stop)
-	stdout, stderr, err := runAttend(t, "attend", "--address", addr, "--conversation", "missing")
+	stdout, stderr, err := runCommand(t, "attend", "--address", addr, "--conversation", "missing")
 	if !ReportedFailure(err) || stderr != "" || !strings.Contains(stdout, "outcome: refused\n") || !strings.Contains(stdout, "reason: "+bus.ReasonNotFound+"\n") {
 		t.Fatalf("err %v stderr %q\n%s", err, stderr, stdout)
 	}
@@ -215,11 +215,11 @@ func TestAttendEnvSelectsConversationAndAddress(t *testing.T) {
 
 	t.Setenv("HOTSEAT_CONVERSATION", "other")
 	t.Setenv("HOTSEAT_ADDRESS", addr)
-	out, stderr, err := runAttend(t, "attend")
+	out, stderr, err := runCommand(t, "attend")
 	if err != nil || stderr != "" || !strings.Contains(out, "from-other") || strings.Contains(out, "from-job") {
 		t.Fatalf("env %v %s\n%s", err, stderr, out)
 	}
-	out, stderr, err = runAttend(t, "attend", "--conversation", "job")
+	out, stderr, err = runCommand(t, "attend", "--conversation", "job")
 	if err != nil || stderr != "" || !strings.Contains(out, "from-job") || strings.Contains(out, "from-other") {
 		t.Fatalf("flag %v %s\n%s", err, stderr, out)
 	}
@@ -232,7 +232,7 @@ func TestAttendEnvSelectsConversationAndAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOTSEAT_ADDRESS", closed)
-	out, stderr, err = runAttend(t, "attend", "--address", addr, "--conversation", "job")
+	out, stderr, err = runCommand(t, "attend", "--address", addr, "--conversation", "job")
 	if err != nil || stderr != "" || !strings.Contains(out, "from-job") || strings.Contains(out, "connection_failure") {
 		t.Fatalf("address flag %v %s\n%s", err, stderr, out)
 	}
@@ -254,7 +254,7 @@ func TestAttendTokenIsNotPrinted(t *testing.T) {
 	t.Setenv("HOTSEAT_TOKEN_FILE", path)
 	t.Setenv("HOTSEAT_CONVERSATION", "job")
 	t.Setenv("HOTSEAT_ADDRESS", addr)
-	out, stderr, err := runAttend(t, "attend")
+	out, stderr, err := runCommand(t, "attend")
 	if err != nil || stderr != "" || strings.Contains(out+stderr, token) || !strings.Contains(out, "ask-body") {
 		t.Fatalf("env token %v %s\n%s", err, stderr, out)
 	}
@@ -266,7 +266,7 @@ func TestAttendTokenIsNotPrinted(t *testing.T) {
 	if err := ln.Close(); err != nil {
 		t.Fatal(err)
 	}
-	out, stderr, err = runAttend(t, "attend", "--address", closed, "--conversation", "job", "--token-file", path)
+	out, stderr, err = runCommand(t, "attend", "--address", closed, "--conversation", "job", "--token-file", path)
 	if !ReportedFailure(err) || stderr != "" || !strings.Contains(out, "outcome: connection_failure\n") || strings.Contains(out+stderr, token) {
 		t.Fatalf("failed call %v %s\n%s", err, stderr, out)
 	}
@@ -279,7 +279,7 @@ func isolateAttend(t *testing.T) {
 	t.Setenv("HOTSEAT_TOKEN_FILE", "")
 }
 
-func runAttend(t *testing.T, args ...string) (string, string, error) {
+func runCommand(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	err := execute(context.Background(), args, &stdout, &stderr)

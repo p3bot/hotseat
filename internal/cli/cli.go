@@ -6,9 +6,10 @@
 
 // Package cli is the hotseat command line.
 // The bus runs detached: start and stop manage that process.
-// status asks a listen address whether it can serve.
+// bus status asks a listen address whether it can serve.
 // run shells out to start for one conversation.
 // attend waits as owner and prints ask, error, and done.
+// status reads one conversation and prints its state, findings, and stop.
 // The bus process does not launch agents and it does not open connections to clients.
 package cli
 

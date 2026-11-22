@@ -6,7 +6,11 @@
 
 package bus
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/p3bot/hotseat/internal/store"
+)
 
 const (
 	// OutcomeOK carries the result of the call.
@@ -18,6 +22,9 @@ const (
 	// OutcomeUnavailable means a change could not be made durable and wrote nothing.
 	OutcomeUnavailable = "unavailable"
 )
+
+// ConversationClosed is the status a binding carries once the conversation is closed.
+const ConversationClosed = store.StatusClosed
 
 // Reasons are the exact text of the reason field on a refused call.
 const (

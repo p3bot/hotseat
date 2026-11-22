@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/p3bot/hotseat/internal/client"
 )
@@ -96,8 +95,7 @@ func (e *engine) quiet() bool {
 	return e.halting() != nil || e.windingDown()
 }
 
-// ledgerOn reads the protocol kinds stored since the last build and resolves the follow-up target of every turn sender.
-// The backup is read at most once per build, and for the fixers only while a settled change has no fix record.
+// ledgerOn reads the protocol kinds stored since the last build and the member rows, and builds the ledger from them.
 func (e *engine) ledgerOn(ctx context.Context) (ledger, error) {
 	e.mu.Lock()
 	var cursor int64
@@ -119,32 +117,11 @@ func (e *engine) ledgerOn(ctx context.Context) (ledger, error) {
 	msgs := slices.Clip(e.protocol)
 	recs := e.recs.clip()
 	e.mu.Unlock()
-	backup := sync.OnceValues(e.backup)
-	targets := make(map[string]string)
-	for _, m := range msgs {
-		if m.Kind != kindTurn {
-			continue
-		}
-		if _, ok := targets[m.From]; ok {
-			continue
-		}
-		target, err := e.followVia(m.From, backup)
-		if err != nil {
-			return ledger{}, err
-		}
-		targets[m.From] = target
+	rows, err := e.memberRows(ctx)
+	if err != nil {
+		return ledger{}, err
 	}
-	fixers := []string{e.seat}
-	if recs.awaitsFix() {
-		b, err := backup()
-		if err != nil {
-			return ledger{}, err
-		}
-		if b != "" {
-			fixers = append(fixers, b)
-		}
-	}
-	return newLedger(msgs, recs, rosterNames(e.roster), targets, fixers), nil
+	return buildLedger(rosterNames(e.roster), e.seat, rows, msgs, recs), nil
 }
 
 // loadRecords reads every decision record of the conversation. It runs once, before anything reads a ledger.
@@ -943,27 +920,23 @@ func (e *engine) reportStop() error {
 	if !ok {
 		return errors.New("closed with no stop record")
 	}
-	cut := l.before(stop.Done)
-	unsettled, unfixed := cut.unresolved()
-	for _, seq := range unsettled {
+	r := l.stopResultAt(stop.Done)
+	for _, seq := range r.unsettled {
 		e.out.line("unsettled", seqText(seq))
 	}
-	for _, seq := range unfixed {
+	for _, seq := range r.unfixed {
 		e.out.line("unfixed", seqText(seq))
 	}
-	if len(unsettled) == 0 && len(unfixed) == 0 {
-		e.printOutcome("done")
-		return nil
+	if r.outcome == outcomeUnsettled {
+		if err := e.factErr("", classUnsettled, stop.Done, factTx(classUnsettled, seqText(stop.Done))); err != nil {
+			return err
+		}
 	}
-	if _, halted := cut.halted(); halted {
-		e.printOutcome("deadlock")
+	e.printOutcome(r.outcome)
+	if r.outcome != outcomeDone {
 		return ErrUnresolved
 	}
-	if err := e.factErr("", classUnsettled, stop.Done, factTx(classUnsettled, seqText(stop.Done))); err != nil {
-		return err
-	}
-	e.printOutcome("unsettled")
-	return ErrUnresolved
+	return nil
 }
 
 func seqText(seq int64) string {

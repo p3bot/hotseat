@@ -734,27 +734,42 @@ func (e *engine) readFrom(cursor int64) ([]client.Message, error) {
 
 // readOn reads every message after cursor, or every message of kinds when kinds is set.
 func (e *engine) readOn(ctx context.Context, cursor int64, kinds []string) ([]client.Message, error) {
+	msgs, last, err := readAll(ctx, e.call, e.name, cursor, kinds)
+	if err != nil {
+		return nil, err
+	}
+	e.noteSeen(last)
+	return msgs, nil
+}
+
+// caller makes one bus call. Any outcome but ok is an error.
+type caller func(ctx context.Context, op string, body any) (client.Result, error)
+
+// readPage is the read limit. A shorter page is the last.
+const readPage = 200
+
+// readAll reads every message of conv after cursor, or every message of kinds when kinds is set, following the cursor
+// to the end. It returns the messages and the last cursor it read from.
+func readAll(ctx context.Context, call caller, conv string, cursor int64, kinds []string) ([]client.Message, int64, error) {
 	var all []client.Message
-	req := client.ReadRequest{Conversation: e.name, Limit: 200}
+	req := client.ReadRequest{Conversation: conv, Limit: readPage}
 	if kinds != nil {
 		req.Kinds = &kinds
 	}
 	for {
 		req.Cursor = cursor
-		res, err := e.call(ctx, "read", req)
+		res, err := call(ctx, "read", req)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if res.Messages == nil || len(*res.Messages) == 0 {
-			e.noteSeen(cursor)
-			return all, nil
+			return all, cursor, nil
 		}
 		batch := *res.Messages
 		all = append(all, batch...)
 		cursor = batch[len(batch)-1].Seq
-		if int64(len(batch)) < 200 {
-			e.noteSeen(cursor)
-			return all, nil
+		if len(batch) < readPage {
+			return all, cursor, nil
 		}
 	}
 }

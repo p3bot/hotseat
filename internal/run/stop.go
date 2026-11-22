@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/client"
@@ -25,6 +26,14 @@ const (
 	stopSignal   = "stopped by signal"
 	stopRun      = "stopped by run"
 )
+
+var stopClasses = []string{stopProtocol, stopRefusal, stopCommand, stopBus, stopLease, stopSignal, stopRun}
+
+// isStopError reports whether m is laid out as the stop error a run publishes: an error from run to owner alone whose
+// body is a stop class. The sender is caller-supplied, so this is a reading of the transcript, not proof of a run.
+func isStopError(m client.Message) bool {
+	return m.Kind == kindError && m.From == fromRun && slices.Equal(m.To, []string{fromOwner}) && slices.Contains(stopClasses, m.Body)
+}
 
 // busError is a bus call that did not answer ok. Its text is the operation and the reason.
 type busError struct {

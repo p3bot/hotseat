@@ -57,4 +57,8 @@
 // it in re. An error a continuation can meet again takes a transaction id
 // derived from its fact, so the bus returns the stored error instead of a
 // second copy.
+//
+// ReadStatus is the read-only side for hotseat status. It builds the same
+// ledger from bus reads with the same builder run uses, and reports the stop
+// result of a recorded done by the same rule, so the two cannot disagree.
 package run

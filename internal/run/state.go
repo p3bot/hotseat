@@ -10,7 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -395,39 +395,70 @@ func (e *engine) storeSession(name, id string) error {
 	return nil
 }
 
-// backup returns the first eligible name. An empty name means nobody eligible was read.
+// memberRows reads every member row of the conversation.
+func (e *engine) memberRows(ctx context.Context) ([]client.Member, error) {
+	return readMembers(ctx, e.call, e.name)
+}
+
+// readMembers reads every member row of conv through call.
+func readMembers(ctx context.Context, call caller, conv string) ([]client.Member, error) {
+	res, err := call(ctx, "members", client.MembersRequest{Conversation: conv})
+	if err != nil {
+		return nil, err
+	}
+	if res.Members == nil {
+		return nil, errors.New("members: ok with no members")
+	}
+	return *res.Members, nil
+}
+
+// backup returns the seat's backup from the stored member rows. An empty name means nobody is eligible.
 func (e *engine) backup() (string, error) {
-	names := rosterNames(e.roster)
-	sort.Strings(names)
-	for _, name := range names {
-		if name == e.seat {
+	rows, err := e.memberRows(e.root)
+	if err != nil {
+		return "", err
+	}
+	return backupOf(rosterNames(e.roster), e.seat, rows), nil
+}
+
+// backupOf is the seat's backup: the first roster name in ASCII byte order, other than the seat, whose row has a
+// registered time and a status of registered, running, or exited. An empty name means nobody is eligible.
+func backupOf(roster []string, seat string, rows []client.Member) string {
+	for _, name := range slices.Sorted(slices.Values(roster)) {
+		if name == seat {
 			continue
 		}
-		row, err := e.memberRow(name)
-		if err != nil {
-			return "", err
-		}
-		if row == nil || row.Registered == "" {
+		i := slices.IndexFunc(rows, func(r client.Member) bool { return r.Name == name })
+		if i < 0 || rows[i].Registered == "" {
 			continue
 		}
-		switch row.Status {
+		switch rows[i].Status {
 		case statusRegistered, statusRunning, statusExited:
-			return name, nil
+			return name
 		}
 	}
-	return "", nil
+	return ""
 }
 
+// rowStatus is the stored status of name, or empty when it has no row.
+func rowStatus(rows []client.Member, name string) string {
+	if i := slices.IndexFunc(rows, func(r client.Member) bool { return r.Name == name }); i >= 0 {
+		return rows[i].Status
+	}
+	return ""
+}
+
+// followsItself reports whether sender is its own follow-up target: a roster member that has not timed out.
+func followsItself(roster []string, sender, status string) bool {
+	return status != statusTimedOut && slices.Contains(roster, sender)
+}
+
+// followTarget is the follow-up target of sender: the sender while it is a live roster member, otherwise the backup.
 func (e *engine) followTarget(sender string) (string, error) {
-	return e.followVia(sender, e.backup)
-}
-
-// followVia is the follow-up target of sender: the sender while it is a live roster member, otherwise the backup.
-func (e *engine) followVia(sender string, backup func() (string, error)) (string, error) {
-	if e.localStatus(sender) != statusTimedOut && nameIn(e.roster, sender) {
+	if followsItself(rosterNames(e.roster), sender, e.localStatus(sender)) {
 		return sender, nil
 	}
-	return backup()
+	return e.backup()
 }
 
 func (e *engine) bootPrompt(a agent) string {

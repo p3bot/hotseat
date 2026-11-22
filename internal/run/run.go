@@ -609,10 +609,15 @@ func (e *engine) call(ctx context.Context, op string, body any) (client.Result, 
 	if err := e.haltOnLostLease(res); err != nil {
 		return res, err
 	}
+	return res, outcomeErr(op, body, res)
+}
+
+// outcomeErr is the *busError of a call that answered other than ok, or nil.
+func outcomeErr(op string, body any, res client.Result) error {
 	if res.Outcome != bus.OutcomeOK {
-		return res, &busError{op: callLabel(op, body), outcome: res.Outcome, reason: res.Reason}
+		return &busError{op: callLabel(op, body), outcome: res.Outcome, reason: res.Reason}
 	}
-	return res, nil
+	return nil
 }
 
 // callLabel names a call in its error: the route, and the kind, member, or lease operation it concerns.
@@ -637,15 +642,8 @@ func (e *engine) find(name string) (client.Conversation, bool, error) {
 	if err != nil {
 		return client.Conversation{}, false, err
 	}
-	if res.Conversations == nil {
-		return client.Conversation{}, false, nil
-	}
-	for _, conv := range *res.Conversations {
-		if conv.Name == name {
-			return conv, true, nil
-		}
-	}
-	return client.Conversation{}, false, nil
+	conv, ok := pickBinding(res, name)
+	return conv, ok, nil
 }
 
 func (e *engine) taken() (map[string]bool, error) {

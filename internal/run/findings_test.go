@@ -1691,12 +1691,16 @@ func TestHaltWhileAFindingIsJudgedReturnsTheHaltError(t *testing.T) {
 	}
 }
 
-func TestLedgerBuildReadsOnlyNewMessagesAndTheBackupOnce(t *testing.T) {
+func TestLedgerBuildReadsOnlyNewMessagesAndTheMemberRowsOnce(t *testing.T) {
 	h := newHarness(t)
 	h.keptConversation(abcRoster...)
 	launched := statusLaunched
 	h.setMember("kept", "bravo", launched, nil)
 	h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"})
+	h.setMember("kept", "alpha", launched, nil)
+	if res := h.setMember("kept", "alpha", statusTimedOut, nil); res.Outcome != bus.OutcomeOK {
+		t.Fatal(res.Reason)
+	}
 	h.publish("kept", "alpha", kindTurn, "mode: serial\nfirst", []string{"bravo"})
 	h.publish("kept", "owner", kindTurn, "mode: serial\nsecond", []string{"bravo"})
 	h.publish("kept", "charlie", kindTurn, "mode: serial\nthird", []string{"bravo"})
@@ -1707,7 +1711,7 @@ func TestLedgerBuildReadsOnlyNewMessagesAndTheBackupOnce(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
-		case strings.HasSuffix(path, "/member"):
+		case strings.HasSuffix(path, "/members"):
 			members++
 		case strings.HasSuffix(path, "/read"):
 			var req client.ReadRequest
@@ -1724,7 +1728,6 @@ func TestLedgerBuildReadsOnlyNewMessagesAndTheBackupOnce(t *testing.T) {
 		name:   "kept",
 		seat:   "alpha",
 		roster: []agent{{name: "alpha"}, {name: "bravo"}, {name: "charlie"}},
-		status: map[string]string{"alpha": statusTimedOut},
 	}
 	build := func() (ledger, []int64, int) {
 		t.Helper()

@@ -535,3 +535,39 @@ func TestAnnouncementRefusesAProposalMissingFromTheTranscript(t *testing.T) {
 		t.Fatal("announced a settle whose proposal sender is unknown")
 	}
 }
+
+func TestUnderWayIsTheFirstUnresolvedStartedFindingAndNoneOnceAHaltNamesIt(t *testing.T) {
+	base := tx(
+		msg("a", kindTurn, "mode: parallel\nreview", "b", "c"),
+		msg("b", kindFinding, "one", abc...),
+		msg("c", kindFinding, "two", abc...),
+		msg("b", kindSay, "found", "a"),
+		msg("c", kindSay, "found", "a"),
+	)
+	fixed := msg("b", kindFixed, "fixed", abc...)
+	fixed.Seq = 6
+	fixed.Re = &base[1].Seq
+	set := setRec(1, 5, 2, 3)
+	settle := settleRec(2, 2, kindFinding, 5)
+	cases := []struct {
+		name string
+		msgs []client.Message
+		recs records
+		want int64
+	}{
+		{"set not grouped", base, records{sets: []client.Set{set}}, 0},
+		{"grouped", base, records{sets: []client.Set{set}, groupings: []client.Grouping{groupingRec(1, 5)}}, 2},
+		{"settled change awaiting its fixed", base, records{sets: []client.Set{set}, groupings: []client.Grouping{groupingRec(1, 5)}, settles: []client.Settle{settle}}, 2},
+		{"fixed", append(slices.Clone(base), fixed), records{sets: []client.Set{set}, groupings: []client.Grouping{groupingRec(1, 5)}, settles: []client.Settle{settle}}, 3},
+		{"halt on the first reports neither", base, records{sets: []client.Set{set}, groupings: []client.Grouping{groupingRec(1, 5)}, halts: []client.Halt{{Finding: 2, After: 5}}}, 0},
+		{"halt on the last", append(slices.Clone(base), fixed), records{sets: []client.Set{set}, groupings: []client.Grouping{groupingRec(1, 5)}, settles: []client.Settle{settle}, halts: []client.Halt{{Finding: 3, After: 6}}}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ledgerOf(tc.msgs, tc.recs).underWay()
+			if ok != (tc.want != 0) || got != tc.want {
+				t.Fatalf("under way %d %v, want %d", got, ok, tc.want)
+			}
+		})
+	}
+}

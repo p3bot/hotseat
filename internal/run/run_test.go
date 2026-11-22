@@ -1157,7 +1157,7 @@ func TestTimeoutIsStoredWhenActingSeatReadFails(t *testing.T) {
 		t.Fatal(wrote.Reason)
 	}
 	addr := h.proxy(func(w http.ResponseWriter, path string, body []byte) bool {
-		if strings.HasSuffix(path, "/member") && bytes.Contains(body, []byte(`"name":"bravo"`)) && !bytes.Contains(body, []byte(`"status"`)) {
+		if strings.HasSuffix(path, "/members") {
 			http.Error(w, "read failed", http.StatusBadGateway)
 			return true
 		}

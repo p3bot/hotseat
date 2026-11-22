@@ -142,6 +142,7 @@ hotseat close --conversation job
 hotseat list
 hotseat member register --conversation job --name alpha
 hotseat member list --conversation job
+hotseat status --conversation job
 ```
 
 `--kind` is required on publish. `--re <seq>` sends `re`. Omit it and the field is left out. A message with `re` prints `re: <seq>` after the `kind` line, on publish, read, wait, and attend. A message without it prints no `re` line. Repeat `--kind` on read or wait to send `kinds`. Omit it and the field is left out. `--body` is the message. `--body-file` reads it from a file, and `--body-file -` reads stdin, so a body can be larger than one command argument. Pass exactly one of the two. A body or a transaction id that is not valid UTF-8 is `refused` with that bus rule, and the client does not connect. `hotseat create` sends a name only. `hotseat list` and the create result print the binding, omitting empty fields, in roster order. The list puts the conversation with the newest message first, by that message's `seq`. Conversations with no message follow, ordered by name. `hotseat member list` prints name, launched time, registered time, and status. It does not print a pid or a session id.
@@ -164,6 +165,35 @@ txid: 1
 body <<5
 hello
 ```
+
+`hotseat status --conversation <name>` answers what is happening with one conversation from bus reads alone. It makes only read calls, `/lease` `get` first, then `/list`, `/members`, `/records`, and `/read` to the end of the transcript, and writes nothing. The records are read before the transcript, so the transcript holds every message a record names. When every read is `ok` it exits zero whatever the state. A read that answers otherwise prints only that call's `outcome` and `reason` and exits non-zero, so a missing conversation is `outcome: refused` with `reason: conversation not found`, and an unreachable bus is `outcome: connection_failure`.
+
+```text
+outcome: ok
+conversation: job
+task: tasks:hotseat/ticket/review
+ticket: foo-x234
+seat: grok
+roster: grok
+roster: opus
+state: running
+since: 2026-11-18T08:47:13Z
+expires: 2026-11-18T08:47:33Z
+member: grok
+member_status: running
+member: opus
+member_status: exited
+newest: 57
+findings: 4
+settled: 2
+fixed: 1
+dropped: 1
+discussing: 41
+```
+
+The binding lines omit empty fields, as `list` does, and the roster is in roster order. `state` is `running` while a conductor holds the lease, else `closed` once the conversation is closed, else `idle`. It is a fact, not a judgement of how a run ended. `since` and `expires` follow only `running`, and `expires` is for a reader to compare. Member rows print as stored, with no pid liveness check. `newest` is the highest `seq` of any kind. The counts read every message and record: `findings` is the kept findings, `dropped` the duplicates an aggregate dropped, `settled` the kept findings with a settle, dismissals included, and `fixed` the settled changes with a fix. A dismissal is never fixed. `discussing` follows only `running`. Findings are worked one at a time in `seq` order, and `discussing` is the first kept finding whose discussion has started and that has no settle, or settled on a change with no `fixed`. It is not printed when a halt names that finding, since a halt ends every discussion, and a later finding is never reported in its place. A task with no findings prints each count as `0`.
+
+When a stop record exists, `done: <seq>` names the done it records, then `unsettled` and `unfixed` lines and `run_outcome` (`done`, `deadlock`, or `unsettled`), from the same rule and the same cut before that done as `run`'s stop result, so the two print the same lines. The counts read the whole ledger, so they can differ from the stop lines when a finding, settle, or `fixed` is stored after that done. `status` never decides which done stopped a run, so with no stop record it prints neither. When a `stopped by` error from `run` to `owner` is newer than the recorded done, or there is no stop record, the newest one prints as `stop: <class>` and `stop_seq: <seq>`. `run_outcome` is data, not an exit status. Session ids, pids, start tokens, the lease holder, the token, and decision records stay off the output. `hotseat bus status` reports the bus process instead.
 
 ## Run
 
