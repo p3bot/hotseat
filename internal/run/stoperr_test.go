@@ -90,7 +90,9 @@ func (h *harness) handEngine(conv string) (*engine, context.CancelFunc) {
 		leased:   true,
 		name:     conv,
 		stderr:   io.Discard,
-		out:      &statusWriter{w: io.Discard},
+		reporter: discardReporter{},
+		events:   newEventLog(nil),
+		clock:    time.Now,
 	}
 	return e, signal
 }
@@ -127,8 +129,8 @@ func TestRefusedMemberWriteStopsItsSiblingsAtOnceAndSaysStoppedByRefusalBeforeTh
 	h.publish(name, "alpha", kindTurn, "mode: parallel\nreview", []string{"alpha", "bravo"})
 	// alpha is held until the test ends, so only the run can end it.
 	res := h.awaitRun(ch, 4*time.Second)
-	if res.err == nil || !refusedFor(res.err, bus.ReasonMemberMissing) || !strings.HasSuffix(res.stdout, "outcome: error\n") {
-		t.Fatalf("%v\n%s", res.err, res.stdout)
+	if res.err == nil || !refusedFor(res.err, bus.ReasonMemberMissing) || res.out.outcome() != "error" {
+		t.Fatalf("%v\n%s", res.err, res.out)
 	}
 	if got := h.memberStatus(name, "alpha"); got != statusTimedOut {
 		t.Fatalf("alpha %s", got)
@@ -171,9 +173,9 @@ func TestFailedOrUnusableStartCallAfterTheLeaseSaysStoppedByCommand(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			tc.setup(h)
-			stdout, stderr, err := h.runBounded(h.continueKept(""))
-			if err == nil || !strings.HasSuffix(stdout, "outcome: error\n") {
-				t.Fatalf("%v\n%s\n%s", err, stdout, stderr)
+			out, stderr, err := h.runBounded(h.continueKept(""))
+			if err == nil || out.outcome() != "error" {
+				t.Fatalf("%v\n%s\n%s", err, out, stderr)
 			}
 			h.wantStopError("kept", stopCommand, 0)
 		})
@@ -195,9 +197,9 @@ func TestUnavailableOrUnreachableBusDuringTheWatchSaysStoppedByBus(t *testing.T)
 			cfg := h.base()
 			cfg.TicketSet = false
 			cfg.Address = h.answerAll(bus.PathWait, tc.status, tc.raw)
-			stdout, stderr, err := h.runBounded(cfg)
-			if err == nil || !strings.HasSuffix(stdout, "outcome: error\n") {
-				t.Fatalf("%v\n%s\n%s", err, stdout, stderr)
+			out, stderr, err := h.runBounded(cfg)
+			if err == nil || out.outcome() != "error" {
+				t.Fatalf("%v\n%s\n%s", err, out, stderr)
 			}
 			h.wantStopError(h.only().Name, stopBus, 0)
 		})
@@ -209,9 +211,9 @@ func TestInconsistentBusAnswerSaysStoppedByRun(t *testing.T) {
 	cfg := h.base()
 	cfg.TicketSet = false
 	cfg.Address = h.answerAll(bus.PathWait, http.StatusOK, `{"outcome":"ok"}`)
-	stdout, stderr, err := h.runBounded(cfg)
-	if err == nil || !strings.HasSuffix(stdout, "outcome: error\n") {
-		t.Fatalf("%v\n%s\n%s", err, stdout, stderr)
+	out, stderr, err := h.runBounded(cfg)
+	if err == nil || out.outcome() != "error" {
+		t.Fatalf("%v\n%s\n%s", err, out, stderr)
 	}
 	h.wantStopError(h.only().Name, stopRun, 0)
 }
@@ -230,8 +232,8 @@ func TestSignalWhileMembersRunSaysStoppedBySignalNotACancelledCall(t *testing.T)
 	h.awaitStatus(name, "bravo", statusLaunched)
 	cancel()
 	res := h.awaitRun(ch, 8*time.Second)
-	if res.err == nil || !strings.HasSuffix(res.stdout, "outcome: error\n") {
-		t.Fatalf("%v\n%s", res.err, res.stdout)
+	if res.err == nil || res.out.outcome() != "error" {
+		t.Fatalf("%v\n%s", res.err, res.out)
 	}
 	h.wantStopError(name, stopSignal, 0)
 }
@@ -246,7 +248,7 @@ func TestLostLeaseSaysStoppedByLeaseOnceAndLaterCausesDoNotReplaceIt(t *testing.
 	_ = e.noteHalt(&busError{op: "record", outcome: bus.OutcomeRefused, reason: bus.ReasonRecordReference})
 	signal()
 	_ = e.noteHalt(context.Canceled)
-	_ = e.fail(refused)
+	_ = e.finish(refused)
 	h.wantStopError("kept", stopLease, 0)
 }
 
@@ -278,8 +280,8 @@ func TestLaunchCapWindDownThatAStoppingDoneClosesSaysNoStopAndExitsZero(t *testi
 	h.stillRunning(ch)
 	h.publish(name, "alpha", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
-	if res.err != nil || !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("%v\n%s\n%s", res.err, res.stdout, res.stderr)
+	if res.err != nil || res.out.outcome() != "done" {
+		t.Fatalf("%v\n%s\n%s", res.err, res.out, res.stderr)
 	}
 	h.wantNoStopError(name)
 }
@@ -302,9 +304,9 @@ func TestLaunchCapHitByABootHandoffWithNothingInFlightNamesItsStoredErrorInTheSt
 	cfg.Address = addr
 	cfg.MaxLaunches = 2
 	cfg.MaxLaunchesSet = true
-	stdout, stderr, err := h.runBounded(cfg)
-	if err == nil || err.Error() != classLaunchCap || !strings.HasSuffix(stdout, "outcome: error\n") {
-		t.Fatalf("%v\n%s\n%s", err, stdout, stderr)
+	out, stderr, err := h.runBounded(cfg)
+	if err == nil || err.Error() != classLaunchCap || out.outcome() != "error" {
+		t.Fatalf("%v\n%s\n%s", err, out, stderr)
 	}
 	name := h.only().Name
 	msgs := h.messages(name)

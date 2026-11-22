@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/p3bot/hotseat/internal/client"
+	"github.com/p3bot/hotseat/internal/run"
 )
 
 // writeResult prints the call. Every client command uses this writer.
@@ -118,6 +119,17 @@ func (lw *lineWriter) boolean(key string, v *bool) {
 
 func (lw *lineWriter) integer(key string, n int64) {
 	lw.plain(key, strconv.FormatInt(n, 10))
+}
+
+// stopLines prints the done a stop record names and that done's unsettled and unfixed findings, as run and status both do.
+func (lw *lineWriter) stopLines(s *run.StopResult) {
+	lw.integer("done", s.Done)
+	for _, seq := range s.Unsettled {
+		lw.integer("unsettled", seq)
+	}
+	for _, seq := range s.Unfixed {
+		lw.integer("unfixed", seq)
+	}
 }
 
 func (lw *lineWriter) conversation(conv client.Conversation) {

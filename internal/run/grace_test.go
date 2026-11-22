@@ -9,7 +9,6 @@ package run
 import (
 	"context"
 	"errors"
-	"io"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -21,7 +20,7 @@ import (
 )
 
 type runResult struct {
-	stdout string
+	out    *recorder
 	stderr string
 	err    error
 	ended  time.Time
@@ -32,9 +31,10 @@ func (h *harness) goRun(ctx context.Context, cfg Config) <-chan runResult {
 	ch := make(chan runResult, 1)
 	h.save()
 	go func() {
-		var stdout, stderr lockedBuffer
-		err := executePaced(ctx, cfg, h.pace, &stdout, &stderr)
-		ch <- runResult{stdout: stdout.String(), stderr: stderr.String(), err: err, ended: time.Now()}
+		out := &recorder{}
+		var stderr lockedBuffer
+		err := executePaced(ctx, cfg, h.pace, out, &stderr)
+		ch <- runResult{out: out, stderr: stderr.String(), err: err, ended: time.Now()}
 	}()
 	return ch
 }
@@ -72,8 +72,9 @@ func (h *harness) session(conv, name string) string {
 	return res.Session.Session
 }
 
+// exitLine is the start of name's exit event with code, up to its duration.
 func exitLine(name string, code string) string {
-	return "exit: " + name + "\ncode: " + code + "\n"
+	return " event=exit member=" + name + " code=" + code + " "
 }
 
 func TestDoneSenderThatExitsInTheGraceIsExitedWithItsSession(t *testing.T) {
@@ -104,8 +105,8 @@ func TestDoneSenderThatExitsInTheGraceIsExitedWithItsSession(t *testing.T) {
 	if got := h.session(name, "alpha"); got != "sess-alpha" {
 		t.Fatalf("alpha session %q", got)
 	}
-	if !strings.Contains(res.stdout, exitLine("alpha", "0")) || !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if !strings.Contains(res.stderr, exitLine("alpha", "0")) || res.out.outcome() != "done" {
+		t.Fatalf("out %s\nstderr %s", res.out, res.stderr)
 	}
 	if countKind(h.messages(name), kindError) != 0 {
 		t.Fatalf("msgs %+v", h.messages(name))
@@ -136,8 +137,8 @@ func TestDoneSenderThatHangsIsKilledAtTheEndOfTheGrace(t *testing.T) {
 	if got := h.memberStatus(name, "alpha"); got != statusTimedOut {
 		t.Fatalf("alpha %s", got)
 	}
-	if !strings.Contains(res.stdout, exitLine("alpha", "-1")) || !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if !strings.Contains(res.stderr, exitLine("alpha", "-1")) || res.out.outcome() != "done" {
+		t.Fatalf("out %s\nstderr %s", res.out, res.stderr)
 	}
 	if countKind(h.messages(name), kindError) != 0 {
 		t.Fatalf("msgs %+v", h.messages(name))
@@ -170,9 +171,9 @@ func TestMemberDueAfterTheDoneSenderInASerialTurnIsNotLaunched(t *testing.T) {
 	if n := len(launches(h.calls(), "bravo")); n != 1 {
 		t.Fatalf("bravo launches %d", n)
 	}
-	// The boot writes launched and exited. A launch for the turn would add running and a second exit line.
-	if strings.Count(res.stdout, "member: bravo\n") != 2 || strings.Count(res.stdout, "exit: bravo\n") != 1 {
-		t.Fatalf("stdout %s", res.stdout)
+	// The boot launches and exits once. A launch for the turn would add a second of each.
+	if strings.Count(res.stderr, " event=launch member=bravo ") != 1 || strings.Count(res.stderr, " event=exit member=bravo ") != 1 {
+		t.Fatalf("stderr %s", res.stderr)
 	}
 	for _, c := range h.calls() {
 		if strings.Contains(c.Stdin, "The set has finished.") {
@@ -182,8 +183,8 @@ func TestMemberDueAfterTheDoneSenderInASerialTurnIsNotLaunched(t *testing.T) {
 	if got := h.memberStatus(name, "alpha"); got != statusExited {
 		t.Fatalf("alpha %s", got)
 	}
-	if !strings.Contains(res.stdout, exitLine("alpha", "0")) {
-		t.Fatalf("stdout %s", res.stdout)
+	if !strings.Contains(res.stderr, exitLine("alpha", "0")) {
+		t.Fatalf("out %s", res.out)
 	}
 }
 
@@ -222,8 +223,8 @@ func TestOtherRunningMemberIsStoppedWithoutWaitingForTheDoneSender(t *testing.T)
 	if got := h.memberStatus(name, "alpha"); got != statusExited {
 		t.Fatalf("alpha %s", got)
 	}
-	if !strings.Contains(res.stdout, exitLine("alpha", "0")) || !strings.Contains(res.stdout, exitLine("bravo", "-1")) {
-		t.Fatalf("stdout %s", res.stdout)
+	if !strings.Contains(res.stderr, exitLine("alpha", "0")) || !strings.Contains(res.stderr, exitLine("bravo", "-1")) {
+		t.Fatalf("out %s\nstderr %s", res.out, res.stderr)
 	}
 	if countKind(h.messages(name), kindError) != 0 {
 		t.Fatalf("msgs %+v", h.messages(name))
@@ -272,8 +273,8 @@ func TestBackupActingAsSeatGetsTheDoneGrace(t *testing.T) {
 	if n := len(launches(h.calls(), "bravo")); n != 1 {
 		t.Fatalf("bravo launches %d", n)
 	}
-	if !strings.Contains(res.stdout, exitLine("bravo", "0")) || !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if !strings.Contains(res.stderr, exitLine("bravo", "0")) || res.out.outcome() != "done" {
+		t.Fatalf("out %s", res.out)
 	}
 }
 
@@ -323,9 +324,9 @@ func TestLeftoverDoneSenderThatExitsInTheGraceFollowsTheShutdownRule(t *testing.
 			cfg.AgentsSet = false
 			h.pace.grace = 10 * time.Second
 			start := time.Now()
-			stdout, stderr, err := h.run(context.Background(), cfg)
+			out, stderr, err := h.run(context.Background(), cfg)
 			if err != nil {
-				t.Fatal(err, stdout, stderr)
+				t.Fatal(err, out, stderr)
 			}
 			if took := time.Since(start); took > 4*time.Second {
 				t.Fatalf("run took %s", took)
@@ -343,8 +344,8 @@ func TestLeftoverDoneSenderThatExitsInTheGraceFollowsTheShutdownRule(t *testing.
 			if countKind(h.messages("kept"), kindError) != 0 {
 				t.Fatalf("msgs %+v", h.messages("kept"))
 			}
-			if !strings.Contains(stdout, "outcome: done") {
-				t.Fatalf("stdout %s", stdout)
+			if out.outcome() != "done" {
+				t.Fatalf("out %s", out)
 			}
 		})
 	}
@@ -390,8 +391,10 @@ func (h *harness) closingEngine() (*engine, *lockedBuffer) {
 		h.t.Fatal(res.Reason)
 	}
 	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
-	var stdout lockedBuffer
-	e, err := newEngine(context.Background(), h.base(), h.pace, &stdout, io.Discard)
+	var stderr lockedBuffer
+	cfg := h.base()
+	cfg.Verbose = true
+	e, err := newEngine(context.Background(), cfg, h.pace, discardReporter{}, &stderr)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -403,12 +406,12 @@ func (h *harness) closingEngine() (*engine, *lockedBuffer) {
 	e.name = "kept"
 	e.seat = "alpha"
 	e.dir = h.dir
-	e.started = true
 	e.holder = h.engineLease("kept")
-	return e, &stdout
+	return e, &stderr
 }
 
-func (h *harness) noLaunchOf(stdout *lockedBuffer, name string) {
+// noLaunchOf fails when name was launched, has a member row, or has a launch event on stderr.
+func (h *harness) noLaunchOf(stderr *lockedBuffer, name string) {
 	h.t.Helper()
 	if n := len(launches(h.calls(), name)); n != 0 {
 		h.t.Fatalf("%s launches %d", name, n)
@@ -416,8 +419,8 @@ func (h *harness) noLaunchOf(stdout *lockedBuffer, name string) {
 	if res := h.do("member", client.MemberRequest{Conversation: "kept", Name: name}); res.Reason != bus.ReasonMemberMissing {
 		h.t.Fatalf("%s row %+v %s", name, res.Member, res.Reason)
 	}
-	if out := stdout.String(); out != "" {
-		h.t.Fatalf("stdout %s", out)
+	if out := stderr.String(); strings.Contains(out, "event=launch") {
+		h.t.Fatalf("stderr %s", out)
 	}
 }
 
@@ -427,10 +430,10 @@ func TestLaunchThatFindsTheRunClosingStartsNothing(t *testing.T) {
 		launch func(e *engine) error
 	}{
 		{"follow-up", func(e *engine) error {
-			return e.launchMember("bravo", launchFollow, e.followPrompt("bravo", 0, nil, nil))
+			return e.launchMember("bravo", launchFollow, 1, e.followPrompt("bravo", 0, nil, nil))
 		}},
 		{"handoff", func(e *engine) error {
-			return e.launchMember("bravo", launchFollow, e.handoffPrompt("alpha", "bravo"))
+			return e.launchMember("bravo", launchHandoff, 1, e.handoffPrompt("alpha", "bravo"))
 		}},
 		// The answer check reads the transcript on the cancelled run context, so the closing rule must come first.
 		{"turn", func(e *engine) error {
@@ -440,7 +443,7 @@ func TestLaunchThatFindsTheRunClosingStartsNothing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			e, stdout := h.closingEngine()
+			e, stderr := h.closingEngine()
 			done := h.publish("kept", "alpha", kindDone, "done", []string{"owner"})
 			if err := e.finishDone(done); err != errDone {
 				t.Fatalf("finishDone %v", err)
@@ -448,16 +451,16 @@ func TestLaunchThatFindsTheRunClosingStartsNothing(t *testing.T) {
 			if err := tc.launch(e); err != nil {
 				t.Fatal(err)
 			}
-			h.noLaunchOf(stdout, "bravo")
+			h.noLaunchOf(stderr, "bravo")
 		})
 	}
 }
 
 func TestDoneSeenDuringLaunchSetupStartsNothing(t *testing.T) {
 	h := newHarness(t)
-	e, stdout := h.closingEngine()
+	e, stderr := h.closingEngine()
 	done := h.publish("kept", "alpha", kindDone, "done", []string{"owner"})
-	started, err := e.launchUnless("bravo", launchFollow, e.followPrompt("bravo", 0, nil, nil), func() (bool, error) {
+	started, err := e.launchUnless("bravo", launchFollow, 1, e.followPrompt("bravo", 0, nil, nil), func() (bool, error) {
 		if err := e.finishDone(done); err != errDone {
 			return false, err
 		}
@@ -466,18 +469,18 @@ func TestDoneSeenDuringLaunchSetupStartsNothing(t *testing.T) {
 	if err != nil || started {
 		t.Fatalf("started %v err %v", started, err)
 	}
-	h.noLaunchOf(stdout, "bravo")
+	h.noLaunchOf(stderr, "bravo")
 }
 
 func TestLaunchAfterTheRunStoppedWithoutDoneStartsNothing(t *testing.T) {
 	h := newHarness(t)
-	e, stdout := h.closingEngine()
+	e, stderr := h.closingEngine()
 	e.cancel()
-	err := e.launchMember("bravo", launchFollow, e.followPrompt("bravo", 0, nil, nil))
+	err := e.launchMember("bravo", launchFollow, 1, e.followPrompt("bravo", 0, nil, nil))
 	if !errors.Is(err, errStopped) {
 		t.Fatalf("launch %v", err)
 	}
-	h.noLaunchOf(stdout, "bravo")
+	h.noLaunchOf(stderr, "bravo")
 }
 
 func TestLeftoverThatExitsWhileTheRunClosesPublishesNoError(t *testing.T) {
@@ -545,7 +548,29 @@ func TestDoneSenderThatFailsInTheGraceHandsOffToNobody(t *testing.T) {
 			t.Fatalf("handoff %q", c.Stdin)
 		}
 	}
-	if !strings.Contains(res.stdout, exitLine("alpha", "1")) || !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if !strings.Contains(res.stderr, exitLine("alpha", "1")) || res.out.outcome() != "done" {
+		t.Fatalf("out %s", res.out)
+	}
+}
+
+func TestLaunchWhoseRowWriteIsRefusedForTheLeaseIsKilledAndItsExitIsRecorded(t *testing.T) {
+	h := newHarness(t)
+	e, stderr := h.closingEngine()
+	h.hold("bravo")
+	h.leaseAs("kept", bus.LeaseRelease, e.holder)
+	if res := h.leaseAs("kept", bus.LeaseAcquire, "next-conductor"); res.Outcome != bus.OutcomeOK {
+		t.Fatal(res.Reason)
+	}
+	err := e.launchMember("bravo", launchFollow, 1, e.followPrompt("bravo", 0, nil, nil))
+	if !errors.Is(err, errLeaseLost) || !strings.Contains(err.Error(), bus.ReasonLeaseWrite) {
+		t.Fatalf("launch %v", err)
+	}
+	// The kill can land before the fake records its call, so the events are the proof it started and ended.
+	if res := h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo"}); res.Reason != bus.ReasonMemberMissing {
+		t.Fatalf("bravo row %+v %s", res.Member, res.Reason)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, eventLine("launch", "member", "bravo", "kind", "follow", "seq", 1)) || !strings.Contains(out, exitLine("bravo", "-1")) {
+		t.Fatalf("stderr\n%s", out)
 	}
 }

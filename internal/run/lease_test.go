@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -104,12 +105,12 @@ func TestSecondRunAgainstALiveConductorWaitsOnceThenIsRefusedAndActsOnNothing(t 
 		return nil
 	}
 	before := len(h.messages("kept"))
-	stdout, _, err := h.runBounded(h.continueKept(agentsOf("alpha", "bravo")))
+	out, _, err := h.runBounded(h.continueKept(agentsOf("alpha", "bravo")))
 	if err == nil || !strings.Contains(err.Error(), bus.ReasonConductorHeld) {
 		t.Fatalf("err %v", err)
 	}
-	if stdout != "outcome: error\n" {
-		t.Fatalf("stdout %q", stdout)
+	if !out.onlyUnheld() {
+		t.Fatalf("out %q", out)
 	}
 	if len(waits) != 1 || waits[0] <= 0 || waits[0] > bus.LeaseTTL {
 		t.Fatalf("waits %v", waits)
@@ -147,7 +148,7 @@ func TestSignalDuringTheHeldLeaseWaitStopsTheRunWithNothingDone(t *testing.T) {
 	select {
 	case <-waiting:
 	case res := <-ch:
-		t.Fatalf("run returned before the wait: %v\n%s", res.err, res.stdout)
+		t.Fatalf("run returned before the wait: %v\n%s", res.err, res.out)
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not wait on the held lease")
 	}
@@ -156,8 +157,8 @@ func TestSignalDuringTheHeldLeaseWaitStopsTheRunWithNothingDone(t *testing.T) {
 	if !errors.Is(res.err, context.Canceled) {
 		t.Fatalf("err %v", res.err)
 	}
-	if res.stdout != "outcome: error\n" {
-		t.Fatalf("stdout %q", res.stdout)
+	if !res.out.onlyUnheld() {
+		t.Fatalf("out %q", res.out)
 	}
 	if n := h.launchCount(); n != 0 {
 		t.Fatalf("launches %d", n)
@@ -179,15 +180,15 @@ func TestRunAcquiresOnceADeadConductorsLeaseRunsOut(t *testing.T) {
 		clock.advance(d)
 		return nil
 	}
-	stdout, stderr, err := h.runBounded(h.continueKept(agentsOf("alpha", "bravo")))
+	out, stderr, err := h.runBounded(h.continueKept(agentsOf("alpha", "bravo")))
 	if err != nil {
 		t.Fatal(err, stderr)
 	}
 	if len(waits) != 1 || waits[0] != bus.LeaseTTL {
 		t.Fatalf("waits %v", waits)
 	}
-	if !strings.HasSuffix(stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", stdout)
+	if out.outcome() != "done" {
+		t.Fatalf("out %s", out)
 	}
 	if conv, _ := h.conv("kept"); conv.Status != "closed" {
 		t.Fatalf("status %s", conv.Status)
@@ -336,8 +337,8 @@ func TestRunThatLosesItsLeaseLeavesItsMemberRunningAndTheNextHolderRecordsIt(t *
 	if !errors.Is(res.err, errLeaseLost) {
 		t.Fatalf("err %v", res.err)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: error\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if res.out.outcome() != "error" {
+		t.Fatalf("out %s", res.out)
 	}
 	if strings.Contains(res.stderr, "lease release") {
 		t.Fatalf("the stale run released a lease it no longer held\n%s", res.stderr)
@@ -388,6 +389,10 @@ func TestRelaunchedMemberOutlivesTwoLostLeasesAndTheThirdHolderRecordsItsExit(t 
 	if !alive(pid) {
 		t.Fatal("a run that lost its lease killed the member it adopted")
 	}
+	// The member it left running has not exited, so that run writes no exit for it.
+	if !strings.Contains(res.stderr, eventLine("adopt", "member", "alpha")) || strings.Contains(res.stderr, " event=exit member=alpha ") {
+		t.Fatalf("second run stderr\n%s", res.stderr)
+	}
 	h.stillRunning(first)
 	if got := h.memberStatus(name, "alpha"); got != statusRunning {
 		t.Fatalf("alpha %s", got)
@@ -408,11 +413,14 @@ func TestRelaunchedMemberOutlivesTwoLostLeasesAndTheThirdHolderRecordsItsExit(t 
 	if got.err != nil {
 		t.Fatal(got.err, got.stderr)
 	}
-	if !strings.HasSuffix(got.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", got.stdout)
+	if got.out.outcome() != "done" {
+		t.Fatalf("out %s", got.out)
 	}
 	if n := countBody(h.messages(name), classProcessExit); n != 0 {
 		t.Fatalf("msgs %+v", h.messages(name))
+	}
+	if !strings.Contains(got.stderr, eventLine("adopt", "member", "alpha")) || !strings.Contains(got.stderr, " event=exit member=alpha duration=") {
+		t.Fatalf("third run stderr\n%s", got.stderr)
 	}
 }
 
@@ -466,8 +474,12 @@ func TestContinuationAdoptsARelaunchAKilledRunLeftAndRecordsItExited(t *testing.
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if res.out.outcome() != "done" {
+		t.Fatalf("out %s", res.out)
+	}
+	// An adopted process is not a child, so its exit has no code.
+	if !strings.Contains(res.stderr, eventLine("adopt", "member", "alpha")) || !strings.Contains(res.stderr, " event=exit member=alpha duration=") {
+		t.Fatalf("stderr\n%s", res.stderr)
 	}
 }
 
@@ -554,8 +566,8 @@ func TestDoneSenderExitingAfterTheTimeToLiveStillEndsDoneAndReleases(t *testing.
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if res.out.outcome() != "done" {
+		t.Fatalf("out %s", res.out)
 	}
 	if got := h.memberStatus(name, "alpha"); got != statusExited {
 		t.Fatalf("alpha %s", got)
@@ -579,7 +591,7 @@ func TestLeaseLostDuringTheDoneGraceEndsWithErrorNotDone(t *testing.T) {
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
 	h.awaitStatus(name, "alpha", statusLaunched)
-	h.publish(name, "alpha", kindDone, "finished", nil)
+	done := h.publish(name, "alpha", kindDone, "finished", nil)
 	h.awaitClosed(name)
 	clock.advance(bus.LeaseTTL)
 	h.release("alpha")
@@ -587,13 +599,18 @@ func TestLeaseLostDuringTheDoneGraceEndsWithErrorNotDone(t *testing.T) {
 	if res.err == nil || !strings.Contains(res.err.Error(), errLeaseLost.Error()+": "+bus.ReasonLeaseWrite) {
 		t.Fatalf("err %v", res.err)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: error\n") || strings.Contains(res.stdout, "outcome: done") {
-		t.Fatalf("stdout %s", res.stdout)
+	// The halt after the close keeps the recorded done and its stop lines, then says the stop.
+	if !res.out.stopIs(done.Seq, nil, nil) || !res.out.endedBy(stopLease) {
+		t.Fatalf("out %s", res.out)
 	}
 	if got := h.memberStatus(name, "alpha"); got != statusLaunched {
 		t.Fatalf("alpha %s", got)
 	}
 	h.wantStopError(name, stopLease, 0)
+	st := h.status(name)
+	if !reflect.DeepEqual(st.Stop, res.out.stop()) || st.Stop.Outcome != outcomeDone || st.StopError == nil || st.StopError.Class != stopLease {
+		t.Fatalf("status stop %+v stop error %+v", st.Stop, st.StopError)
+	}
 }
 
 func TestHolderIsSentOnEveryConductorWriteAndStaysOffPromptsOutputAndTranscript(t *testing.T) {
@@ -650,7 +667,7 @@ func TestHolderIsSentOnEveryConductorWriteAndStaysOffPromptsOutputAndTranscript(
 	if raw, err := hex.DecodeString(holder); err != nil || len(raw) != 16 || strings.ToLower(holder) != holder {
 		t.Fatalf("holder %q is not 32 lowercase hex characters", holder)
 	}
-	places := []string{res.stdout, res.stderr}
+	places := []string{res.out.String(), res.stderr}
 	for _, c := range h.calls() {
 		places = append(places, c.Stdin, strings.Join(c.Argv, " "))
 	}

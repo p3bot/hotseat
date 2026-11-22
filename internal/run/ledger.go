@@ -231,6 +231,8 @@ const (
 	outcomeDone      = "done"
 	outcomeDeadlock  = "deadlock"
 	outcomeUnsettled = "unsettled"
+	// outcomeError is a run's outcome for any stop but a stopping done. It is never a stop result's.
+	outcomeError = "error"
 )
 
 // stopResult is what a run that a done stopped reports: each kept finding with no settle, each settled change with no
@@ -255,6 +257,12 @@ func (l ledger) stopResultAt(done int64) stopResult {
 		r.outcome = outcomeDeadlock
 	}
 	return r
+}
+
+// stopResultOf is the stop result of the done at seq as run reports it and status reads it.
+func (l ledger) stopResultOf(done int64) *StopResult {
+	r := l.stopResultAt(done)
+	return &StopResult{Done: done, Unsettled: r.unsettled, Unfixed: r.unfixed, Outcome: r.outcome}
 }
 
 func newLedger(msgs []client.Message, recs records, roster []string, targets map[string]string, fixers []string) ledger {

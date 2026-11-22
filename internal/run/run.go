@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -82,35 +83,32 @@ const (
 // stanceKinds are the kinds a discussion launch publishes one of. Prompts read them with findings on an unnamed read.
 var stanceKinds = []string{kindPropose, kindDismiss, kindAgree, kindObject, kindStand}
 
-// Execute runs one conversation.
-// stdout is key: value status. A usage failure writes nothing there.
-// The token value and the lease holder are not written to stdout, stderr, or a prompt.
+// Execute runs one conversation and reports it to report: the header once the conversation and its lease are held,
+// and the result at exit. A run that stops before its conversation is bound reports nothing, and one that stops after
+// it but before the lease reports Unheld. Event lines go to stderr only when cfg.Verbose is set.
+// The token value and the lease holder are not reported, nor written to stderr or a prompt.
 // It holds the conversation lease from before it acts on the conversation until it
 // exits, and stops when the lease is lost.
-func Execute(ctx context.Context, cfg Config, stdout, stderr io.Writer) error {
-	return executePaced(ctx, cfg, defaultPace(), stdout, stderr)
+func Execute(ctx context.Context, cfg Config, report Reporter, stderr io.Writer) error {
+	return executePaced(ctx, cfg, defaultPace(), report, stderr)
 }
 
 // executePaced is Execute with its timing. Only tests pass a pace other than defaultPace.
-func executePaced(ctx context.Context, cfg Config, p pace, stdout, stderr io.Writer) error {
+func executePaced(ctx context.Context, cfg Config, p pace, report Reporter, stderr io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if stdout == nil {
-		stdout = io.Discard
+	if report == nil {
+		report = discardReporter{}
 	}
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	e, err := newEngine(ctx, cfg, p, stdout, stderr)
+	e, err := newEngine(ctx, cfg, p, report, stderr)
 	if err != nil {
 		return err
 	}
-	err = e.execute()
-	if werr := e.out.Err(); werr != nil && err == nil {
-		err = werr
-	}
-	return err
+	return e.execute()
 }
 
 type engine struct {
@@ -135,7 +133,11 @@ type engine struct {
 	startBin  string
 	tkBin     string
 	stderr    io.Writer
-	out       *statusWriter
+	reporter  Reporter
+	events    *slog.Logger
+	clock     func() time.Time
+	// began is when this run started, for elapsed.
+	began time.Time
 
 	// holder is this run's lease holder id. It fences every conductor write and publish.
 	holder string
@@ -152,9 +154,8 @@ type engine struct {
 	name       string
 	binding    client.Conversation
 	continuing bool
-	started    bool
-	// reported is set once the outcome line is printed. Only the goroutine running execute touches it.
-	reported bool
+	// taskSeq is the instructions message this run published, which boot launches concern. It is set before any launch.
+	taskSeq int64
 
 	// rule serialises stop rulings so each done is judged once. It is taken before mu, never under it.
 	rule     sync.Mutex
@@ -164,6 +165,10 @@ type engine struct {
 	slots    map[string]*slot
 	acted    int
 	haltErr  error
+	// haltClass is the stop class of haltErr, worked out once for its stop error and the result block.
+	haltClass string
+	// stopRes is the stop result reportStop read, or nil. Only the goroutine running execute touches it.
+	stopRes *StopResult
 	// say is held by noteHalt from recording the first halt until its stop error is published, so no caller cancels before it.
 	// It is taken before mu.
 	say sync.Mutex
@@ -174,9 +179,9 @@ type engine struct {
 	// doneSeq is the done the stop rule decided on, or zero. It is set before finishDone stores the stop record.
 	doneSeq int64
 	// ruledOut holds every done a stored bad done names. stops never judges one of them again.
-	ruledOut    map[int64]bool
-	handoffFrom string
-	launches    int
+	ruledOut map[int64]bool
+	handoff  handoff
+	launches int
 	// inFlight counts member processes this run started or watches and has not yet recorded.
 	inFlight  int
 	windClass string
@@ -210,7 +215,7 @@ type slot struct {
 	mu sync.Mutex
 }
 
-func newEngine(ctx context.Context, cfg Config, p pace, stdout, stderr io.Writer) (*engine, error) {
+func newEngine(ctx context.Context, cfg Config, p pace, report Reporter, stderr io.Writer) (*engine, error) {
 	if cfg.Dir == "" {
 		return nil, errors.New("working directory is required")
 	}
@@ -250,6 +255,15 @@ func newEngine(ctx context.Context, cfg Config, p pace, stdout, stderr io.Writer
 	if err != nil {
 		return nil, err
 	}
+	clock := cfg.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	locked := &lockedWriter{w: stderr}
+	var eventOut io.Writer
+	if cfg.Verbose {
+		eventOut = locked
+	}
 	child, cancel := context.WithCancel(ctx)
 	held, loseHeld := context.WithCancelCause(ctx)
 	e := &engine{
@@ -271,8 +285,11 @@ func newEngine(ctx context.Context, cfg Config, p pace, stdout, stderr io.Writer
 		maxSays:      cfg.maxSays(),
 		startBin:     startBin,
 		tkBin:        tkBin,
-		stderr:       &lockedWriter{w: stderr},
-		out:          &statusWriter{w: stdout},
+		stderr:       locked,
+		reporter:     report,
+		events:       newEventLog(eventOut),
+		clock:        clock,
+		began:        clock(),
 		status:       make(map[string]string),
 		sessions:     make(map[string]string),
 		slots:        make(map[string]*slot),
@@ -332,20 +349,18 @@ func (e *engine) continueConversation() error {
 	e.seat = conv.Seat
 	e.dir = conv.Directory
 	e.continuing = true
-	e.started = true
 	if err := e.acquire(true); err != nil {
-		return e.fail(err)
+		return e.finish(err)
 	}
-	if err := e.ensureRoster(conv.Roster); err != nil {
-		return err
-	}
+	e.ensureRoster(conv.Roster)
+	e.reporter.Header(e.header())
 	if err := e.ensureInstructions(conv); err != nil {
-		return e.fail(err)
+		return e.finish(err)
 	}
 	if err := e.loadMembers(); err != nil {
-		return e.fail(err)
+		return e.finish(err)
 	}
-	return e.fail(e.drive())
+	return e.finish(e.drive())
 }
 
 func (e *engine) createConversation(suffix bool) error {
@@ -420,13 +435,10 @@ func (e *engine) createConversation(suffix bool) error {
 		if res.AlreadyExisted != nil && *res.AlreadyExisted {
 			return fmt.Errorf("conversation %s already exists", name)
 		}
-		e.started = true
-		e.name = name
-		return e.fail(e.begin(body))
 	}
 	e.name = name
-	e.started = true
-	return e.fail(e.begin(body))
+	e.binding = client.Conversation{Name: name, Task: id, Ticket: ticket, Seat: seat, Directory: dir, Prompts: prompts, Custom: custom, Roster: rosterNames(e.roster)}
+	return e.finish(e.begin(body))
 }
 
 // begin takes the lease on a conversation this run created, publishes its task, and drives it.
@@ -435,9 +447,12 @@ func (e *engine) begin(body string) error {
 	if err := e.acquire(false); err != nil {
 		return err
 	}
-	if err := e.publishInstructions(body, rosterNames(e.roster)); err != nil {
+	e.reporter.Header(e.header())
+	seq, err := e.publishInstructions(body, rosterNames(e.roster))
+	if err != nil {
 		return err
 	}
+	e.taskSeq = seq
 	return e.drive()
 }
 
@@ -532,15 +547,15 @@ func (e *engine) agree(conv client.Conversation) error {
 	return nil
 }
 
-func (e *engine) ensureRoster(stored []string) error {
+// ensureRoster takes the stored roster names when no roster was passed, so the run watches and launches nothing.
+func (e *engine) ensureRoster(stored []string) {
 	if e.cfg.AgentsSet {
-		return nil
+		return
 	}
 	e.roster = make([]agent, len(stored))
 	for i, name := range stored {
 		e.roster[i] = agent{name: name}
 	}
-	return nil
 }
 
 // requireMinimum reads the task's min_members and refuses a roster smaller than it.
@@ -576,28 +591,51 @@ func (e *engine) promptList() []string {
 	return strings.Fields(e.cfg.Prompts)
 }
 
-// fail ends a run that returns err. It is the stop point of an error stop that reached it without passing noteHalt,
-// such as one before drive or a failed stop report. An unresolved stop is not an error stop.
-func (e *engine) fail(err error) error {
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, ErrUnresolved) {
+// finish ends a run that bound its conversation and returns err. It is the stop point of an error stop that reached it
+// without passing noteHalt, such as one before drive or a failed stop report. An unresolved stop is not an error stop.
+// Before the lease is held it reports Unheld, and once it was held the result.
+func (e *engine) finish(err error) error {
+	if err != nil && !errors.Is(err, ErrUnresolved) {
 		err = e.halt(err)
 	}
-	if e.started {
-		e.printOutcome("error")
+	if !e.leased {
+		if err != nil {
+			e.reporter.Unheld()
+		}
+		return err
 	}
+	e.reporter.Result(e.result(err))
 	return err
 }
 
-// printOutcome prints the final outcome line once.
-func (e *engine) printOutcome(outcome string) {
-	if e.reported {
-		return
+// header is the conversation this run holds, its binding, and the roster it was given or the stored names.
+func (e *engine) header() Header {
+	h := Header{Conversation: e.name, Task: e.binding.Task, Ticket: e.binding.Ticket, Seat: e.seat}
+	for _, a := range e.roster {
+		if e.cfg.AgentsSet {
+			h.Members = append(h.Members, Member{Name: a.name, Module: a.module, Model: a.model})
+		} else {
+			h.Roster = append(h.Roster, a.name)
+		}
 	}
-	e.out.line("outcome", outcome)
-	e.reported = true
+	return h
+}
+
+// result is how a run that held its lease and returns err ended: the stop result of the done the stop record names,
+// the stop class of an error stop, the outcome, and the elapsed time. The outcome is done only for a nil err, the stop
+// result's outcome for an unresolved stop, and error otherwise.
+func (e *engine) result(err error) Result {
+	r := Result{Stop: e.recordedStop(), Outcome: outcomeError, Elapsed: e.clock().Sub(e.began).Round(time.Second)}
+	e.mu.Lock()
+	r.StopClass = e.haltClass
+	e.mu.Unlock()
+	switch {
+	case err == nil:
+		r.Outcome = outcomeDone
+	case errors.Is(err, ErrUnresolved) && r.Stop != nil:
+		r.Outcome = r.Stop.Outcome
+	}
+	return r
 }
 
 // call makes one bus call. Any outcome but ok is a *busError, after a refusal for want of the lease stops the run.
@@ -674,15 +712,8 @@ func (e *engine) create(name, task, ticket, seat, dir string, prompts []string, 
 	return res, err
 }
 
-func (e *engine) publishInstructions(body string, to []string) error {
-	_, err := e.call(e.root, "publish", client.PublishRequest{
-		Conversation: e.name,
-		From:         fromOwner,
-		To:           to,
-		Body:         body,
-		TxID:         txInstructions,
-		Kind:         kindInstructions,
-		Holder:       e.holder,
-	})
-	return err
+// publishInstructions publishes the task as owner and returns its seq.
+func (e *engine) publishInstructions(body string, to []string) (int64, error) {
+	seq, _, err := e.send(post{kind: kindInstructions, from: fromOwner, to: to, body: body, tx: txInstructions})
+	return seq, err
 }

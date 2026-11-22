@@ -34,7 +34,33 @@ const (
 	launchFix
 	launchReport
 	launchAggregate
+	launchHandoff
 )
+
+// String is the launch kind as an event names it.
+func (k launchKind) String() string {
+	switch k {
+	case launchBoot:
+		return "boot"
+	case launchTurn:
+		return "turn"
+	case launchFollow:
+		return "follow"
+	case launchDiscussion:
+		return "discussion"
+	case launchStall:
+		return "stall"
+	case launchFix:
+		return "fix"
+	case launchReport:
+		return "report"
+	case launchAggregate:
+		return "aggregate"
+	case launchHandoff:
+		return "handoff"
+	}
+	return fmt.Sprintf("launchKind(%d)", int(k))
+}
 
 var (
 	errStopped = errors.New("stopped")
@@ -43,22 +69,23 @@ var (
 )
 
 func (e *engine) bootstrap(a agent) error {
-	err := e.launchMember(a.name, launchBoot, e.bootPrompt(a))
+	err := e.launchMember(a.name, launchBoot, e.taskSeq, e.bootPrompt(a))
 	if errors.Is(err, errStopped) {
 		return nil
 	}
 	return err
 }
 
-func (e *engine) launchMember(name string, kind launchKind, prompt string) error {
-	_, err := e.launchUnless(name, kind, prompt, nil)
+// launchMember launches name for kind. seq is the message the launch concerns.
+func (e *engine) launchMember(name string, kind launchKind, seq int64, prompt string) error {
+	_, err := e.launchUnless(name, kind, seq, prompt, nil)
 	return err
 }
 
 // launchForTurn launches name for turn unless the transcript, read once the slot is held, shows name already answered it.
 // The answer can be stored while a boot launch still holds the slot.
 func (e *engine) launchForTurn(name string, turn client.Message, prompt string) error {
-	_, err := e.launchUnless(name, launchTurn, prompt, func() (bool, error) {
+	_, err := e.launchUnless(name, launchTurn, turn.Seq, prompt, func() (bool, error) {
 		return e.answered(name, turn)
 	})
 	return err
@@ -95,9 +122,9 @@ func concerns(m client.Message, seq int64) bool {
 	return m.Re == nil || *m.Re == seq
 }
 
-// launchUnless runs one member process under its slot and reports whether it started one. skip, when set, is checked inside the slot.
-// A skipped launch writes no member row, no status line, and no exit line.
-func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip func() (bool, error)) (bool, error) {
+// launchUnless runs one member process under its slot and reports whether it started one. seq is the message the launch
+// concerns. skip, when set, is checked inside the slot. A skipped launch writes no member row and no event.
+func (e *engine) launchUnless(name string, kind launchKind, seq int64, prompt string, skip func() (bool, error)) (bool, error) {
 	if !e.canLaunch() {
 		return false, nil
 	}
@@ -139,40 +166,26 @@ func (e *engine) launchUnless(name string, kind launchKind, prompt string, skip 
 		return false, err
 	}
 	defer e.doneInFlight()
-	return true, e.recordLaunch(pctx, name, kind, a, cmd, &stdout)
+	return true, e.recordLaunch(pctx, name, kind, seq, a, cmd, &stdout)
 }
 
 // recordLaunch writes the started process's rows, waits for it, and records how it ended.
-func (e *engine) recordLaunch(pctx context.Context, name string, kind launchKind, a agent, cmd *exec.Cmd, stdout *bytes.Buffer) error {
+func (e *engine) recordLaunch(pctx context.Context, name string, kind launchKind, seq int64, a agent, cmd *exec.Cmd, stdout *bytes.Buffer) error {
+	began := time.Now()
+	e.events.Info("launch", "member", name, "kind", kind.String(), "seq", seq)
 	pid := cmd.Process.Pid
-	proc := launchedProc(pid)
-	// Launches have no fence of their own: the fenced row write below kills a process a stale run started.
-	row, err := e.memberRow(name)
-	if err != nil {
-		_ = killGroup(pid)
-		_ = cmd.Wait()
-		return err
-	}
-	if row == nil {
-		if err := e.writeStatus(name, statusLaunched, proc); err != nil {
-			_ = killGroup(pid)
-			_ = cmd.Wait()
-			return err
-		}
-	}
-	if kind != launchBoot {
-		if err := e.writeStatus(name, statusRunning, proc); err != nil {
-			_ = killGroup(pid)
-			_ = cmd.Wait()
-			return err
+	// Launches have no fence of their own: the fenced row write kills a process a stale run started.
+	rowErr := e.writeLaunchRows(name, kind, launchedProc(pid))
+	if rowErr != nil {
+		if err := killGroup(pid); err != nil {
+			_ = e.show(fmt.Errorf("kill %s: %w", name, err))
 		}
 	}
 	waitErr := cmd.Wait()
-	exitLine := [][2]string{{"exit", name}}
-	if code, ok := exitCode(waitErr); ok {
-		exitLine = append(exitLine, [2]string{"code", fmt.Sprintf("%d", code)})
+	e.exitEvent(name, waitErr, time.Since(began))
+	if rowErr != nil {
+		return rowErr
 	}
-	e.out.record(exitLine...)
 	// Every write a stale run makes is refused, so the next holder records this member.
 	if e.leaseLost() {
 		return e.stopped()
@@ -206,6 +219,33 @@ func (e *engine) recordLaunch(pctx context.Context, name string, kind launchKind
 		return errStopped
 	}
 	return e.markTimeout(name, classProcessExit)
+}
+
+// writeLaunchRows writes the rows of a process just started: launched for a member with no row, and running for
+// every launch that is not a boot.
+func (e *engine) writeLaunchRows(name string, kind launchKind, proc procID) error {
+	row, err := e.memberRow(name)
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		if err := e.writeStatus(name, statusLaunched, proc); err != nil {
+			return err
+		}
+	}
+	if kind != launchBoot {
+		return e.writeStatus(name, statusRunning, proc)
+	}
+	return nil
+}
+
+// exitEvent writes the event of a member process that ended: its exit code when it has one, and how long it ran.
+func (e *engine) exitEvent(name string, waitErr error, ran time.Duration) {
+	args := []any{"member", name}
+	if code, ok := exitCode(waitErr); ok {
+		args = append(args, "code", code)
+	}
+	e.events.Info("exit", append(args, "duration", ran.Round(time.Millisecond))...)
 }
 
 func (e *engine) show(err error) error {
@@ -376,7 +416,8 @@ func (e *engine) timeout(name, class string, floor bool) error {
 		return err
 	}
 	below := floor && e.windBelowMinimum()
-	if _, err := e.publishErr(name, class); err != nil {
+	seq, err := e.publishErr(name, class)
+	if err != nil {
 		return err
 	}
 	if below {
@@ -388,7 +429,7 @@ func (e *engine) timeout(name, class string, floor bool) error {
 		return actErr
 	}
 	if acting {
-		e.noteHandoff(name)
+		e.noteHandoff(handoff{from: name, seq: seq})
 	}
 	return nil
 }
@@ -397,7 +438,7 @@ func (e *engine) timeout(name, class string, floor bool) error {
 // A closing or winding-down run starts no backup, so a pending handoff is dropped.
 func (e *engine) drainHandoff() error {
 	for {
-		from, ok := e.takeHandoff()
+		h, ok := e.takeHandoff()
 		if !ok {
 			return nil
 		}
@@ -412,9 +453,9 @@ func (e *engine) drainHandoff() error {
 			return err
 		}
 		if next == "" {
-			return e.haltProtocol("", classNoBackup, false)
+			return e.haltProtocol("", classNoBackup)
 		}
-		if err := e.launchMember(next, launchFollow, e.handoffPrompt(from, next)); err != nil {
+		if err := e.launchMember(next, launchHandoff, h.seq, e.handoffPrompt(h.from, next)); err != nil {
 			return err
 		}
 	}
@@ -450,60 +491,55 @@ func mintTx() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
-// publishErr publishes an error that names no message, under a random transaction id, prints no status group,
-// and returns the stored seq.
+// publishErr publishes an error that names no message, under a random transaction id, and returns the stored seq.
 func (e *engine) publishErr(member, class string) (int64, error) {
 	seq, _, err := e.storeErr(member, class, 0, "")
 	return seq, err
 }
 
-// haltProtocol publishes the halting protocol error class and stops the run on it. group prints its error group.
-func (e *engine) haltProtocol(member, class string, group bool) error {
+// haltProtocol publishes the halting protocol error class and stops the run on it.
+func (e *engine) haltProtocol(member, class string) error {
 	seq, err := e.publishErr(member, class)
 	if err != nil {
 		return err
 	}
-	if group {
-		e.errGroup(member, class, 0)
-	}
 	return e.noteHalt(&protocolStop{class: class, seq: seq})
 }
 
-// protocolErr publishes a finding-protocol error about the message at re, under a random transaction id, and prints its error group.
+// protocolErr publishes a finding-protocol error about the message at re, under a random transaction id.
 func (e *engine) protocolErr(member, class string, re int64) error {
-	if _, _, err := e.storeErr(member, class, re, ""); err != nil {
-		return err
-	}
-	e.errGroup(member, class, re)
-	return nil
+	_, _, err := e.storeErr(member, class, re, "")
+	return err
 }
 
-// factErr publishes a finding-protocol error under tx, a transaction id derived from its fact, and prints its error group.
-// A continuation that meets the same fact again gets the stored error back and prints nothing.
+// factErr publishes a finding-protocol error under tx, a transaction id derived from its fact.
+// A continuation that meets the same fact again gets the stored error back.
 func (e *engine) factErr(member, class string, re int64, tx string) error {
-	_, fresh, err := e.storeErr(member, class, re, tx)
-	if err != nil || !fresh {
-		return err
-	}
-	e.errGroup(member, class, re)
-	return nil
+	_, _, err := e.storeErr(member, class, re, tx)
+	return err
 }
 
 // storeErr publishes an error from run to owner and returns its seq and whether the bus stored a new message.
 // re is the message it concerns, or zero. An empty tx mints a random transaction id.
+// Each newly stored error writes one error event, so a fact met again on a continuation writes none.
 func (e *engine) storeErr(member, class string, re int64, tx string) (int64, bool, error) {
-	return e.send(post{kind: kindError, from: fromRun, to: []string{fromOwner}, body: errBody(member, class), re: re, tx: tx})
+	seq, fresh, err := e.send(post{kind: kindError, from: fromRun, to: []string{fromOwner}, body: errBody(member, class), re: re, tx: tx})
+	if err == nil && fresh {
+		e.errEvent(member, class, re)
+	}
+	return seq, fresh, err
 }
 
-func (e *engine) errGroup(member, class string, re int64) {
-	group := [][2]string{{"error", class}}
+// errEvent writes the event of an error run published: its class, the member, and the message it concerns.
+func (e *engine) errEvent(member, class string, re int64) {
+	args := []any{"class", class}
 	if member != "" {
-		group = append(group, [2]string{"from", member})
+		args = append(args, "member", member)
 	}
 	if re > 0 {
-		group = append(group, [2]string{"seq", seqText(re)})
+		args = append(args, "seq", re)
 	}
-	e.out.record(group...)
+	e.events.Info("error", args...)
 }
 
 // errBody is the error layout: the member and the class, or the class alone. The message it concerns is its re.

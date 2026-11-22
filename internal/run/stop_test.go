@@ -55,8 +55,8 @@ func TestBackupDoneThatStoppedTheRunStillStopsAContinuationAfterTheBackupTimesOu
 	h.awaitStatus(name, "alpha", statusTimedOut)
 	done := h.publish(name, "bravo", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
-	if res.err != nil || !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("%v\n%s", res.err, res.stdout)
+	if res.err != nil || res.out.outcome() != "done" {
+		t.Fatalf("%v\n%s", res.err, res.out)
 	}
 	if got := h.memberStatus(name, "bravo"); got != statusTimedOut {
 		t.Fatalf("bravo %s", got)
@@ -67,9 +67,9 @@ func TestBackupDoneThatStoppedTheRunStillStopsAContinuationAfterTheBackupTimesOu
 	cfg.Conversation = name
 	cfg.ConversationSet = true
 	cfg.TaskSet = false
-	stdout, stderr, err := h.runBounded(cfg)
-	if err != nil || !strings.HasSuffix(stdout, "outcome: done\n") {
-		t.Fatalf("continuation %v\n%s\n%s", err, stdout, stderr)
+	out, stderr, err := h.runBounded(cfg)
+	if err != nil || out.outcome() != "done" {
+		t.Fatalf("continuation %v\n%s\n%s", err, out, stderr)
 	}
 	if n := h.launchCount(); n != launched {
 		t.Fatalf("continuation launched %d members", n-launched)
@@ -104,21 +104,21 @@ func TestBackupDoneWhileTheSeatIsAliveIsOneBadDoneAndNeverStopsTheRun(t *testing
 	time.Sleep(300 * time.Millisecond)
 	select {
 	case res := <-ch:
-		t.Fatalf("stopped on the ruled-out done: %v\n%s", res.err, res.stdout)
+		t.Fatalf("stopped on the ruled-out done: %v\n%s", res.err, res.out)
 	default:
 	}
 	seat := h.publish(name, "alpha", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
-	if res.err != nil || !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("%v\n%s", res.err, res.stdout)
+	if res.err != nil || res.out.outcome() != "done" {
+		t.Fatalf("%v\n%s", res.err, res.out)
 	}
 	bad := h.badDones(name)
 	if len(bad) != 1 || bad[0].Body != errBody("bravo", classBadDone) || bad[0].Re == nil || *bad[0].Re != early.Seq ||
 		bad[0].From != fromRun || bad[0].TxID != "bad done/"+seqOf(early) {
 		t.Fatalf("bad dones %+v", bad)
 	}
-	if group := "error: bad done\nfrom: bravo\nseq: " + seqOf(early) + "\n"; strings.Count(res.stdout, group) != 1 {
-		t.Fatalf("no single %q\n%s", group, res.stdout)
+	if group := eventLine("error", "class", "bad done", "member", "bravo", "seq", seqOf(early)); strings.Count(res.stderr, group) != 1 {
+		t.Fatalf("no single %q\n%s", group, res.out)
 	}
 	h.wantStop(name, seat)
 }
@@ -146,21 +146,21 @@ func TestContinuationSkipsADoneAStoredBadDoneNamesAndStoresNoSecondError(t *test
 	h.stillRunning(ch)
 	seat := h.publish("kept", "alpha", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 10*time.Second)
-	if res.err != nil || !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("%v\n%s", res.err, res.stdout)
+	if res.err != nil || res.out.outcome() != "done" {
+		t.Fatalf("%v\n%s", res.err, res.out)
 	}
 	if bad := h.badDones("kept"); len(bad) != 1 {
 		t.Fatalf("bad dones %+v", bad)
 	}
-	if strings.Contains(res.stdout, "error: bad done") {
-		t.Fatalf("reported the stored ruling again\n%s", res.stdout)
+	if strings.Contains(res.stderr, `event=error class="bad done"`) {
+		t.Fatalf("reported the stored ruling again\n%s", res.stderr)
 	}
 	h.wantStop("kept", seat)
 }
 
 func TestRuledOutDoneOnARetriedJudgementStoresNoSecondError(t *testing.T) {
 	h := newHarness(t)
-	e, stdout := h.closingEngine()
+	e, stderr := h.closingEngine()
 	early := h.publish("kept", "bravo", kindDone, "too soon", nil)
 	for range 2 {
 		e.ruledOut = make(map[int64]bool)
@@ -172,8 +172,8 @@ func TestRuledOutDoneOnARetriedJudgementStoresNoSecondError(t *testing.T) {
 	if bad := h.badDones("kept"); len(bad) != 1 {
 		t.Fatalf("bad dones %+v", bad)
 	}
-	if n := strings.Count(stdout.String(), "error: bad done\n"); n != 1 {
-		t.Fatalf("error groups %d\n%s", n, stdout.String())
+	if n := strings.Count(stderr.String(), eventLine("error", "class", classBadDone, "member", "bravo", "seq", early.Seq)); n != 1 {
+		t.Fatalf("error events %d\n%s", n, stderr.String())
 	}
 }
 

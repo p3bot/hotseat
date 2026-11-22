@@ -12,8 +12,8 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,31 +30,6 @@ func (h *harness) status(conv string) Status {
 		h.t.Fatalf("status %s: %v", conv, err)
 	}
 	return st
-}
-
-// runStopLines are the unsettled, unfixed, and outcome lines of a run's stdout, in order.
-func runStopLines(stdout string) []string {
-	var out []string
-	for _, line := range strings.Split(stdout, "\n") {
-		for _, key := range []string{"unsettled: ", "unfixed: ", "outcome: "} {
-			if strings.HasPrefix(line, key) {
-				out = append(out, line)
-			}
-		}
-	}
-	return out
-}
-
-// statusStopLines are the same lines from a status stop result, with run_outcome written as run writes outcome.
-func statusStopLines(r *StopResult) []string {
-	var out []string
-	for _, seq := range r.Unsettled {
-		out = append(out, "unsettled: "+strconv.FormatInt(seq, 10))
-	}
-	for _, seq := range r.Unfixed {
-		out = append(out, "unfixed: "+strconv.FormatInt(seq, 10))
-	}
-	return append(out, "outcome: "+r.Outcome)
 }
 
 func TestStatusStopResultEqualsTheStopResultRunPrinted(t *testing.T) {
@@ -109,16 +84,13 @@ func TestStatusStopResultEqualsTheStopResultRunPrinted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			res, name := h.play(tc.setup(h))
-			want := runStopLines(res.stdout)
-			if len(want) == 0 || want[len(want)-1] != "outcome: "+tc.outcome {
-				t.Fatalf("run %v\n%s", res.err, res.stdout)
+			want := res.out.stop()
+			if want == nil || res.out.outcome() != tc.outcome || want.Outcome != tc.outcome {
+				t.Fatalf("run %v\n%s", res.err, res.out)
 			}
 			st := h.status(name)
-			if st.Stop == nil {
-				t.Fatalf("no stop result: %+v", st)
-			}
-			if got := statusStopLines(st.Stop); slices.Compare(got, want) != 0 {
-				t.Fatalf("status %q, run %q", got, want)
+			if !reflect.DeepEqual(st.Stop, want) {
+				t.Fatalf("status %+v, run %+v", st.Stop, want)
 			}
 			stops := h.recordsOf(name).stops
 			if len(stops) != 1 || st.Stop.Done != stops[0].Done {
@@ -143,9 +115,9 @@ func TestStatusReportsTheRecordedDoneAfterTheBackupThatPostedItTimesOut(t *testi
 	h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"})
 	h.setMember("kept", "bravo", statusExited, nil)
 	done := h.publish("kept", "bravo", kindDone, "yes", []string{"owner"})
-	stdout, _, err := h.runBounded(h.continueKept(""))
-	if err != nil || !strings.HasSuffix(stdout, "outcome: done\n") {
-		t.Fatalf("err %v\n%s", err, stdout)
+	out, _, err := h.runBounded(h.continueKept(""))
+	if err != nil || out.outcome() != "done" {
+		t.Fatalf("err %v\n%s", err, out)
 	}
 	if res := h.setMember("kept", "bravo", statusTimedOut, nil); res.Outcome != bus.OutcomeOK {
 		t.Fatal(res.Reason)

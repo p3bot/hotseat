@@ -133,7 +133,7 @@ func TestZeroTimeoutIsRejected(t *testing.T) {
 			Dir:        t.TempDir(),
 			Timeout:    d,
 			TimeoutSet: true,
-		}, defaultPace(), io.Discard, io.Discard)
+		}, defaultPace(), discardReporter{}, io.Discard)
 		if err == nil || !strings.Contains(err.Error(), "positive") {
 			t.Fatalf("timeout %s err %v", d, err)
 		}

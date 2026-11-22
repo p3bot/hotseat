@@ -32,9 +32,9 @@ const (
 // A Set field is false when the caller omitted that setting.
 // Omitted settings are not compared on --conversation.
 // An omitted roster continues, and a launch needs the roster passed again.
-// Timeout, MaxTurns, MaxLaunches, MaxSays, Interactive, Permission, Address,
-// and TokenFile are settings of this process. They are not stored and they are not
-// compared.
+// Timeout, MaxTurns, MaxLaunches, MaxSays, Interactive, Verbose, Permission,
+// Address, and TokenFile are settings of this process. They are not stored and
+// they are not compared.
 //
 // MaxSays is each member's discussion launches per finding. When the speaker
 // order finds nobody and the finding has not settled, the acting seat decides.
@@ -75,6 +75,10 @@ type Config struct {
 	Interactive    bool
 	InteractiveSet bool
 
+	// Verbose writes one event line per engine event to stderr, and forwards a
+	// successful start or tk call's stderr with each line prefixed by the tool name.
+	Verbose bool
+
 	Ticket    string
 	TicketSet bool
 
@@ -94,6 +98,8 @@ type Config struct {
 	TkBin    string
 	// Random mints conversation codes. Nil uses crypto/rand.
 	Random io.Reader
+	// Clock reads the time elapsed is measured on. Nil uses time.Now.
+	Clock func() time.Time
 }
 
 func (c Config) timeout() time.Duration {

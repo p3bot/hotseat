@@ -9,32 +9,23 @@ package run
 import (
 	"bytes"
 	"context"
-	"io"
 	"os/exec"
 	"strings"
 )
 
-// runExternal runs bin and returns stdout.
-// On success, stderr is written to w. On failure both streams are returned
-// in the error, so the caller prints a match list once. --quiet on start
-// keeps a successful stdout line free of notices.
-func runExternal(ctx context.Context, bin, dir string, w io.Writer, stdin io.Reader, args ...string) (string, error) {
+// runExternal runs bin and returns its stdout and stderr.
+// On failure both streams are returned in the error, so the caller prints a
+// match list once. --quiet on start keeps a successful stdout line free of notices.
+func runExternal(ctx context.Context, bin, dir string, args ...string) (stdout, stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
-	cmd.Stdin = stdin
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		return "", commandFailure(bin, stdout.String(), stderr.String(), err)
+	var out, errOut bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+	if err := cmd.Run(); err != nil {
+		return nil, nil, commandFailure(bin, out.String(), errOut.String(), err)
 	}
-	if w != nil && stderr.Len() > 0 {
-		if _, werr := w.Write(stderr.Bytes()); werr != nil {
-			return "", werr
-		}
-	}
-	return stdout.String(), nil
+	return out.Bytes(), errOut.Bytes(), nil
 }
 
 // commandFailure is a failed start or tk call: its stderr and stdout, or the exec error when both are empty.

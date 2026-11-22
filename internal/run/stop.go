@@ -135,16 +135,21 @@ func (e *engine) halt(err error) error {
 	return e.noteHalt(err)
 }
 
-// sayStop publishes the stop error for err once the lease was acquired. Once the run's context has ended the cause is the signal,
-// since every error after it is its fallout. The publish carries no holder and is bounded on its own clock,
-// so a signal or a lost lease does not prevent it. A failure is reported on stderr, because the run already stops on err.
-func (e *engine) sayStop(err error) {
+// stopClass is the stop class of err and the message its stop error names, or zero. Once the run's context has ended
+// the cause is the signal, since every error after it is its fallout.
+func (e *engine) stopClass(err error) (string, int64) {
+	if e.root.Err() != nil {
+		return stopSignal, 0
+	}
+	return stopCause(err)
+}
+
+// sayStop publishes the stop error of class, naming re, once the lease was acquired. The publish carries no holder and
+// is bounded on its own clock, so a signal or a lost lease does not prevent it. A stored stop error writes its error
+// event. A failure is reported on stderr, because the run already stops.
+func (e *engine) sayStop(class string, re int64) {
 	if !e.leased {
 		return
-	}
-	class, re := stopCause(err)
-	if e.root.Err() != nil {
-		class, re = stopSignal, 0
 	}
 	tx, err := mintTx()
 	if err != nil {
@@ -170,5 +175,7 @@ func (e *engine) sayStop(err error) {
 	}
 	if err != nil {
 		_ = e.show(err)
+		return
 	}
+	e.errEvent("", class, re)
 }

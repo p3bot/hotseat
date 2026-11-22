@@ -36,7 +36,7 @@ func (h *harness) stillRunning(ch <-chan runResult) {
 	h.t.Helper()
 	select {
 	case res := <-ch:
-		h.t.Fatalf("run returned early: %v\n%s", res.err, res.stdout)
+		h.t.Fatalf("run returned early: %v\n%s", res.err, res.out)
 	default:
 	}
 }
@@ -66,7 +66,7 @@ func (h *harness) continueKept(agents string) Config {
 }
 
 // runBounded is run with a deadline, so a run that does not stop fails instead of hanging the suite.
-func (h *harness) runBounded(cfg Config) (string, string, error) {
+func (h *harness) runBounded(cfg Config) (*recorder, string, error) {
 	h.t.Helper()
 	cctx, cancel := ctx()
 	defer cancel()
@@ -88,12 +88,12 @@ func TestRosterBelowTaskMinimumCreatesNothing(t *testing.T) {
 	h.plan.MinMembers = "2\n"
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1"
-	stdout, _, err := h.runBounded(cfg)
+	out, _, err := h.runBounded(cfg)
 	if err == nil || !strings.Contains(err.Error(), "requires 2") {
 		t.Fatalf("err %v", err)
 	}
-	if stdout != "" {
-		t.Fatalf("stdout %s", stdout)
+	if !out.silent() {
+		t.Fatalf("out %s", out)
 	}
 	if h.onlyExists() {
 		t.Fatal("conversation created")
@@ -108,12 +108,12 @@ func TestMinimumThatIsNotAPositiveIntegerCreatesNothing(t *testing.T) {
 		t.Run(strings.TrimSpace(out), func(t *testing.T) {
 			h := newHarness(t)
 			h.plan.MinMembers = out
-			stdout, _, err := h.runBounded(h.base())
+			out, _, err := h.runBounded(h.base())
 			if err == nil || !strings.Contains(err.Error(), "not a positive integer") {
 				t.Fatalf("err %v", err)
 			}
-			if stdout != "" || h.onlyExists() {
-				t.Fatalf("stdout %q created %v", stdout, h.onlyExists())
+			if !out.silent() || h.onlyExists() {
+				t.Fatalf("out %q created %v", out, h.onlyExists())
 			}
 		})
 	}
@@ -135,8 +135,8 @@ func TestTaskWithoutMinimumRunsWithOneMember(t *testing.T) {
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if res.out.outcome() != "done" {
+		t.Fatalf("out %s", res.out)
 	}
 }
 
@@ -144,12 +144,12 @@ func TestContinueBelowTaskMinimumWithoutDoneFails(t *testing.T) {
 	h := newHarness(t)
 	h.plan.MinMembers = "2\n"
 	h.keptConversation("alpha")
-	stdout, _, err := h.runBounded(h.continueKept(""))
+	out, _, err := h.runBounded(h.continueKept(""))
 	if err == nil || !strings.Contains(err.Error(), "requires 2") {
 		t.Fatalf("err %v", err)
 	}
-	if !strings.HasSuffix(stdout, "outcome: error\n") {
-		t.Fatalf("stdout %s", stdout)
+	if out.outcome() != "error" {
+		t.Fatalf("out %s", out)
 	}
 	if conv, _ := h.conv("kept"); conv.Status == "closed" {
 		t.Fatal("closed")
@@ -166,12 +166,12 @@ func TestContinueWithStoredDoneReportsDoneUnderARisenMinimum(t *testing.T) {
 	h.plan.MinMembers = "2\n"
 	h.keptConversation("alpha")
 	h.publish("kept", "alpha", "done", "finished", nil)
-	stdout, stderr, err := h.runBounded(h.continueKept(""))
+	out, stderr, err := h.runBounded(h.continueKept(""))
 	if err != nil {
 		t.Fatal(err, stderr)
 	}
-	if !strings.HasSuffix(stdout, "outcome: done\n") || strings.Contains(stderr, "requires") {
-		t.Fatalf("stdout %s stderr %s", stdout, stderr)
+	if out.outcome() != "done" || strings.Contains(stderr, "requires") {
+		t.Fatalf("out %s stderr %s", out, stderr)
 	}
 	if conv, _ := h.conv("kept"); conv.Status != "closed" {
 		t.Fatalf("status %s", conv.Status)
@@ -198,12 +198,12 @@ func TestContinueWithStoredDoneAndDeadLeftoverUnderTheMinimumReportsDone(t *test
 	launched := statusLaunched
 	h.setMember("kept", "bravo", launched, &deadPID)
 	h.publish("kept", "alpha", "done", "finished", nil)
-	stdout, stderr, err := h.runBounded(h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1"))
+	out, stderr, err := h.runBounded(h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1"))
 	if err != nil {
 		t.Fatal(err, stderr)
 	}
-	if !strings.HasSuffix(stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", stdout)
+	if out.outcome() != "done" {
+		t.Fatalf("out %s", out)
 	}
 	if got := h.memberStatus("kept", "bravo"); got != statusTimedOut {
 		t.Fatalf("bravo %s", got)
@@ -221,12 +221,12 @@ func TestContinueThatFindsTooFewLiveMembersStops(t *testing.T) {
 	h.setMember("kept", "bravo", launched, nil)
 	h.setMember("kept", "bravo", timedOut, nil)
 	h.publish("kept", "alpha", "turn", "mode: parallel\nreview", []string{"alpha"})
-	stdout, _, err := h.runBounded(h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1"))
+	out, stderr, err := h.runBounded(h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1"))
 	if err == nil || !strings.Contains(err.Error(), classBelowMinimum) {
 		t.Fatalf("err %v", err)
 	}
-	if !strings.HasSuffix(stdout, "outcome: error\n") || strings.Contains(stdout, "turn:") {
-		t.Fatalf("stdout %s", stdout)
+	if !out.endedBy(stopProtocol) || strings.Contains(stderr, " event=turn ") {
+		t.Fatalf("out %s\nstderr %s", out, stderr)
 	}
 	if countBody(h.messages("kept"), classBelowMinimum) != 1 {
 		t.Fatalf("msgs %+v", h.messages("kept"))
@@ -296,8 +296,8 @@ func TestMemberLostBelowMinimumLetsTheOtherFinishAndStops(t *testing.T) {
 	if took := res.ended.Sub(released); took > 3*time.Second {
 		t.Fatalf("run returned %s after the last exit", took)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: error\n") || strings.Count(res.stdout, "turn:") != 1 {
-		t.Fatalf("stdout %s", res.stdout)
+	if !res.out.endedBy(stopProtocol) || strings.Count(res.stderr, " event=turn ") != 1 {
+		t.Fatalf("out %s\nstderr %s", res.out, res.stderr)
 	}
 	if got := h.memberStatus(name, "bravo"); got != statusExited {
 		t.Fatalf("bravo %s", got)
@@ -339,8 +339,8 @@ func TestStoppingDoneDuringTheMinimumStopCloses(t *testing.T) {
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if res.out.outcome() != "done" {
+		t.Fatalf("out %s", res.out)
 	}
 	if conv, _ := h.conv(name); conv.Status != "closed" {
 		t.Fatalf("status %s", conv.Status)
@@ -375,8 +375,8 @@ func TestDoneThatStopsRunningMembersPublishesNoBelowMinimum(t *testing.T) {
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if res.out.outcome() != "done" {
+		t.Fatalf("out %s", res.out)
 	}
 	if h.memberStatus(name, "alpha") != statusTimedOut || h.memberStatus(name, "bravo") != statusTimedOut {
 		t.Fatalf("alpha %s bravo %s", h.memberStatus(name, "alpha"), h.memberStatus(name, "bravo"))
@@ -415,8 +415,8 @@ func TestLaunchCapStartsNoMoreAndAContinuationLaunchesAgain(t *testing.T) {
 	if res.err == nil || !strings.Contains(res.err.Error(), classLaunchCap) {
 		t.Fatalf("err %v", res.err)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: error\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if res.out.outcome() != "error" {
+		t.Fatalf("out %s", res.out)
 	}
 	if n := h.launchCount(); n != 2 {
 		t.Fatalf("launches %d", n)
@@ -456,8 +456,8 @@ func TestLaunchCapStartsNoMoreAndAContinuationLaunchesAgain(t *testing.T) {
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: done\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if res.out.outcome() != "done" {
+		t.Fatalf("out %s", res.out)
 	}
 }
 
@@ -466,9 +466,9 @@ func TestMaxLaunchesBelowOneCreatesNothing(t *testing.T) {
 	cfg := h.base()
 	cfg.MaxLaunches = 0
 	cfg.MaxLaunchesSet = true
-	stdout, _, err := h.runBounded(cfg)
-	if err == nil || !strings.Contains(err.Error(), "max launches") || stdout != "" || h.onlyExists() {
-		t.Fatalf("err %v stdout %q", err, stdout)
+	out, _, err := h.runBounded(cfg)
+	if err == nil || !strings.Contains(err.Error(), "max launches") || !out.silent() || h.onlyExists() {
+		t.Fatalf("err %v out %q", err, out)
 	}
 	if DefaultMaxLaunches != 300 {
 		t.Fatalf("default %d", DefaultMaxLaunches)
@@ -520,8 +520,8 @@ func TestLaunchCapCountsTurnLaunchesAndWaitsForALeftover(t *testing.T) {
 	if took := res.ended.Sub(killed); took > 3*time.Second {
 		t.Fatalf("run returned %s after the leftover ended", took)
 	}
-	if !strings.HasSuffix(res.stdout, "outcome: error\n") {
-		t.Fatalf("stdout %s", res.stdout)
+	if res.out.outcome() != "error" {
+		t.Fatalf("out %s", res.out)
 	}
 	if a, b := len(launches(h.calls(), "alpha")), len(launches(h.calls(), "bravo")); a != 0 || b != 1 {
 		t.Fatalf("launches alpha %d bravo %d", a, b)
@@ -536,16 +536,17 @@ func TestLaunchCapCountsTurnLaunchesAndWaitsForALeftover(t *testing.T) {
 
 func TestTurnAfterTheWindDownBeganIsNotTaken(t *testing.T) {
 	h := newHarness(t)
-	e, stdout := h.closingEngine()
+	e, stderr := h.closingEngine()
 	e.windDown(classBelowMinimum)
 	turn := client.Message{Seq: 2, From: "alpha", Kind: kindTurn, To: []string{"zulu"}, Body: "no mode"}
 	if err := e.actTurn(turn, false, turn.Seq); err != nil {
 		t.Fatal(err)
 	}
-	if e.acted != 0 || stdout.String() != "" || countKind(h.messages("kept"), kindError) != 0 {
-		t.Fatalf("acted %d stdout %q msgs %+v", e.acted, stdout.String(), h.messages("kept"))
+	// The engine is verbose, so a taken turn or a reported error would write an event.
+	if e.acted != 0 || stderr.String() != "" || countKind(h.messages("kept"), kindError) != 0 {
+		t.Fatalf("acted %d stderr %q msgs %+v", e.acted, stderr.String(), h.messages("kept"))
 	}
-	h.noLaunchOf(stdout, "bravo")
+	h.noLaunchOf(stderr, "bravo")
 }
 
 // The wind-down is decided before the failure is handed off, so no backup can be queued for a launch.

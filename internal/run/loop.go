@@ -11,13 +11,14 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/p3bot/hotseat/internal/client"
 )
 
 func (e *engine) drive() error {
-	e.out.line("conversation", e.name)
 	var wg sync.WaitGroup
 	err := e.loadRecords()
 	if err != nil {
@@ -128,7 +129,13 @@ func (e *engine) watchLeftovers(wg *sync.WaitGroup, live []liveProc) {
 			defer left.Done()
 			defer sl.mu.Unlock()
 			defer e.doneInFlight()
+			adopted := time.Now()
+			e.events.Info("adopt", "member", proc.name)
 			err := e.watchLocked(proc)
+			// A process left running, such as on a lost lease, has not exited.
+			if !sameLaunch(proc.id) {
+				e.exitEvent(proc.name, errNotChild, time.Since(adopted))
+			}
 			e.endLeftover(proc.name)
 			if err != nil {
 				if herr := e.noteHalt(err); herr != nil {
@@ -447,17 +454,12 @@ func (e *engine) actTurn(msg client.Message, historical bool, seen int64) error 
 	case turnWindingDown:
 		return nil
 	case turnCapped:
-		return e.haltProtocol("", classTurnCap, false)
+		return e.haltProtocol("", classTurnCap)
 	}
 	if !ok {
 		return e.rejectTurn(msg)
 	}
-	turnLine := make([][2]string, 0, 1+len(msg.To))
-	turnLine = append(turnLine, [2]string{"turn", mode})
-	for _, name := range msg.To {
-		turnLine = append(turnLine, [2]string{"to", name})
-	}
-	e.out.record(turnLine...)
+	e.events.Info("turn", "seq", msg.Seq, "mode", mode, "to", strings.Join(msg.To, " "))
 	for _, name := range msg.To {
 		if name != "" && !nameIn(e.roster, name) {
 			if _, _, err := e.storeErr(name, classBadTurn, msg.Seq, factTx(classBadTurn, name, seqText(msg.Seq))); err != nil {
@@ -606,7 +608,7 @@ func (e *engine) followUp(msg client.Message, seen int64) error {
 			return err
 		}
 		if next == "" {
-			return e.haltProtocol("", classNoBackup, false)
+			return e.haltProtocol("", classNoBackup)
 		}
 		target = next
 	}
@@ -620,7 +622,7 @@ func (e *engine) followUp(msg client.Message, seen int64) error {
 			noReply = append(noReply, name)
 		}
 	}
-	if err := e.launchMember(target, launchFollow, e.followPrompt(target, l.fixesOf(msg.Seq), noReply, l.droppedOf(msg.Seq))); err != nil {
+	if err := e.launchMember(target, launchFollow, msg.Seq, e.followPrompt(target, l.fixesOf(msg.Seq), noReply, l.droppedOf(msg.Seq))); err != nil {
 		return err
 	}
 	return e.drainHandoff()

@@ -8,14 +8,17 @@ package cli
 
 import (
 	"errors"
+	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/run"
+	"github.com/p3bot/hotseat/internal/web"
 )
 
 func newRunCmd() *cobra.Command {
@@ -108,6 +111,28 @@ An unsettled finding prints unsettled, a settled change not fixed prints
 unfixed, and run exits non-zero with outcome: deadlock after a deadlock or
 outcome: unsettled otherwise. outcome: done is the only zero exit.
 
+stdout is a header and a result block. Once the conversation and its lease
+are held, run prints conversation, task, ticket unless empty, seat, one
+member line per roster entry given to this run as name=module:model, or one
+roster line per stored name for a continuation with no roster, and page, the
+conversation view at the bus port plus one, only when the --address host
+is a loopback IP or localhost. At exit it prints done when a stop record
+exists, with that done's unsettled and unfixed lines, then stop with the
+class of an error stop, then outcome, and last elapsed rounded to seconds.
+done, unsettled, unfixed, and stop match hotseat status. An exit before the
+conversation is bound prints nothing on stdout. An exit after that but
+before the lease is held, such as a refused acquire, prints only
+outcome: error.
+
+--verbose or a non-empty HOTSEAT_VERBOSE writes event lines to stderr, one
+per line with a local time: each launch with its member, kind, and seq, each
+process exit with its code and duration, each adopt of a process left by an
+earlier run and its exit once gone, and each turn, issue, finding, stance,
+pass, settled, stall, extend, deadlock, fixed, and error run stores to
+owner, a member timeout and the stop error included. It also forwards a
+successful start or tk call's stderr, each line prefixed with the tool name.
+Without it neither is written. Exit statuses do not depend on it.
+
 --ticket or HOTSEAT_TICKET selects the code-root members launch in.
 --conversation or HOTSEAT_CONVERSATION continues that exact conversation.
 A resume launches a member only when --agents or HOTSEAT_AGENTS is passed
@@ -158,7 +183,12 @@ outcome: error, as a launch-cap stop does.`,
 			if err != nil {
 				return err
 			}
-			return runExit(run.Execute(cmd.Context(), cfg, cmd.OutOrStdout(), cmd.ErrOrStderr()))
+			report := &runReport{lw: lineWriter{w: cmd.OutOrStdout()}, page: runPage(cfg.Address)}
+			err = run.Execute(cmd.Context(), cfg, report, cmd.ErrOrStderr())
+			if err == nil {
+				err = report.lw.err
+			}
+			return runExit(err)
 		},
 	}
 	cmd.Flags().StringVar(&f.agents, "agents", "", "roster as name=module:model, space-separated (env HOTSEAT_AGENTS)")
@@ -170,6 +200,7 @@ outcome: error, as a launch-cap stop does.`,
 	cmd.Flags().IntVar(&f.maxLaunches, "max-launches", run.DefaultMaxLaunches, "member processes this process starts (env HOTSEAT_MAX_LAUNCHES)")
 	cmd.Flags().IntVar(&f.maxSays, "max-says", run.DefaultMaxSays, "discussion launches per member per finding (env HOTSEAT_MAX_SAYS)")
 	cmd.Flags().BoolVar(&f.interactive, "interactive", false, "disable the process limit and keep the turn cap (env HOTSEAT_INTERACTIVE)")
+	cmd.Flags().BoolVar(&f.verbose, "verbose", false, "write event lines and successful start and tk stderr to stderr (env HOTSEAT_VERBOSE)")
 	cmd.Flags().StringVar(&f.ticket, "ticket", "", "ticket id scope-short (env HOTSEAT_TICKET)")
 	cmd.Flags().StringVar(&f.conversation, "conversation", "", "exact conversation name to continue (env HOTSEAT_CONVERSATION)")
 	cmd.Flags().StringVar(&f.permission, "permission", run.DefaultPermission, "permission passed to every member launch (env HOTSEAT_PERMISSION)")
@@ -196,6 +227,7 @@ type runFlags struct {
 	maxLaunches  int
 	maxSays      int
 	interactive  bool
+	verbose      bool
 	ticket       string
 	conversation string
 	permission   string
@@ -253,6 +285,7 @@ func (f runFlags) config(cmd *cobra.Command, args []string) (run.Config, error) 
 		return run.Config{}, err
 	}
 	cfg.Interactive, cfg.InteractiveSet = pickBool(cmd, "interactive", "HOTSEAT_INTERACTIVE", f.interactive)
+	cfg.Verbose, _ = pickBool(cmd, "verbose", "HOTSEAT_VERBOSE", f.verbose)
 	if cmd.Flags().Changed("token-file") {
 		path, err := cmd.Flags().GetString("token-file")
 		if err != nil {
@@ -273,6 +306,65 @@ func (f runFlags) config(cmd *cobra.Command, args []string) (run.Config, error) 
 		cfg.Address = bus.DefaultListen
 	}
 	return cfg, nil
+}
+
+// runPage is the page address for a bus at busAddr when its host is a loopback IP or localhost, and empty otherwise,
+// because the page listens on loopback on the bus host only. It neither resolves nor validates the address: the
+// page line is informational, and a bad address fails at the first bus call as on every other client command.
+func runPage(busAddr string) string {
+	host, _, err := net.SplitHostPort(busAddr)
+	if err != nil {
+		return ""
+	}
+	if ip := net.ParseIP(host); (ip == nil || !ip.IsLoopback()) && !strings.EqualFold(host, "localhost") {
+		return ""
+	}
+	addr, err := pageListen(busAddr)
+	if err != nil {
+		return ""
+	}
+	return addr
+}
+
+// runReport prints a run's header and result as text lines on stdout. A failed write is kept in lw for after the run,
+// and the run is not told: a failed stdout write stops nothing and publishes no stop error.
+type runReport struct {
+	lw lineWriter
+	// page is the page address for the conversation view, or empty for no page line.
+	page string
+}
+
+func (r *runReport) Unheld() {
+	r.lw.plain("outcome", "error")
+}
+
+func (r *runReport) Header(h run.Header) {
+	r.lw.plain("conversation", h.Conversation)
+	r.lw.plain("task", h.Task)
+	if h.Ticket != "" {
+		r.lw.plain("ticket", h.Ticket)
+	}
+	r.lw.plain("seat", h.Seat)
+	for _, m := range h.Members {
+		r.lw.plain("member", m.Name+"="+m.Module+":"+m.Model)
+	}
+	for _, name := range h.Roster {
+		r.lw.plain("roster", name)
+	}
+	if r.page != "" {
+		r.lw.plain("page", web.ConversationURL(r.page, h.Conversation))
+	}
+}
+
+func (r *runReport) Result(res run.Result) {
+	if res.Stop != nil {
+		r.lw.stopLines(res.Stop)
+	}
+	if res.StopClass != "" {
+		r.lw.plain("stop", res.StopClass)
+	}
+	r.lw.plain("outcome", res.Outcome)
+	r.lw.plain("elapsed", res.Elapsed.String())
 }
 
 func pickString(cmd *cobra.Command, flag, env, value string) (string, bool, error) {

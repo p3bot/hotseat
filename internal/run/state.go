@@ -41,6 +41,8 @@ type liveProc struct {
 var (
 	errLimit     = errors.New("process limit")
 	errNotLaunch = errors.New("pid is not the launched process")
+	// errNotChild stands for the wait result of an adopted process, whose exit code only its parent can read.
+	errNotChild = errors.New("not a child of this run")
 )
 
 // sameLaunch reports whether id's pid is still the process its row recorded: the live start token equals the stored one.
@@ -71,7 +73,8 @@ func (e *engine) ensureInstructions(conv client.Conversation) error {
 	if err != nil {
 		return err
 	}
-	return e.publishInstructions(body, conv.Roster)
+	_, err = e.publishInstructions(body, conv.Roster)
+	return err
 }
 
 func (e *engine) loadMembers() error {
@@ -375,7 +378,6 @@ func (e *engine) writeStatus(name, status string, id procID) error {
 		return err
 	}
 	e.setLocal(name, status)
-	e.out.record([2]string{"member", name}, [2]string{"status", status})
 	return nil
 }
 
@@ -506,28 +508,34 @@ func (e *engine) isActing(name string) (bool, error) {
 func (e *engine) hasHandoff() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.handoffFrom != "" && !e.holding
+	return e.handoff.from != "" && !e.holding
 }
 
-// noteHandoff queues a backup launch for name. A winding-down run starts no backup, so it queues none.
-func (e *engine) noteHandoff(name string) {
+// handoff is a queued backup launch: the acting member that timed out and the error that says so.
+type handoff struct {
+	from string
+	seq  int64
+}
+
+// noteHandoff queues the backup launch h. A winding-down run starts no backup, so it queues none.
+func (e *engine) noteHandoff(h handoff) {
 	e.mu.Lock()
 	if e.windClass == "" {
-		e.handoffFrom = name
+		e.handoff = h
 	}
 	e.mu.Unlock()
 }
 
 // takeHandoff leaves a handoff queued while a set's discussions run, so a free-form backup prompt cannot land mid-discussion.
-func (e *engine) takeHandoff() (string, bool) {
+func (e *engine) takeHandoff() (handoff, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.handoffFrom == "" || e.holding {
-		return "", false
+	if e.handoff.from == "" || e.holding {
+		return handoff{}, false
 	}
-	from := e.handoffFrom
-	e.handoffFrom = ""
-	return from, true
+	h := e.handoff
+	e.handoff = handoff{}
+	return h, true
 }
 
 func (e *engine) handoffPrompt(from, name string) string {
@@ -641,12 +649,15 @@ func (e *engine) noteHalt(err error) error {
 	e.say.Lock()
 	e.mu.Lock()
 	first := e.haltErr == nil
+	var class string
+	var re int64
 	if first {
-		e.haltErr = err
+		class, re = e.stopClass(err)
+		e.haltErr, e.haltClass = err, class
 	}
 	e.mu.Unlock()
 	if first {
-		e.sayStop(err)
+		e.sayStop(class, re)
 	}
 	e.say.Unlock()
 	e.cancel()

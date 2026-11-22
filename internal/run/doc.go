@@ -58,6 +58,12 @@
 // derived from its fact, so the bus returns the stored error instead of a
 // second copy.
 //
+// run writes no stdout text. Execute reports values to a Reporter its caller
+// supplies: the header once the conversation and lease are held, and the
+// result at exit, which carries the same StopResult ReadStatus returns. The
+// caller owns the text format. stderr carries member output, and with Verbose
+// one event line per launch, exit, adoption, turn, and stored error.
+//
 // ReadStatus is the read-only side for hotseat status. It builds the same
 // ledger from bus reads with the same builder run uses, and reports the stop
 // result of a recorded done by the same rule, so the two cannot disagree.

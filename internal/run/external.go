@@ -17,7 +17,7 @@ import (
 )
 
 func (e *engine) taskID(query string) (string, error) {
-	out, err := e.tool(e.startBin, "--quiet", "get", query, "--id")
+	out, err := e.tool(toolStart, "--quiet", "get", query, "--id")
 	if err != nil {
 		return "", err
 	}
@@ -29,7 +29,7 @@ func (e *engine) taskID(query string) (string, error) {
 }
 
 func (e *engine) moduleText(id string) (string, error) {
-	out, err := e.tool(e.startBin, "--quiet", "get", id)
+	out, err := e.tool(toolStart, "--quiet", "get", id)
 	if err != nil {
 		return "", err
 	}
@@ -38,7 +38,7 @@ func (e *engine) moduleText(id string) (string, error) {
 
 // minMembers is the task's min_members. A task that omits it prints nothing, which is 1.
 func (e *engine) minMembers(id string) (int, error) {
-	out, err := e.tool(e.startBin, "--quiet", "get", id, "--field", "min_members")
+	out, err := e.tool(toolStart, "--quiet", "get", id, "--field", "min_members")
 	if err != nil {
 		return 0, err
 	}
@@ -69,7 +69,7 @@ func (e *engine) checkPermissions() error {
 			continue
 		}
 		seen[a.module] = struct{}{}
-		_, err := e.tool(e.startBin, "--quiet", "get", a.module, "--field", "permission."+e.perm)
+		_, err := e.tool(toolStart, "--quiet", "get", a.module, "--field", "permission."+e.perm)
 		if err != nil {
 			if commandDidNotRun(err) {
 				return err
@@ -95,7 +95,7 @@ func commandDidNotRun(err error) bool {
 }
 
 func (e *engine) locator(module string) ([]string, error) {
-	out, err := e.tool(e.startBin, "--quiet", "get", module, "--field", "session_locator")
+	out, err := e.tool(toolStart, "--quiet", "get", module, "--field", "session_locator")
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +114,7 @@ func (e *engine) launchDirectory(ticket string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := e.tool(e.tkBin, "scope", "list")
+	out, err := e.tool(toolTk, "scope", "list")
 	if err != nil {
 		return "", err
 	}
@@ -132,6 +132,27 @@ func (e *engine) launchDirectory(ticket string) (string, error) {
 	return filepath.Abs(root)
 }
 
-func (e *engine) tool(bin string, args ...string) (string, error) {
-	return runExternal(e.root, bin, e.cfg.Dir, e.stderr, nil, args...)
+// Tools run shells out to. Each names the prefix of its forwarded stderr lines.
+const (
+	toolStart = "start"
+	toolTk    = "tk"
+)
+
+// tool runs start or tk and returns its stdout. Under --verbose a successful call's stderr is forwarded, each line
+// prefixed with the tool name. A failed call's output stays in the error.
+func (e *engine) tool(name string, args ...string) (string, error) {
+	bin := e.startBin
+	if name == toolTk {
+		bin = e.tkBin
+	}
+	stdout, stderr, err := runExternal(e.root, bin, e.cfg.Dir, args...)
+	if err != nil {
+		return "", err
+	}
+	if e.cfg.Verbose {
+		if err := prefixLines(e.stderr, name, stderr); err != nil {
+			return "", err
+		}
+	}
+	return string(stdout), nil
 }

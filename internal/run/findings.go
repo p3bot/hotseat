@@ -53,9 +53,9 @@ func (w window) fixed(finding int64) (client.Message, bool) {
 
 // launchWindow launches name and returns the messages it stored during the launch.
 // The start is read inside the member's slot, so a message stored before the process started is outside the window.
-func (e *engine) launchWindow(name string, kind launchKind, prompt string) (window, error) {
+func (e *engine) launchWindow(name string, kind launchKind, seq int64, prompt string) (window, error) {
 	var from int64
-	started, err := e.launchUnless(name, kind, prompt, func() (bool, error) {
+	started, err := e.launchUnless(name, kind, seq, prompt, func() (bool, error) {
 		h, err := e.head()
 		from = h
 		return false, err
@@ -429,7 +429,7 @@ func (e *engine) aggregateSet(turn client.Message, findings []client.Message) er
 	if err != nil {
 		return err
 	}
-	w, err := e.launchWindow(seat, launchAggregate, e.aggregatePrompt(seat, turn, seqs))
+	w, err := e.launchWindow(seat, launchAggregate, turn.Seq, e.aggregatePrompt(seat, turn, seqs))
 	if err != nil {
 		return err
 	}
@@ -468,11 +468,7 @@ func (e *engine) aggregateSet(turn client.Message, findings []client.Message) er
 		return err
 	}
 	for _, g := range groups {
-		group := [][2]string{{"issue", seqText(g[0])}}
-		for _, dup := range g[1:] {
-			group = append(group, [2]string{"dropped", seqText(dup)})
-		}
-		e.out.record(group...)
+		e.events.Info("issue", "seq", g[0], "dropped", seqList(g[1:]))
 	}
 	return nil
 }
@@ -553,7 +549,7 @@ func (e *engine) discuss(f client.Message, restarted bool) error {
 	}
 	d.start = start
 	d.duplicates = dups
-	e.out.record([2]string{"finding", seqText(f.Seq)}, [2]string{"from", f.From})
+	e.events.Info("finding", "seq", f.Seq, "from", f.From)
 	pass := ""
 	for {
 		if e.quiet() {
@@ -580,7 +576,7 @@ func (e *engine) discuss(f client.Message, restarted bool) error {
 			}
 			continue
 		}
-		w, err := e.launchWindow(speaker, launchDiscussion, e.discussionPrompt(speaker, d, restarted))
+		w, err := e.launchWindow(speaker, launchDiscussion, d.finding, e.discussionPrompt(speaker, d, restarted))
 		if err != nil {
 			return err
 		}
@@ -648,7 +644,7 @@ func (e *engine) judgeTurn(d *discussion, speaker string, w window) (string, err
 			}
 			break
 		}
-		e.out.record([2]string{"stance", s.Kind}, [2]string{"from", speaker}, [2]string{"seq", seqText(s.Seq)})
+		e.events.Info("stance", "kind", s.Kind, "from", speaker, "seq", s.Seq)
 	default:
 		if failed {
 			break
@@ -673,9 +669,9 @@ func (e *engine) judgeTurn(d *discussion, speaker string, w window) (string, err
 	case turnWindingDown:
 		return "", nil
 	case turnCapped:
-		return "", e.haltProtocol("", classTurnCap, false)
+		return "", e.haltProtocol("", classTurnCap)
 	}
-	e.out.record([2]string{"pass", to}, [2]string{"from", speaker})
+	e.events.Info("pass", "to", to, "from", speaker)
 	return to, nil
 }
 
@@ -695,7 +691,7 @@ func (e *engine) settle(d *discussion) error {
 	if err := e.announce(l, *res.Settle); err != nil {
 		return err
 	}
-	e.out.line("settled", seqText(d.finding))
+	e.events.Info("settled", "seq", d.finding)
 	if !d.change() {
 		return nil
 	}
@@ -713,13 +709,13 @@ func (e *engine) actingOrStop() (string, error) {
 	if err != nil || seat != "" {
 		return seat, err
 	}
-	return "", e.haltProtocol("", classNoBackup, false)
+	return "", e.haltProtocol("", classNoBackup)
 }
 
 // fix launches the finder to apply the agreed proposal and writes the fix record for the first counted fixed.
 // A launch with no fixed for the finding hands the fix to the acting seat once.
 func (e *engine) fix(finding int64, finder string, proposal int64) error {
-	w, err := e.launchWindow(finder, launchFix, e.fixPrompt(finder, finding, proposal))
+	w, err := e.launchWindow(finder, launchFix, finding, e.fixPrompt(finder, finding, proposal))
 	if err == nil {
 		err = e.judgeBacklog()
 	}
@@ -736,7 +732,7 @@ func (e *engine) fix(finding int64, finder string, proposal int64) error {
 	if err != nil {
 		return err
 	}
-	w, err = e.launchWindow(seat, launchFix, e.fixPrompt(seat, finding, proposal))
+	w, err = e.launchWindow(seat, launchFix, finding, e.fixPrompt(seat, finding, proposal))
 	if err == nil {
 		err = e.judgeBacklog()
 	}
@@ -749,22 +745,22 @@ func (e *engine) fix(finding int64, finder string, proposal int64) error {
 	if e.quiet() {
 		return e.halting()
 	}
-	return e.haltProtocol(seat, classNoFix, true)
+	return e.haltProtocol(seat, classNoFix)
 }
 
-// fixed writes the fix record for a counted fixed and prints its status.
+// fixed writes the fix record for a counted fixed and its event.
 func (e *engine) fixed(finding int64, m client.Message, from string) error {
 	if _, err := e.writeRecord(client.FixRecord{Conversation: e.name, Finding: finding, Fixed: m.Seq}); err != nil {
 		return err
 	}
-	e.out.record([2]string{"fixed", seqText(finding)}, [2]string{"from", from})
+	e.events.Info("fixed", "seq", finding, "from", from)
 	return nil
 }
 
 // stall launches the acting seat to extend or deadlock. It reports whether the discussion continues.
 // A seat that ends timed-out with no single decision hands the stall to the backup.
 func (e *engine) stall(d *discussion) (bool, error) {
-	e.out.line("stall", seqText(d.finding))
+	e.events.Info("stall", "seq", d.finding)
 	for {
 		seat, err := e.actingOrStop()
 		if err != nil {
@@ -774,7 +770,7 @@ func (e *engine) stall(d *discussion) (bool, error) {
 		if err != nil {
 			return false, e.busErr(err)
 		}
-		w, err := e.launchWindow(seat, launchStall, e.stallPrompt(seat, d, l.asksOf(d.finding)))
+		w, err := e.launchWindow(seat, launchStall, d.finding, e.stallPrompt(seat, d, l.asksOf(d.finding)))
 		if err != nil {
 			return false, err
 		}
@@ -808,10 +804,10 @@ func (e *engine) stall(d *discussion) (bool, error) {
 				}
 				continue
 			}
-			return false, e.haltProtocol(seat, classNoDecision, true)
+			return false, e.haltProtocol(seat, classNoDecision)
 		}
 		if len(deadlocks) == 1 {
-			e.out.record([2]string{"deadlock", seqText(d.finding)}, [2]string{"from", seat})
+			e.events.Info("deadlock", "seq", d.finding, "from", seat)
 			if _, err := e.writeRecord(client.HaltRecord{Conversation: e.name, Finding: d.finding}); err != nil {
 				return false, err
 			}
@@ -843,16 +839,12 @@ func (e *engine) extend(d *discussion, seat string, ext client.Message) (bool, e
 	case turnWindingDown:
 		return false, nil
 	case turnCapped:
-		return false, e.haltProtocol("", classTurnCap, false)
+		return false, e.haltProtocol("", classTurnCap)
 	}
 	if len(refreshed) == 0 {
 		return true, nil
 	}
-	group := [][2]string{{"extend", seqText(d.finding)}}
-	for _, name := range refreshed {
-		group = append(group, [2]string{"to", name})
-	}
-	e.out.record(group...)
+	e.events.Info("extend", "seq", d.finding, "to", strings.Join(refreshed, " "))
 	return true, nil
 }
 
@@ -867,7 +859,8 @@ func (e *engine) report(d *discussion) error {
 		if err != nil {
 			return err
 		}
-		w, err := e.launchWindow(seat, launchReport, e.reportPrompt(seat, d, l))
+		finding, _ := l.halted()
+		w, err := e.launchWindow(seat, launchReport, finding, e.reportPrompt(seat, d, l))
 		if err != nil {
 			return err
 		}
@@ -887,7 +880,7 @@ func (e *engine) report(d *discussion) error {
 		if e.quiet() {
 			return e.halting()
 		}
-		return e.haltProtocol(seat, classNoReport, true)
+		return e.haltProtocol(seat, classNoReport)
 	}
 }
 
@@ -909,34 +902,60 @@ func (e *engine) reportAgain() (bool, error) {
 	return true, e.report(nil)
 }
 
-// reportStop prints the stop result from the messages and records before the done the stop record names.
-// An unsettled stop with no halt publishes one unsettled error about that done, under a derived transaction id.
+// reportStop reads the stop result from the messages and records before the done the stop record names, and keeps it
+// for the result. An unsettled stop with no halt publishes one unsettled error about that done, under a derived
+// transaction id. Any outcome but done is ErrUnresolved.
 func (e *engine) reportStop() error {
-	l, err := e.ledgerOn(e.root)
+	r, err := e.readStop(e.root)
 	if err != nil {
 		return err
 	}
-	stop, ok := l.recs.stopped()
-	if !ok {
+	if r == nil {
 		return errors.New("closed with no stop record")
 	}
-	r := l.stopResultAt(stop.Done)
-	for _, seq := range r.unsettled {
-		e.out.line("unsettled", seqText(seq))
-	}
-	for _, seq := range r.unfixed {
-		e.out.line("unfixed", seqText(seq))
-	}
-	if r.outcome == outcomeUnsettled {
-		if err := e.factErr("", classUnsettled, stop.Done, factTx(classUnsettled, seqText(stop.Done))); err != nil {
+	e.stopRes = r
+	if r.Outcome == outcomeUnsettled {
+		if err := e.factErr("", classUnsettled, r.Done, factTx(classUnsettled, seqText(r.Done))); err != nil {
 			return err
 		}
 	}
-	e.printOutcome(r.outcome)
-	if r.outcome != outcomeDone {
+	if r.Outcome != outcomeDone {
 		return ErrUnresolved
 	}
 	return nil
+}
+
+// readStop is the stop result at the done the stop record names, or nil when the run holds no stop record.
+func (e *engine) readStop(ctx context.Context) (*StopResult, error) {
+	e.mu.Lock()
+	_, ok := e.recs.stopped()
+	e.mu.Unlock()
+	if !ok {
+		return nil, nil
+	}
+	l, err := e.ledgerOn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stop, _ := l.recs.stopped()
+	return l.stopResultOf(stop.Done), nil
+}
+
+// recordedStop is the stop result for the run's result: the one reportStop kept, or else one read now for a run that
+// stopped after its stop record was stored, such as on a lost lease. The read is bounded on its own clock so a signal
+// does not prevent it, and a failed read is reported on stderr and leaves the stop result out.
+func (e *engine) recordedStop() *StopResult {
+	if e.stopRes != nil {
+		return e.stopRes
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(e.root), releaseLimit)
+	defer cancel()
+	r, err := e.readStop(ctx)
+	if err != nil {
+		_ = e.show(fmt.Errorf("stop result: %w", err))
+		return nil
+	}
+	return r
 }
 
 func seqText(seq int64) string {

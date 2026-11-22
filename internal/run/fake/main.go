@@ -23,9 +23,11 @@ import (
 )
 
 type plan struct {
-	ID       string          `json:"id"`
-	IDExit   int             `json:"idExit"`
-	IDStderr string          `json:"idStderr"`
+	ID       string `json:"id"`
+	IDExit   int    `json:"idExit"`
+	IDStderr string `json:"idStderr"`
+	// IDNotice is written to stderr by a successful id lookup.
+	IDNotice string          `json:"idNotice"`
 	Body     string          `json:"body"`
 	BodyExit int             `json:"bodyExit"`
 	DenyPerm map[string]bool `json:"denyPerm"`
@@ -36,6 +38,8 @@ type plan struct {
 	Scopes     string          `json:"scopes"`
 	TkExit     int             `json:"tkExit"`
 	TkStderr   string          `json:"tkStderr"`
+	// TkNotice is written to stderr by a successful scope list.
+	TkNotice string `json:"tkNotice"`
 }
 
 type text struct {
@@ -106,6 +110,7 @@ func tk(dir string, p plan, args []string) {
 		fmt.Fprint(os.Stderr, p.TkStderr)
 		os.Exit(p.TkExit)
 	}
+	fmt.Fprint(os.Stderr, p.TkNotice)
 	fmt.Fprint(os.Stdout, p.Scopes)
 }
 
@@ -134,6 +139,7 @@ func start(dir string, p plan, args []string) {
 			fmt.Fprint(os.Stderr, p.IDStderr)
 			os.Exit(p.IDExit)
 		}
+		fmt.Fprint(os.Stderr, p.IDNotice)
 		fmt.Fprintln(os.Stdout, p.ID)
 	case "get":
 		if p.BodyExit != 0 {

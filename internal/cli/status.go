@@ -114,13 +114,7 @@ func writeStatus(w io.Writer, st run.Status) error {
 		lw.integer("discussing", *st.Discussing)
 	}
 	if st.Stop != nil {
-		lw.integer("done", st.Stop.Done)
-		for _, seq := range st.Stop.Unsettled {
-			lw.integer("unsettled", seq)
-		}
-		for _, seq := range st.Stop.Unfixed {
-			lw.integer("unfixed", seq)
-		}
+		lw.stopLines(st.Stop)
 		lw.plain("run_outcome", st.Stop.Outcome)
 	}
 	if st.StopError != nil {

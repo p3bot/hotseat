@@ -57,7 +57,7 @@ type MemberStatus struct {
 	Status string
 }
 
-// StopResult is the stop result of a recorded done, from the rule run prints its own stop result by.
+// StopResult is the stop result of a recorded done, from the one rule run reports its own stop result by.
 type StopResult struct {
 	Done      int64
 	Unsettled []int64
@@ -135,8 +135,7 @@ func ReadStatus(ctx context.Context, address, token, conversation string) (Statu
 	}
 	stop, stopped := recs.stopped()
 	if stopped {
-		r := l.stopResultAt(stop.Done)
-		st.Stop = &StopResult{Done: stop.Done, Unsettled: r.unsettled, Unfixed: r.unfixed, Outcome: r.outcome}
+		st.Stop = l.stopResultOf(stop.Done)
 	}
 	for _, m := range msgs {
 		if isStopError(m) && (!stopped || m.Seq > stop.Done) && (st.StopError == nil || m.Seq > st.StopError.Seq) {

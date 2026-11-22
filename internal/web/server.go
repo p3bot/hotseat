@@ -35,6 +35,11 @@ func URL(hostport string) string {
 	return "http://" + hostport
 }
 
+// ConversationURL is the address a browser opens for the named conversation's view on a page bound at hostport.
+func ConversationURL(hostport, name string) string {
+	return URL(hostport) + conversationPath(name)
+}
+
 // Server calls one bus.
 // Token is the capability secret. Empty omits the header.
 // Page responses do not include Token.

@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -84,6 +85,8 @@ type planFile struct {
 	Scopes     string              `json:"scopes"`
 	TkExit     int                 `json:"tkExit"`
 	TkStderr   string              `json:"tkStderr"`
+	IDNotice   string              `json:"idNotice,omitempty"`
+	TkNotice   string              `json:"tkNotice,omitempty"`
 }
 
 type textFile struct {
@@ -282,15 +285,119 @@ func (h *harness) base() Config {
 		TimeoutSet:    true,
 		Permission:    DefaultPermission,
 		PermissionSet: true,
+		Verbose:       true,
+		Clock:         fixedClock,
 	}
 }
 
-func (h *harness) run(ctx context.Context, cfg Config) (string, string, error) {
+// fixedClock stops time for run, so every result block ends elapsed: 0s.
+func fixedClock() time.Time {
+	return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+}
+
+func (h *harness) run(ctx context.Context, cfg Config) (*recorder, string, error) {
 	h.t.Helper()
 	h.save()
-	var stdout, stderr bytes.Buffer
-	err := executePaced(ctx, cfg, h.pace, &stdout, &stderr)
-	return stdout.String(), stderr.String(), err
+	out := &recorder{}
+	var stderr bytes.Buffer
+	err := executePaced(ctx, cfg, h.pace, out, &stderr)
+	return out, stderr.String(), err
+}
+
+// recorder is a Reporter that keeps what a run reported. A test may read it while the run goes.
+type recorder struct {
+	mu     sync.Mutex
+	unheld bool
+	header *Header
+	result *Result
+}
+
+func (r *recorder) Unheld() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.unheld = true
+}
+
+func (r *recorder) Header(h Header) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.header = &h
+}
+
+func (r *recorder) Result(res Result) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.result = &res
+}
+
+// silent reports a run that reported nothing, as one that stopped before its conversation was bound.
+func (r *recorder) silent() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return !r.unheld && r.header == nil && r.result == nil
+}
+
+// onlyUnheld reports a run that reported Unheld and nothing else.
+func (r *recorder) onlyUnheld() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.unheld && r.header == nil && r.result == nil
+}
+
+// held reports whether the header was reported.
+func (r *recorder) held() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.header != nil
+}
+
+// outcome is the reported outcome: the result's, error for Unheld, or empty for neither.
+func (r *recorder) outcome() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case r.result != nil:
+		return r.result.Outcome
+	case r.unheld:
+		return outcomeError
+	}
+	return ""
+}
+
+// endedBy reports an error stop of class.
+func (r *recorder) endedBy(class string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.result != nil && r.result.StopClass == class && r.result.Outcome == outcomeError
+}
+
+// stop is the reported stop result, or nil.
+func (r *recorder) stop() *StopResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.result == nil {
+		return nil
+	}
+	return r.result.Stop
+}
+
+// stopIs reports a stop result naming done with exactly unsettled and unfixed.
+func (r *recorder) stopIs(done int64, unsettled, unfixed []int64) bool {
+	s := r.stop()
+	return s != nil && s.Done == done && slices.Equal(s.Unsettled, unsettled) && slices.Equal(s.Unfixed, unfixed)
+}
+
+func (r *recorder) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return fmt.Sprintf("unheld %v header %+v result %+v stop %+v", r.unheld, r.header, r.result, stopOf(r.result))
+}
+
+func stopOf(res *Result) *StopResult {
+	if res == nil {
+		return nil
+	}
+	return res.Stop
 }
 
 func (h *harness) calls() []call {
@@ -482,10 +589,10 @@ func TestRunCreatesNamedConversationAndPublishesInstructions(t *testing.T) {
 	cctx, cancel := ctx()
 	defer cancel()
 	done := make(chan error, 1)
-	var stdout string
+	var out *recorder
 	go func() {
 		var err error
-		stdout, _, err = h.run(cctx, cfg)
+		out, _, err = h.run(cctx, cfg)
 		done <- err
 	}()
 	deadline := time.Now().Add(8 * time.Second)
@@ -498,11 +605,11 @@ func TestRunCreatesNamedConversationAndPublishesInstructions(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if conv.Name == "" {
-		t.Fatal(stdout, h.calls())
+		t.Fatal(out, h.calls())
 	}
 	h.publish(conv.Name, "alpha", "done", "finished", nil)
 	if err := <-done; err != nil {
-		t.Fatal(err, stdout)
+		t.Fatal(err, out)
 	}
 	if conv.Task != "tasks:hotseat/review/ticket" || conv.Ticket != "foo-x234" || conv.Seat != "alpha" {
 		t.Fatalf("binding %+v", conv)
@@ -531,8 +638,8 @@ func TestRunCreatesNamedConversationAndPublishesInstructions(t *testing.T) {
 			t.Fatalf("cwd %s", c.Dir)
 		}
 	}
-	if !strings.Contains(stdout, "conversation: foo-x234-review-ticket") || !strings.Contains(stdout, "outcome: done") {
-		t.Fatalf("stdout %s", stdout)
+	if h := out.header; h == nil || h.Conversation != "foo-x234-review-ticket" || out.outcome() != "done" {
+		t.Fatalf("out %s", out)
 	}
 }
 
@@ -696,9 +803,9 @@ func TestContinueRebuildsMissingInstructionsAndRejectsMismatch(t *testing.T) {
 	}
 
 	cfg.Agents = "bravo=hotseat/claude:c1 alpha=hotseat/grok:g1"
-	_, stdout, err := h.run(context.Background(), cfg)
-	if err == nil || stdout != "" {
-		t.Fatalf("mismatch err %v stdout %q", err, stdout)
+	out, _, err := h.run(context.Background(), cfg)
+	if err == nil || !out.silent() {
+		t.Fatalf("mismatch err %v out %q", err, out)
 	}
 	if n := countKind(h.messages("review-ticket-foo-x234"), kindInstructions); n != 1 {
 		t.Fatalf("mismatch wrote instructions %d", n)
@@ -711,9 +818,9 @@ func TestContinueWithoutTaskOnMissingNameIsUsage(t *testing.T) {
 	cfg.TaskSet = false
 	cfg.Conversation = "missing"
 	cfg.ConversationSet = true
-	stdout, _, err := h.run(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "task is required") || stdout != "" {
-		t.Fatalf("err %v stdout %q", err, stdout)
+	out, _, err := h.run(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "task is required") || !out.silent() {
+		t.Fatalf("err %v out %q", err, out)
 	}
 	if h.onlyExists() {
 		t.Fatal("created")
@@ -794,12 +901,12 @@ func TestMissingStartIsNotReportedAsAMissingPermission(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
 	cfg.StartBin = filepath.Join(h.dir, "missing-start")
-	stdout, _, err := h.run(context.Background(), cfg)
+	out, _, err := h.run(context.Background(), cfg)
 	if err == nil || strings.Contains(err.Error(), "does not define permission") || !strings.Contains(err.Error(), "missing-start") {
 		t.Fatal(err)
 	}
-	if stdout != "" {
-		t.Fatalf("stdout %s", stdout)
+	if !out.silent() {
+		t.Fatalf("out %s", out)
 	}
 	if h.onlyExists() {
 		t.Fatal("created")
@@ -809,12 +916,12 @@ func TestMissingStartIsNotReportedAsAMissingPermission(t *testing.T) {
 func TestPermissionRefusalCreatesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.plan.DenyPerm = map[string]bool{"hotseat/grok": true}
-	stdout, _, err := h.run(context.Background(), h.base())
+	out, _, err := h.run(context.Background(), h.base())
 	if err == nil || !strings.Contains(err.Error(), "hotseat/grok does not define permission auto") {
 		t.Fatal(err)
 	}
-	if stdout != "" {
-		t.Fatalf("stdout %s", stdout)
+	if !out.silent() {
+		t.Fatalf("out %s", out)
 	}
 	res := h.do("list", struct{}{})
 	if res.Outcome != bus.OutcomeOK || (res.Conversations != nil && len(*res.Conversations) != 0) {
@@ -851,12 +958,12 @@ func TestLocatorFailureTextIsShownOnce(t *testing.T) {
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
-	stdoutCh := make(chan string, 1)
+	outCh := make(chan *recorder, 1)
 	stderrCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		stdout, stderr, err := h.run(cctx, cfg)
-		stdoutCh <- stdout
+		out, stderr, err := h.run(cctx, cfg)
+		outCh <- out
 		stderrCh <- stderr
 		errCh <- err
 	}()
@@ -871,10 +978,10 @@ func TestLocatorFailureTextIsShownOnce(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
-	stdout := <-stdoutCh
+	out := <-outCh
 	stderr := <-stderrCh
-	if strings.Count(stderr, "no such field") != 1 || strings.Contains(stdout, "no such field") {
-		t.Fatalf("stdout %s\nstderr %s", stdout, stderr)
+	if strings.Count(stderr, "no such field") != 1 || strings.Contains(out.String(), "no such field") {
+		t.Fatalf("out %s\nstderr %s", out, stderr)
 	}
 	var errBody string
 	for _, m := range h.messages(name) {
@@ -945,11 +1052,11 @@ func TestMemberStderrIsShownAndSessionTextIsNot(t *testing.T) {
 	cctx, cancel := ctx()
 	defer cancel()
 	errCh := make(chan error, 1)
-	stdoutCh := make(chan string, 1)
+	outCh := make(chan *recorder, 1)
 	stderrCh := make(chan string, 1)
 	go func() {
-		stdout, stderr, err := h.run(cctx, cfg)
-		stdoutCh <- stdout
+		out, stderr, err := h.run(cctx, cfg)
+		outCh <- out
 		stderrCh <- stderr
 		errCh <- err
 	}()
@@ -973,13 +1080,13 @@ func TestMemberStderrIsShownAndSessionTextIsNot(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
-	stdout := <-stdoutCh
+	out := <-outCh
 	stderr := <-stderrCh
 	if !strings.Contains(stderr, "model failed") {
 		t.Fatalf("stderr %q", stderr)
 	}
-	if strings.Contains(stdout, "model failed") || strings.Contains(stdout, "UNIQUEFRAGMENT") || strings.Contains(stderr, "UNIQUEFRAGMENT") {
-		t.Fatalf("stdout %s\nstderr %s", stdout, stderr)
+	if strings.Contains(out.String(), "model failed") || strings.Contains(out.String(), "UNIQUEFRAGMENT") || strings.Contains(stderr, "UNIQUEFRAGMENT") {
+		t.Fatalf("out %s\nstderr %s", out, stderr)
 	}
 }
 
@@ -993,10 +1100,12 @@ func TestParallelSerialBadTurnAndAct(t *testing.T) {
 	cfg.TicketSet = false
 	cctx, cancel := ctx()
 	defer cancel()
-	stdoutCh := make(chan string, 1)
+	outCh := make(chan *recorder, 1)
+	stderrCh := make(chan string, 1)
 	go func() {
-		stdout, _, _ := h.run(cctx, cfg)
-		stdoutCh <- stdout
+		out, stderr, _ := h.run(cctx, cfg)
+		outCh <- out
+		stderrCh <- stderr
 	}()
 	name := h.waitName()
 	deadline := time.Now().Add(8 * time.Second)
@@ -1065,13 +1174,14 @@ func TestParallelSerialBadTurnAndAct(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	h.publish(name, "alpha", "done", "finished", nil)
-	stdout := <-stdoutCh
+	out := <-outCh
 	cancel()
 	if bad < 2 || act != 1 {
 		t.Fatalf("bad %d act %d", bad, act)
 	}
-	if !strings.Contains(stdout, "turn: parallel") || !strings.Contains(stdout, "to: charlie") || !strings.Contains(stdout, "outcome: done") {
-		t.Fatalf("stdout %s", stdout)
+	stderr := <-stderrCh
+	if !strings.Contains(stderr, " event=turn ") || !strings.Contains(stderr, "mode=parallel to=\"charlie bravo\"") || out.outcome() != "done" {
+		t.Fatalf("out %s\nstderr %s", out, stderr)
 	}
 	alpha := launches(h.calls(), "alpha")
 	if len(alpha) < 2 {
@@ -1164,14 +1274,16 @@ func TestTimeoutIsStoredWhenActingSeatReadFails(t *testing.T) {
 		return false
 	})
 	e := &engine{
-		root:   context.Background(),
-		addr:   addr,
-		holder: h.engineLease("kept"),
-		name:   "kept",
-		seat:   "alpha",
-		roster: []agent{{name: "alpha"}, {name: "bravo"}},
-		status: map[string]string{"alpha": statusTimedOut},
-		out:    &statusWriter{w: io.Discard},
+		root:     context.Background(),
+		addr:     addr,
+		holder:   h.engineLease("kept"),
+		name:     "kept",
+		seat:     "alpha",
+		roster:   []agent{{name: "alpha"}, {name: "bravo"}},
+		status:   map[string]string{"alpha": statusTimedOut},
+		reporter: discardReporter{},
+		events:   newEventLog(nil),
+		clock:    time.Now,
 	}
 	err := e.markTimeout("bravo", classProcessLimit)
 	if err == nil {
@@ -1274,9 +1386,9 @@ func TestNoBackupLeavesTheConversationOpen(t *testing.T) {
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1"
 	cfg.TicketSet = false
-	stdout, _, err := h.run(context.Background(), cfg)
-	if err == nil || !strings.Contains(stdout, "outcome: error") {
-		t.Fatalf("err %v stdout %s", err, stdout)
+	out, _, err := h.run(context.Background(), cfg)
+	if err == nil || out.outcome() != "error" {
+		t.Fatalf("err %v out %s", err, out)
 	}
 	conv := h.only()
 	if conv.Status == "closed" {
@@ -1300,11 +1412,11 @@ func TestDoneFromTrailerAfterTimeoutAndNotFromAnotherName(t *testing.T) {
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
-	stdoutCh := make(chan string, 1)
+	outCh := make(chan *recorder, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		stdout, _, err := h.run(cctx, cfg)
-		stdoutCh <- stdout
+		out, _, err := h.run(cctx, cfg)
+		outCh <- out
 		errCh <- err
 	}()
 	name := h.waitName()
@@ -1329,10 +1441,10 @@ func TestDoneFromTrailerAfterTimeoutAndNotFromAnotherName(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
-	stdout := <-stdoutCh
+	out := <-outCh
 	conv, _ := h.conv(name)
-	if conv.Status != "closed" || !strings.Contains(stdout, "outcome: done") {
-		t.Fatalf("status %s stdout %s", conv.Status, stdout)
+	if conv.Status != "closed" || out.outcome() != "done" {
+		t.Fatalf("status %s out %s", conv.Status, out)
 	}
 	cancel()
 }
@@ -1362,9 +1474,9 @@ func TestDoneFromTheBackupCloses(t *testing.T) {
 	cfg.TaskSet = false
 	cfg.TicketSet = false
 	cfg.AgentsSet = false
-	stdout, _, err := h.run(context.Background(), cfg)
-	if err != nil || !strings.Contains(stdout, "outcome: done") {
-		t.Fatalf("err %v stdout %s", err, stdout)
+	out, _, err := h.run(context.Background(), cfg)
+	if err != nil || out.outcome() != "done" {
+		t.Fatalf("err %v out %s", err, out)
 	}
 	conv, _ := h.conv("kept")
 	if conv.Status != "closed" {
@@ -1503,9 +1615,9 @@ func TestResumeClosesBeforeLaunchWhenDoneIsAlreadyStored(t *testing.T) {
 	cfg.ConversationSet = true
 	cfg.TaskSet = false
 	cfg.TicketSet = false
-	stdout, stderr, err := h.run(context.Background(), cfg)
+	out, stderr, err := h.run(context.Background(), cfg)
 	if err != nil {
-		t.Fatal(err, stdout, stderr)
+		t.Fatal(err, out, stderr)
 	}
 	if len(launches(h.calls(), "bravo")) != 0 || len(launches(h.calls(), "charlie")) != 0 || len(launches(h.calls(), "alpha")) != 0 {
 		t.Fatalf("launched after done %+v", h.calls())
@@ -1514,8 +1626,8 @@ func TestResumeClosesBeforeLaunchWhenDoneIsAlreadyStored(t *testing.T) {
 	if !ok || conv.Status != "closed" {
 		t.Fatalf("status %+v", conv)
 	}
-	if !strings.Contains(stdout, "outcome: done") {
-		t.Fatalf("stdout %s", stdout)
+	if out.outcome() != "done" {
+		t.Fatalf("out %s", out)
 	}
 }
 
@@ -1583,11 +1695,13 @@ func TestHaltMarksAKilledMemberTimedOutWithoutHandoff(t *testing.T) {
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
 	cctx, cancel := ctx()
 	defer cancel()
-	stdoutCh := make(chan string, 1)
+	outCh := make(chan *recorder, 1)
+	stderrCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		stdout, _, err := h.run(cctx, cfg)
-		stdoutCh <- stdout
+		out, stderr, err := h.run(cctx, cfg)
+		outCh <- out
+		stderrCh <- stderr
 		errCh <- err
 	}()
 	name := h.waitName()
@@ -1630,11 +1744,9 @@ func TestHaltMarksAKilledMemberTimedOutWithoutHandoff(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
-	stdout := <-stdoutCh
-	timed := strings.LastIndex(stdout, "status: timed-out")
-	done := strings.LastIndex(stdout, "outcome: done")
-	if timed < 0 || done < timed || !strings.HasSuffix(strings.TrimRight(stdout, "\n"), "outcome: done") {
-		t.Fatalf("stdout %s", stdout)
+	out, stderr := <-outCh, <-stderrCh
+	if !strings.Contains(stderr, " event=exit member=bravo ") || out.outcome() != "done" {
+		t.Fatalf("out %s\nstderr %s", out, stderr)
 	}
 	for _, c := range h.calls() {
 		if strings.Contains(c.Stdin, "acting seat") {
@@ -1856,9 +1968,9 @@ func TestRestartDeadPidTimesOutBeforeLaunchAndLivePidIsWaited(t *testing.T) {
 	cfg.ConversationSet = true
 	cfg.TaskSet = false
 	cfg.AgentsSet = false
-	stdout, _, err := h.run(context.Background(), cfg)
+	out, _, err := h.run(context.Background(), cfg)
 	if err != nil {
-		t.Fatal(err, stdout)
+		t.Fatal(err, out)
 	}
 	if h.member("review-ticket-foo-x234", "alpha").Status != statusTimedOut {
 		t.Fatalf("status %s", h.member("review-ticket-foo-x234", "alpha").Status)
@@ -1937,9 +2049,9 @@ func TestResumeDoesNotAdoptOrSignalALiveProcessWhoseStartTokenDiffers(t *testing
 	cfg.AgentsSet = false
 	cfg.Timeout = 200 * time.Millisecond
 	cfg.TimeoutSet = true
-	stdout, stderr, err := h.run(context.Background(), cfg)
+	out, stderr, err := h.run(context.Background(), cfg)
 	if err != nil {
-		t.Fatal(err, stdout, stderr)
+		t.Fatal(err, out, stderr)
 	}
 	if !alive(pid) {
 		t.Fatal("signalled a process whose start token differs")
@@ -1950,8 +2062,8 @@ func TestResumeDoesNotAdoptOrSignalALiveProcessWhoseStartTokenDiffers(t *testing
 	if countBody(h.messages("kept"), classProcessExit) == 0 {
 		t.Fatalf("msgs %+v", h.messages("kept"))
 	}
-	if strings.Contains(stdout+stderr, fmt.Sprint(pid)) || strings.Contains(stdout+stderr, token) {
-		t.Fatalf("pid or token leaked\n%s\n%s", stdout, stderr)
+	if strings.Contains(out.String()+stderr, fmt.Sprint(pid)) || strings.Contains(out.String()+stderr, token) {
+		t.Fatalf("pid or token leaked\n%s\n%s", out, stderr)
 	}
 	conv, _ := h.conv("kept")
 	if conv.Status != "closed" {
@@ -2001,8 +2113,8 @@ func TestForeignProcessLimitStopsTheProcess(t *testing.T) {
 	errCh := make(chan error, 1)
 	outCh := make(chan string, 1)
 	go func() {
-		stdout, stderr, err := h.run(cctx, cfg)
-		outCh <- stdout + stderr
+		out, stderr, err := h.run(cctx, cfg)
+		outCh <- out.String() + stderr
 		errCh <- err
 	}()
 	deadline := time.Now().Add(8 * time.Second)
@@ -2016,12 +2128,12 @@ func TestForeignProcessLimitStopsTheProcess(t *testing.T) {
 		t.Fatal("process still running after the limit")
 	}
 	h.publish("kept", "alpha", "done", "yes", nil)
-	var stdout, stderr string
+	var out string
 	select {
 	case err := <-errCh:
-		stdout = <-outCh
+		out = <-outCh
 		if err != nil {
-			t.Fatal(err, stdout)
+			t.Fatal(err, out)
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("done left the run waiting")
@@ -2032,8 +2144,8 @@ func TestForeignProcessLimitStopsTheProcess(t *testing.T) {
 	if countBody(h.messages("kept"), classProcessLimit) == 0 {
 		t.Fatalf("msgs %+v", h.messages("kept"))
 	}
-	if strings.Contains(stdout+stderr, fmt.Sprint(pid)) {
-		t.Fatalf("pid leaked\n%s\n%s", stdout, stderr)
+	if strings.Contains(out, fmt.Sprint(pid)) {
+		t.Fatalf("pid leaked\n%s", out)
 	}
 	if len(launches(h.calls(), "alpha")) != 0 {
 		t.Fatal("launched a second process")
@@ -2075,10 +2187,10 @@ func TestDoneDuringLivePidWaitStopsBeforeTheLimit(t *testing.T) {
 	cctx, cancel := ctx()
 	defer cancel()
 	errCh := make(chan error, 1)
-	outCh := make(chan string, 1)
+	outCh := make(chan *recorder, 1)
 	go func() {
-		stdout, stderr, err := h.run(cctx, cfg)
-		outCh <- stdout + stderr
+		out, _, err := h.run(cctx, cfg)
+		outCh <- out
 		errCh <- err
 	}()
 	time.Sleep(200 * time.Millisecond)
@@ -2088,9 +2200,9 @@ func TestDoneDuringLivePidWaitStopsBeforeTheLimit(t *testing.T) {
 	h.publish("kept", "alpha", "done", "yes", nil)
 	select {
 	case err := <-errCh:
-		stdout := <-outCh
+		out := <-outCh
 		if err != nil {
-			t.Fatal(err, stdout)
+			t.Fatal(err, out)
 		}
 		if alive(pid) {
 			t.Fatal("left the process running")
@@ -2098,8 +2210,8 @@ func TestDoneDuringLivePidWaitStopsBeforeTheLimit(t *testing.T) {
 		if countBody(h.messages("kept"), classProcessLimit) != 0 {
 			t.Fatalf("msgs %+v", h.messages("kept"))
 		}
-		if !strings.Contains(stdout, "outcome: done") {
-			t.Fatalf("stdout %s", stdout)
+		if out.outcome() != "done" {
+			t.Fatalf("out %s", out)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("done left the run waiting on the live pid")
@@ -2264,9 +2376,9 @@ func TestStoredDoneStopsALivePidWithoutASession(t *testing.T) {
 	cfg.InteractiveSet = true
 	h.pace.grace = 300 * time.Millisecond
 	start := time.Now()
-	stdout, stderr, err := h.run(context.Background(), cfg)
+	out, stderr, err := h.run(context.Background(), cfg)
 	if err != nil {
-		t.Fatal(err, stdout, stderr)
+		t.Fatal(err, out, stderr)
 	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("waited for the live pid: %s", time.Since(start))
@@ -2283,8 +2395,8 @@ func TestStoredDoneStopsALivePidWithoutASession(t *testing.T) {
 	if countBody(h.messages("kept"), classProcessLimit) != 0 || countBody(h.messages("kept"), classProcessExit) != 0 || len(launches(h.calls(), "alpha")) != 0 {
 		t.Fatalf("msgs %+v calls %+v", h.messages("kept"), h.calls())
 	}
-	if !strings.Contains(stdout, "outcome: done") || strings.Contains(stdout+stderr, fmt.Sprint(pid)) {
-		t.Fatalf("stdout %s\n%s", stdout, stderr)
+	if out.outcome() != "done" || strings.Contains(out.String()+stderr, fmt.Sprint(pid)) {
+		t.Fatalf("out %s\n%s", out, stderr)
 	}
 }
 
@@ -2333,9 +2445,9 @@ func TestStoredDoneStopsALivePidWithASession(t *testing.T) {
 	cfg.TimeoutSet = true
 	h.pace.grace = 300 * time.Millisecond
 	start := time.Now()
-	stdout, stderr, err := h.run(context.Background(), cfg)
+	out, stderr, err := h.run(context.Background(), cfg)
 	if err != nil {
-		t.Fatal(err, stdout, stderr)
+		t.Fatal(err, out, stderr)
 	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("waited for the live pid: %s", time.Since(start))
@@ -2349,8 +2461,8 @@ func TestStoredDoneStopsALivePidWithASession(t *testing.T) {
 	if countBody(h.messages("kept"), classProcessExit) != 0 || countBody(h.messages("kept"), classProcessLimit) != 0 || len(launches(h.calls(), "alpha")) != 0 {
 		t.Fatalf("msgs %+v calls %+v", h.messages("kept"), h.calls())
 	}
-	if strings.Contains(stdout+stderr, "sess-alpha") || strings.Contains(stdout+stderr, fmt.Sprint(pid)) {
-		t.Fatalf("secret leaked\n%s\n%s", stdout, stderr)
+	if strings.Contains(out.String()+stderr, "sess-alpha") || strings.Contains(out.String()+stderr, fmt.Sprint(pid)) {
+		t.Fatalf("secret leaked\n%s\n%s", out, stderr)
 	}
 }
 
@@ -2497,23 +2609,23 @@ func TestResumeWithoutRosterWatchesAndALaterRosterLaunches(t *testing.T) {
 	cfg.TaskSet = false
 	cfg.TicketSet = false
 	cfg.AgentsSet = false
-	var stdout lockedBuffer
-	var stderr bytes.Buffer
+	out := &recorder{}
+	var stderr lockedBuffer
 	cctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	h.save()
 	go func() {
-		errCh <- Execute(cctx, cfg, &stdout, &stderr)
+		errCh <- Execute(cctx, cfg, out, &stderr)
 	}()
 	seen := time.Time{}
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
 		case err := <-errCh:
-			t.Fatalf("exited before done: %v\n%s\n%s", err, stdout.String(), stderr.String())
+			t.Fatalf("exited before done: %v\n%s\n%s", err, out.String(), stderr.String())
 		default:
 		}
-		if strings.Contains(stdout.String(), "conversation: kept") {
+		if out.held() {
 			if seen.IsZero() {
 				seen = time.Now()
 			} else if time.Since(seen) > 300*time.Millisecond {
@@ -2522,8 +2634,8 @@ func TestResumeWithoutRosterWatchesAndALaterRosterLaunches(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if seen.IsZero() || strings.Contains(stdout.String(), "turn:") || strings.Contains(stdout.String(), "outcome:") {
-		t.Fatalf("stdout %s", stdout.String())
+	if seen.IsZero() || strings.Contains(stderr.String(), " event=turn ") || out.outcome() != "" {
+		t.Fatalf("out %s\nstderr %s", out.String(), stderr.String())
 	}
 	if len(launches(h.calls(), "bravo")) != 0 || len(launches(h.calls(), "alpha")) != 0 {
 		t.Fatalf("launched %+v", h.calls())
@@ -2592,8 +2704,8 @@ func TestRestartLaunchesAnOlderRecipientBeforeALaterTurn(t *testing.T) {
 	errCh := make(chan error, 1)
 	outCh := make(chan string, 1)
 	go func() {
-		stdout, stderr, err := h.run(cctx, cfg)
-		outCh <- stdout + stderr
+		out, stderr, err := h.run(cctx, cfg)
+		outCh <- out.String() + stderr
 		errCh <- err
 	}()
 	deadline := time.Now().Add(8 * time.Second)
@@ -2628,7 +2740,7 @@ func TestRestartLaunchesAnOlderRecipientBeforeALaterTurn(t *testing.T) {
 	cancel()
 }
 
-func TestStdoutOmitsSessionPidAndToken(t *testing.T) {
+func TestReportAndStderrOmitSessionPidAndToken(t *testing.T) {
 	h := newHarness(t)
 	tokenPath := filepath.Join(h.dir, "token")
 	if err := os.WriteFile(tokenPath, []byte("TOKENVALUE99\n"), 0o600); err != nil {
@@ -2640,11 +2752,11 @@ func TestStdoutOmitsSessionPidAndToken(t *testing.T) {
 	cfg.TokenFileSet = true
 	cctx, cancel := ctx()
 	defer cancel()
-	stdoutCh := make(chan string, 1)
+	outCh := make(chan *recorder, 1)
 	stderrCh := make(chan string, 1)
 	go func() {
-		stdout, stderr, _ := h.run(cctx, cfg)
-		stdoutCh <- stdout
+		out, stderr, _ := h.run(cctx, cfg)
+		outCh <- out
 		stderrCh <- stderr
 	}()
 	name := h.waitName()
@@ -2657,10 +2769,10 @@ func TestStdoutOmitsSessionPidAndToken(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	h.publish(name, "alpha", "done", "yes", nil)
-	stdout := <-stdoutCh
+	out := <-outCh
 	stderr := <-stderrCh
-	if strings.Contains(stdout, "sess-bravo") || strings.Contains(stdout, "TOKENVALUE99") || strings.Contains(stdout, "pid:") {
-		t.Fatalf("stdout %s", stdout)
+	if strings.Contains(out.String(), "sess-bravo") || strings.Contains(out.String(), "TOKENVALUE99") || strings.Contains(out.String(), "pid:") {
+		t.Fatalf("out %s", out)
 	}
 	if strings.Contains(stderr, "sess-bravo") || strings.Contains(stderr, "TOKENVALUE99") {
 		t.Fatalf("stderr %s", stderr)
@@ -2676,8 +2788,8 @@ func TestStdoutOmitsSessionPidAndToken(t *testing.T) {
 			t.Fatalf("prompt missing token path %s", c.Stdin)
 		}
 	}
-	if !strings.Contains(stdout, "exit: bravo") || !strings.Contains(stdout, "status: exited") {
-		t.Fatalf("stdout %s", stdout)
+	if !strings.Contains(stderr, " event=exit member=bravo code=0 ") || h.memberStatus(name, "bravo") != statusExited {
+		t.Fatalf("stderr %s", stderr)
 	}
 	cancel()
 }
@@ -2746,35 +2858,6 @@ func (w *overlapWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p)
 }
 
-func TestStatusRecordStaysTogether(t *testing.T) {
-	dest := &overlapWriter{}
-	w := &statusWriter{w: dest}
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		<-start
-		w.record([2]string{"member", "alpha"}, [2]string{"status", "exited"})
-	}()
-	go func() {
-		defer wg.Done()
-		<-start
-		w.record([2]string{"exit", "bravo"}, [2]string{"code", "0"})
-	}()
-	close(start)
-	wg.Wait()
-	if err := w.Err(); err != nil {
-		t.Fatal(err)
-	}
-	got := dest.buf.String()
-	alpha := "member: alpha\nstatus: exited\n"
-	bravo := "exit: bravo\ncode: 0\n"
-	if got != alpha+bravo && got != bravo+alpha {
-		t.Fatalf("text %q", got)
-	}
-}
-
 func TestStderrWritesDoNotOverlap(t *testing.T) {
 	dest := &overlapWriter{}
 	w := &lockedWriter{w: dest}
@@ -2813,7 +2896,7 @@ type note struct {
 	to         []string
 }
 
-// turnLaunches runs one turn from alpha to bravo with notes stored before and after it, and returns bravo's turn launches and stdout.
+// turnLaunches runs one turn from alpha to bravo with notes stored before and after it, and returns bravo's turn launches and out.
 // Live, bravo's boot holds its slot while the later notes are stored.
 func turnLaunches(t *testing.T, live bool, mode string, before, after []note) (int, string) {
 	t.Helper()
@@ -2863,13 +2946,13 @@ func turnLaunches(t *testing.T, live bool, mode string, before, after []note) (i
 	cctx, cancel := ctx()
 	defer cancel()
 	type result struct {
-		stdout string
-		err    error
+		out string
+		err error
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		stdout, stderr, err := h.run(cctx, cfg)
-		resCh <- result{stdout + stderr, err}
+		out, stderr, err := h.run(cctx, cfg)
+		resCh <- result{out.String() + stderr, err}
 	}()
 	if live {
 		name = h.waitName()
@@ -2897,7 +2980,7 @@ func turnLaunches(t *testing.T, live bool, mode string, before, after []note) (i
 	for time.Now().Before(deadline) && !followed() {
 		select {
 		case r := <-resCh:
-			t.Fatalf("run ended: %v %s", r.err, r.stdout)
+			t.Fatalf("run ended: %v %s", r.err, r.out)
 		default:
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -2908,7 +2991,7 @@ func turnLaunches(t *testing.T, live bool, mode string, before, after []note) (i
 	h.publish(name, "alpha", kindDone, "yes", nil)
 	r := <-resCh
 	if r.err != nil {
-		t.Fatalf("%v %s", r.err, r.stdout)
+		t.Fatalf("%v %s", r.err, r.out)
 	}
 	all := launches(h.calls(), "bravo")
 	turns, fixes := 0, 0
@@ -2927,7 +3010,7 @@ func turnLaunches(t *testing.T, live bool, mode string, before, after []note) (i
 	if len(all) != boots+turns+fixes {
 		t.Fatalf("bravo launches %d, want %d boot, %d turn, and %d fix", len(all), boots, turns, fixes)
 	}
-	return turns, r.stdout
+	return turns, r.out
 }
 
 func TestMemberIsLaunchedForATurnOnlyUntilItAnswersTheSender(t *testing.T) {
@@ -2952,30 +3035,30 @@ func TestMemberIsLaunchedForATurnOnlyUntilItAnswersTheSender(t *testing.T) {
 					label = "live"
 				}
 				t.Run(label+"/"+mode+"/"+tc.name, func(t *testing.T) {
-					turns, stdout := turnLaunches(t, live, mode, tc.before, tc.after)
+					turns, out := turnLaunches(t, live, mode, tc.before, tc.after)
 					want := 0
 					if tc.launched {
 						want = 1
 					}
 					if turns != want {
-						t.Fatalf("bravo turn launches %d, want %d\n%s", turns, want, stdout)
+						t.Fatalf("bravo turn launches %d, want %d\n%s", turns, want, out)
 					}
 					if tc.launched {
 						return
 					}
-					// A skipped member adds no status or exit line to its boot's. A finding adds bravo's fix launch.
-					rows, exits := 0, 0
+					// A skipped member adds no launch or exit event to its boot's. A finding adds bravo's fix launch.
+					runs := 0
 					if live {
-						rows, exits = 2, 1
+						runs = 1
 					}
 					if strings.Contains(tc.name, "finding") {
-						rows, exits = rows+2, exits+1
+						runs++
 					}
-					if got := strings.Count(stdout, "member: bravo\n"); got != rows {
-						t.Fatalf("bravo status lines %d, want %d\n%s", got, rows, stdout)
+					if got := strings.Count(out, " event=launch member=bravo "); got != runs {
+						t.Fatalf("bravo launch events %d, want %d\n%s", got, runs, out)
 					}
-					if got := strings.Count(stdout, "exit: bravo\n"); got != exits {
-						t.Fatalf("bravo exit lines %d, want %d\n%s", got, exits, stdout)
+					if got := strings.Count(out, " event=exit member=bravo "); got != runs {
+						t.Fatalf("bravo exit events %d, want %d\n%s", got, runs, out)
 					}
 				})
 			}
@@ -3006,4 +3089,12 @@ func TestFailedAnswerReadReturnsAnErrorAndDoesNotLaunch(t *testing.T) {
 	if got := launches(h.calls(), "bravo"); len(got) != 0 {
 		t.Fatalf("launched %+v", got)
 	}
+}
+
+// eventLine is an event line as newEventLog writes it, from the event on: what follows its time.
+func eventLine(event string, args ...any) string {
+	var b bytes.Buffer
+	newEventLog(&b).Info(event, args...)
+	_, rest, _ := strings.Cut(b.String(), " ")
+	return rest
 }
