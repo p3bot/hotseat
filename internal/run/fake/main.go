@@ -49,22 +49,22 @@ type text struct {
 }
 
 type run struct {
-	Exit     int    `json:"exit"`
-	ExitOn   string `json:"exitOn"`
-	Sleep    string `json:"sleep"`
-	JSON     string `json:"json"`
-	Stderr   string `json:"stderr"`
-	Register bool   `json:"register"`
+	Exit   int    `json:"exit"`
+	ExitOn string `json:"exitOn"`
+	Sleep  string `json:"sleep"`
+	JSON   string `json:"json"`
+	Stderr string `json:"stderr"`
+	Join   bool   `json:"join"`
 	// Steps script launches. A launch takes the first unused step whose On text is in its prompt.
 	Steps []step `json:"steps"`
 }
 
-// step is one scripted launch: the messages it publishes, then a pause and an exit code.
+// step is one scripted launch: the messages it sends, then a pause and an exit code.
 type step struct {
-	On      string    `json:"on"`
-	Publish []message `json:"publish"`
-	Sleep   string    `json:"sleep"`
-	Exit    int       `json:"exit"`
+	On    string    `json:"on"`
+	Send  []message `json:"send"`
+	Sleep string    `json:"sleep"`
+	Exit  int       `json:"exit"`
 }
 
 type message struct {
@@ -185,8 +185,8 @@ func locatorSet(p plan, module string) bool {
 func launch(dir string, p plan, stdin string) {
 	name := memberName(stdin)
 	spec := p.Launch[name]
-	if spec.Register {
-		postRegister(stdin, name)
+	if spec.Join {
+		postJoin(stdin, name)
 	}
 	hold := filepath.Join(dir, "hold", name)
 	deadline := time.Now().Add(30 * time.Second)
@@ -207,11 +207,11 @@ func launch(dir string, p plan, stdin string) {
 		code = 0
 	}
 	if st, ok := takeStep(dir, name, spec.Steps, stdin); ok {
-		conv := between(stdin, "in conversation ", ".\n")
-		for i, m := range st.Publish {
+		chat := between(stdin, "in conversation ", ".\n")
+		for i, m := range st.Send {
 			m.Body = fromPrompt(m.Body, stdin)
 			m.Re = reFromPrompt(m.Re, stdin)
-			publish(conv, name, fmt.Sprintf("%s-%d-%d", name, os.Getpid(), i), m)
+			send(chat, name, fmt.Sprintf("%s-%d-%d", name, os.Getpid(), i), m)
 		}
 		if d, err := time.ParseDuration(st.Sleep); err == nil {
 			time.Sleep(d)
@@ -273,14 +273,14 @@ func takeStep(dir, name string, steps []step, stdin string) (step, bool) {
 	return step{}, false
 }
 
-func publish(conv, from, txid string, m message) {
+func send(chat, from, txid string, m message) {
 	bus := os.Getenv("HOTSEAT_FAKE_BUS")
 	to := m.To
 	if to == nil {
 		to = []string{}
 	}
 	req := map[string]any{
-		"conversation": conv, "from": from, "to": to, "body": m.Body, "txid": txid, "kind": m.Kind,
+		"chat": chat, "from": from, "to": to, "body": m.Body, "txid": txid, "kind": m.Kind,
 	}
 	if m.Re != "" {
 		re, err := strconv.ParseInt(m.Re, 10, 64)
@@ -295,7 +295,7 @@ func publish(conv, from, txid string, m message) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	resp, err := http.Post("http://"+bus+"/publish", "application/json", bytes.NewReader(body))
+	resp, err := http.Post("http://"+bus+"/send", "application/json", bytes.NewReader(body))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -305,20 +305,20 @@ func publish(conv, from, txid string, m message) {
 		fmt.Fprintln(os.Stderr, cerr)
 	}
 	if err != nil || !bytes.Contains(raw, []byte(`"outcome":"ok"`)) {
-		fmt.Fprintf(os.Stderr, "publish %s: %v %s\n", m.Kind, err, raw)
+		fmt.Fprintf(os.Stderr, "send %s: %v %s\n", m.Kind, err, raw)
 		os.Exit(1)
 	}
 }
 
-func postRegister(stdin, name string) {
+func postJoin(stdin, name string) {
 	bus := os.Getenv("HOTSEAT_FAKE_BUS")
-	conv := between(stdin, "in conversation ", ".")
-	if bus == "" || conv == "" || name == "" {
+	chat := between(stdin, "in conversation ", ".")
+	if bus == "" || chat == "" || name == "" {
 		return
 	}
-	body := []byte(`{"conversation":"` + conv + `","name":"` + name + `"}`)
+	body := []byte(`{"chat":"` + chat + `","name":"` + name + `"}`)
 	for i := 0; i < 50; i++ {
-		req, err := http.NewRequest(http.MethodPost, "http://"+bus+"/register", bytes.NewReader(body))
+		req, err := http.NewRequest(http.MethodPost, "http://"+bus+"/join", bytes.NewReader(body))
 		if err != nil {
 			return
 		}

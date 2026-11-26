@@ -50,18 +50,18 @@ type Fix struct {
 	Fixed        int64
 }
 
-// Halt is the finding a conversation's run stopped on.
+// Halt is the finding a chat's run stopped on.
 type Halt struct {
 	Finding int64
 	After   int64
 }
 
-// Stop is the done that stopped a conversation's run.
+// Stop is the done that stopped a chat's run.
 type Stop struct {
 	Done int64
 }
 
-// Records is every decision record of one conversation, each list in key order.
+// Records is every decision record of one chat, each list in key order.
 type Records struct {
 	Sets      []Set
 	Groupings []Grouping
@@ -77,7 +77,7 @@ type Records struct {
 // already is true when the turn already has a set with the same findings,
 // compared as a set. The stored records are returned and nothing is written.
 // The same turn with other findings returns ErrConflict.
-func (s *Store) WriteSet(ctx context.Context, conv string, turn int64, findings []int64) (Set, *Grouping, bool, error) {
+func (s *Store) WriteSet(ctx context.Context, chat string, turn int64, findings []int64) (Set, *Grouping, bool, error) {
 	want := slices.Clone(findings)
 	slices.Sort(want)
 	if want == nil {
@@ -89,11 +89,11 @@ func (s *Store) WriteSet(ctx context.Context, conv string, turn int64, findings 
 		already  bool
 	)
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		after, err := recordPosition(ctx, tx, conv)
+		after, err := recordPosition(ctx, tx, chat)
 		if err != nil {
 			return err
 		}
-		stored, found, err := setByTurn(ctx, tx, conv, turn)
+		stored, found, err := setByTurn(ctx, tx, chat, turn)
 		if err != nil {
 			return err
 		}
@@ -103,7 +103,7 @@ func (s *Store) WriteSet(ctx context.Context, conv string, turn int64, findings 
 			}
 			set = stored
 			if len(stored.Findings) == 1 {
-				g, found, err := groupingByTurn(ctx, tx, conv, turn)
+				g, found, err := groupingByTurn(ctx, tx, chat, turn)
 				if err != nil {
 					return err
 				}
@@ -116,22 +116,22 @@ func (s *Store) WriteSet(ctx context.Context, conv string, turn int64, findings 
 			return errNoChange
 		}
 		if err := insertRecord(ctx, tx,
-			`INSERT INTO sets (conversation, turn, after) VALUES (?, ?, ?)`,
-			conv, turn, after); err != nil {
+			`INSERT INTO sets (chat, turn, after) VALUES (?, ?, ?)`,
+			chat, turn, after); err != nil {
 			return err
 		}
 		for _, f := range want {
 			if err := insertRecord(ctx, tx,
-				`INSERT INTO set_findings (conversation, turn, finding) VALUES (?, ?, ?)`,
-				conv, turn, f); err != nil {
+				`INSERT INTO set_findings (chat, turn, finding) VALUES (?, ?, ?)`,
+				chat, turn, f); err != nil {
 				return err
 			}
 		}
 		set = Set{Turn: turn, Findings: want, After: after}
 		if len(want) == 1 {
 			if err := insertRecord(ctx, tx,
-				`INSERT INTO groupings (conversation, turn, after) VALUES (?, ?, ?)`,
-				conv, turn, after); err != nil {
+				`INSERT INTO groupings (chat, turn, after) VALUES (?, ?, ?)`,
+				chat, turn, after); err != nil {
 				return err
 			}
 			grouping = &Grouping{Turn: turn, Drops: []Drop{}, After: after}
@@ -148,7 +148,7 @@ func (s *Store) WriteSet(ctx context.Context, conv string, turn int64, findings 
 // A drop whose finding another drop keeps returns ErrKeptDropped.
 // already is true when the turn already has a grouping with the same drops,
 // compared as a set. The same turn with other drops returns ErrConflict.
-func (s *Store) WriteGrouping(ctx context.Context, conv string, turn int64, drops []Drop) (Grouping, bool, error) {
+func (s *Store) WriteGrouping(ctx context.Context, chat string, turn int64, drops []Drop) (Grouping, bool, error) {
 	want := slices.Clone(drops)
 	slices.SortFunc(want, compareDrops)
 	if want == nil {
@@ -159,11 +159,11 @@ func (s *Store) WriteGrouping(ctx context.Context, conv string, turn int64, drop
 		already  bool
 	)
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		after, err := recordPosition(ctx, tx, conv)
+		after, err := recordPosition(ctx, tx, chat)
 		if err != nil {
 			return err
 		}
-		stored, found, err := groupingByTurn(ctx, tx, conv, turn)
+		stored, found, err := groupingByTurn(ctx, tx, chat, turn)
 		if err != nil {
 			return err
 		}
@@ -186,14 +186,14 @@ func (s *Store) WriteGrouping(ctx context.Context, conv string, turn int64, drop
 			}
 		}
 		if err := insertRecord(ctx, tx,
-			`INSERT INTO groupings (conversation, turn, after) VALUES (?, ?, ?)`,
-			conv, turn, after); err != nil {
+			`INSERT INTO groupings (chat, turn, after) VALUES (?, ?, ?)`,
+			chat, turn, after); err != nil {
 			return err
 		}
 		for _, d := range want {
 			if err := insertRecord(ctx, tx,
-				`INSERT INTO drops (conversation, turn, finding, kept) VALUES (?, ?, ?, ?)`,
-				conv, turn, d.Finding, d.Kept); err != nil {
+				`INSERT INTO drops (chat, turn, finding, kept) VALUES (?, ?, ?, ?)`,
+				chat, turn, d.Finding, d.Kept); err != nil {
 				return err
 			}
 		}
@@ -212,17 +212,17 @@ func (s *Store) WriteGrouping(ctx context.Context, conv string, turn int64, drop
 // A finding that is not a kept finding of a grouped set returns ErrNotKept.
 // already is true when the finding already has a settle with the same
 // proposal and kind. Any other proposal or kind returns ErrConflict.
-func (s *Store) WriteSettle(ctx context.Context, conv string, finding, proposal int64, kind string) (Settle, bool, error) {
+func (s *Store) WriteSettle(ctx context.Context, chat string, finding, proposal int64, kind string) (Settle, bool, error) {
 	var (
 		settle  Settle
 		already bool
 	)
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		after, err := recordPosition(ctx, tx, conv)
+		after, err := recordPosition(ctx, tx, chat)
 		if err != nil {
 			return err
 		}
-		stored, found, err := settleByFinding(ctx, tx, conv, finding)
+		stored, found, err := settleByFinding(ctx, tx, chat, finding)
 		if err != nil {
 			return err
 		}
@@ -234,13 +234,13 @@ func (s *Store) WriteSettle(ctx context.Context, conv string, finding, proposal 
 			already = true
 			return errNoChange
 		}
-		if err := requireKept(ctx, tx, conv, finding); err != nil {
+		if err := requireKept(ctx, tx, chat, finding); err != nil {
 			return err
 		}
 		if err := insertRecord(ctx, tx, `
-			INSERT INTO settles (conversation, finding, proposal, proposal_kind, after)
+			INSERT INTO settles (chat, finding, proposal, proposal_kind, after)
 			VALUES (?, ?, ?, ?, ?)`,
-			conv, finding, proposal, kind, after); err != nil {
+			chat, finding, proposal, kind, after); err != nil {
 			return err
 		}
 		settle = Settle{Finding: finding, Proposal: proposal, ProposalKind: kind, After: after}
@@ -257,16 +257,16 @@ func (s *Store) WriteSettle(ctx context.Context, conv string, finding, proposal 
 // ErrRecordReference, and a settle whose proposal is a dismiss returns
 // ErrFixDismissed. already is true when the finding already has a fix with
 // the same fixed message. Any other returns ErrConflict.
-func (s *Store) WriteFix(ctx context.Context, conv string, finding, fixed int64) (Fix, bool, error) {
+func (s *Store) WriteFix(ctx context.Context, chat string, finding, fixed int64) (Fix, bool, error) {
 	var (
 		fix     Fix
 		already bool
 	)
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		if _, err := conversationByName(ctx, tx, conv); err != nil {
+		if _, err := chatByName(ctx, tx, chat); err != nil {
 			return err
 		}
-		stored, found, err := fixByFinding(ctx, tx, conv, finding)
+		stored, found, err := fixByFinding(ctx, tx, chat, finding)
 		if err != nil {
 			return err
 		}
@@ -278,7 +278,7 @@ func (s *Store) WriteFix(ctx context.Context, conv string, finding, fixed int64)
 			already = true
 			return errNoChange
 		}
-		settle, found, err := settleByFinding(ctx, tx, conv, finding)
+		settle, found, err := settleByFinding(ctx, tx, chat, finding)
 		if err != nil {
 			return err
 		}
@@ -289,9 +289,9 @@ func (s *Store) WriteFix(ctx context.Context, conv string, finding, fixed int64)
 			return ErrFixDismissed
 		}
 		if err := insertRecord(ctx, tx, `
-			INSERT INTO fixes (conversation, finding, settled_after, fixed)
+			INSERT INTO fixes (chat, finding, settled_after, fixed)
 			VALUES (?, ?, ?, ?)`,
-			conv, finding, settle.After, fixed); err != nil {
+			chat, finding, settle.After, fixed); err != nil {
 			return err
 		}
 		fix = Fix{Finding: finding, SettledAfter: settle.After, Fixed: fixed}
@@ -303,23 +303,23 @@ func (s *Store) WriteFix(ctx context.Context, conv string, finding, fixed int64)
 	return fix, already, nil
 }
 
-// WriteHalt stores the finding a conversation's run stopped on. A
-// conversation holds at most one halt. A finding that is not a kept finding
+// WriteHalt stores the finding a chat's run stopped on. A
+// chat holds at most one halt. A finding that is not a kept finding
 // of a grouped set returns ErrNotKept. already is true when the stored halt
 // names the same finding. Another finding returns ErrConflict.
-func (s *Store) WriteHalt(ctx context.Context, conv string, finding int64) (Halt, bool, error) {
+func (s *Store) WriteHalt(ctx context.Context, chat string, finding int64) (Halt, bool, error) {
 	var (
 		halt    Halt
 		already bool
 	)
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		after, err := recordPosition(ctx, tx, conv)
+		after, err := recordPosition(ctx, tx, chat)
 		if err != nil {
 			return err
 		}
 		var stored Halt
 		err = tx.QueryRowContext(ctx,
-			`SELECT finding, after FROM halts WHERE conversation = ?`, conv).Scan(&stored.Finding, &stored.After)
+			`SELECT finding, after FROM halts WHERE chat = ?`, chat).Scan(&stored.Finding, &stored.After)
 		switch {
 		case err == nil:
 			if stored.Finding != finding {
@@ -331,12 +331,12 @@ func (s *Store) WriteHalt(ctx context.Context, conv string, finding int64) (Halt
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		if err := requireKept(ctx, tx, conv, finding); err != nil {
+		if err := requireKept(ctx, tx, chat, finding); err != nil {
 			return err
 		}
 		if err := insertRecord(ctx, tx,
-			`INSERT INTO halts (conversation, finding, after) VALUES (?, ?, ?)`,
-			conv, finding, after); err != nil {
+			`INSERT INTO halts (chat, finding, after) VALUES (?, ?, ?)`,
+			chat, finding, after); err != nil {
 			return err
 		}
 		halt = Halt{Finding: finding, After: after}
@@ -348,22 +348,22 @@ func (s *Store) WriteHalt(ctx context.Context, conv string, finding int64) (Halt
 	return halt, already, nil
 }
 
-// WriteStop stores the done that stopped a conversation's run. A
-// conversation holds at most one stop. A seq that is not a done of the
-// conversation returns ErrRecordReference. already is true when the stored
+// WriteStop stores the done that stopped a chat's run. A
+// chat holds at most one stop. A seq that is not a done of the
+// chat returns ErrRecordReference. already is true when the stored
 // stop names the same done. Another done returns ErrConflict.
-func (s *Store) WriteStop(ctx context.Context, conv string, done int64) (Stop, bool, error) {
+func (s *Store) WriteStop(ctx context.Context, chat string, done int64) (Stop, bool, error) {
 	var (
 		stop    Stop
 		already bool
 	)
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		if _, err := conversationByName(ctx, tx, conv); err != nil {
+		if _, err := chatByName(ctx, tx, chat); err != nil {
 			return err
 		}
 		var stored Stop
 		err := tx.QueryRowContext(ctx,
-			`SELECT done FROM stops WHERE conversation = ?`, conv).Scan(&stored.Done)
+			`SELECT done FROM stops WHERE chat = ?`, chat).Scan(&stored.Done)
 		switch {
 		case err == nil:
 			if stored.Done != done {
@@ -376,7 +376,7 @@ func (s *Store) WriteStop(ctx context.Context, conv string, done int64) (Stop, b
 			return err
 		}
 		if err := insertRecord(ctx, tx,
-			`INSERT INTO stops (conversation, done) VALUES (?, ?)`, conv, done); err != nil {
+			`INSERT INTO stops (chat, done) VALUES (?, ?)`, chat, done); err != nil {
 			return err
 		}
 		stop = Stop{Done: done}
@@ -388,32 +388,32 @@ func (s *Store) WriteStop(ctx context.Context, conv string, done int64) (Stop, b
 	return stop, already, nil
 }
 
-// Records returns every decision record of one conversation. Each list is in
-// key order and is empty rather than nil. A missing conversation returns ErrNotFound.
-func (s *Store) Records(ctx context.Context, conv string) (Records, error) {
+// Records returns every decision record of one chat. Each list is in
+// key order and is empty rather than nil. A missing chat returns ErrNotFound.
+func (s *Store) Records(ctx context.Context, chat string) (Records, error) {
 	var out Records
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		if _, err := conversationByName(ctx, tx, conv); err != nil {
+		if _, err := chatByName(ctx, tx, chat); err != nil {
 			return err
 		}
 		var err error
-		if out.Sets, err = readSets(ctx, tx, conv, nil); err != nil {
+		if out.Sets, err = readSets(ctx, tx, chat, nil); err != nil {
 			return err
 		}
-		if out.Groupings, err = readGroupings(ctx, tx, conv, nil); err != nil {
+		if out.Groupings, err = readGroupings(ctx, tx, chat, nil); err != nil {
 			return err
 		}
-		if out.Settles, err = readSettles(ctx, tx, conv, nil); err != nil {
+		if out.Settles, err = readSettles(ctx, tx, chat, nil); err != nil {
 			return err
 		}
-		if out.Fixes, err = readFixes(ctx, tx, conv, nil); err != nil {
+		if out.Fixes, err = readFixes(ctx, tx, chat, nil); err != nil {
 			return err
 		}
 		out.Halts, err = queryRows(ctx, tx, func(row rowScanner) (Halt, error) {
 			var h Halt
 			err := row.Scan(&h.Finding, &h.After)
 			return h, err
-		}, `SELECT finding, after FROM halts WHERE conversation = ?`, conv)
+		}, `SELECT finding, after FROM halts WHERE chat = ?`, chat)
 		if err != nil {
 			return err
 		}
@@ -421,7 +421,7 @@ func (s *Store) Records(ctx context.Context, conv string) (Records, error) {
 			var st Stop
 			err := row.Scan(&st.Done)
 			return st, err
-		}, `SELECT done FROM stops WHERE conversation = ?`, conv)
+		}, `SELECT done FROM stops WHERE chat = ?`, chat)
 		return err
 	})
 	if err != nil {
@@ -430,17 +430,17 @@ func (s *Store) Records(ctx context.Context, conv string) (Records, error) {
 	return out, nil
 }
 
-// recordPosition reads the conversation and its highest seq, which is after
+// recordPosition reads the chat and its highest seq, which is after
 // for a record committed in this transaction. Seq order is commit order only
-// because the store has one writer. A conversation with no message has
+// because the store has one writer. A chat with no message has
 // nothing a record can reference.
-func recordPosition(ctx context.Context, tx *sql.Tx, conv string) (int64, error) {
-	if _, err := conversationByName(ctx, tx, conv); err != nil {
+func recordPosition(ctx context.Context, tx *sql.Tx, chat string) (int64, error) {
+	if _, err := chatByName(ctx, tx, chat); err != nil {
 		return 0, err
 	}
 	var after sql.NullInt64
 	if err := tx.QueryRowContext(ctx,
-		`SELECT MAX(seq) FROM messages WHERE conversation = ?`, conv).Scan(&after); err != nil {
+		`SELECT MAX(seq) FROM messages WHERE chat = ?`, chat).Scan(&after); err != nil {
 		return 0, err
 	}
 	if !after.Valid {
@@ -452,14 +452,14 @@ func recordPosition(ctx context.Context, tx *sql.Tx, conv string) (int64, error)
 // requireKept returns ErrNotKept for a finding of a set that has no grouping,
 // or that a drop names. A finding in no set is left to the settles and halts
 // foreign keys.
-func requireKept(ctx context.Context, tx *sql.Tx, conv string, finding int64) error {
+func requireKept(ctx context.Context, tx *sql.Tx, chat string, finding int64) error {
 	var grouped, dropped bool
 	err := tx.QueryRowContext(ctx, `
 		SELECT
-			EXISTS (SELECT 1 FROM groupings g WHERE g.conversation = sf.conversation AND g.turn = sf.turn),
-			EXISTS (SELECT 1 FROM drops d WHERE d.conversation = sf.conversation AND d.finding = sf.finding)
+			EXISTS (SELECT 1 FROM groupings g WHERE g.chat = sf.chat AND g.turn = sf.turn),
+			EXISTS (SELECT 1 FROM drops d WHERE d.chat = sf.chat AND d.finding = sf.finding)
 		FROM set_findings sf
-		WHERE sf.conversation = ? AND sf.finding = ?`, conv, finding).Scan(&grouped, &dropped)
+		WHERE sf.chat = ? AND sf.finding = ?`, chat, finding).Scan(&grouped, &dropped)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -484,48 +484,48 @@ func insertRecord(ctx context.Context, tx *sql.Tx, query string, args ...any) er
 	return err
 }
 
-func setByTurn(ctx context.Context, tx *sql.Tx, conv string, turn int64) (Set, bool, error) {
-	sets, err := readSets(ctx, tx, conv, &turn)
+func setByTurn(ctx context.Context, tx *sql.Tx, chat string, turn int64) (Set, bool, error) {
+	sets, err := readSets(ctx, tx, chat, &turn)
 	if err != nil || len(sets) == 0 {
 		return Set{}, false, err
 	}
 	return sets[0], true, nil
 }
 
-func groupingByTurn(ctx context.Context, tx *sql.Tx, conv string, turn int64) (Grouping, bool, error) {
-	gs, err := readGroupings(ctx, tx, conv, &turn)
+func groupingByTurn(ctx context.Context, tx *sql.Tx, chat string, turn int64) (Grouping, bool, error) {
+	gs, err := readGroupings(ctx, tx, chat, &turn)
 	if err != nil || len(gs) == 0 {
 		return Grouping{}, false, err
 	}
 	return gs[0], true, nil
 }
 
-func settleByFinding(ctx context.Context, tx *sql.Tx, conv string, finding int64) (Settle, bool, error) {
-	ss, err := readSettles(ctx, tx, conv, &finding)
+func settleByFinding(ctx context.Context, tx *sql.Tx, chat string, finding int64) (Settle, bool, error) {
+	ss, err := readSettles(ctx, tx, chat, &finding)
 	if err != nil || len(ss) == 0 {
 		return Settle{}, false, err
 	}
 	return ss[0], true, nil
 }
 
-func fixByFinding(ctx context.Context, tx *sql.Tx, conv string, finding int64) (Fix, bool, error) {
-	fs, err := readFixes(ctx, tx, conv, &finding)
+func fixByFinding(ctx context.Context, tx *sql.Tx, chat string, finding int64) (Fix, bool, error) {
+	fs, err := readFixes(ctx, tx, chat, &finding)
 	if err != nil || len(fs) == 0 {
 		return Fix{}, false, err
 	}
 	return fs[0], true, nil
 }
 
-// readSets reads the sets of conv in turn order. A non-nil key reads only that turn.
-func readSets(ctx context.Context, tx *sql.Tx, conv string, key *int64) ([]Set, error) {
+// readSets reads the sets of chat in turn order. A non-nil key reads only that turn.
+func readSets(ctx context.Context, tx *sql.Tx, chat string, key *int64) ([]Set, error) {
 	only := nullSeq(key)
 	sets, err := queryRows(ctx, tx, func(row rowScanner) (Set, error) {
 		s := Set{Findings: []int64{}}
 		err := row.Scan(&s.Turn, &s.After)
 		return s, err
 	}, `SELECT turn, after FROM sets
-		WHERE conversation = ? AND (? IS NULL OR turn = ?)
-		ORDER BY turn`, conv, only, only)
+		WHERE chat = ? AND (? IS NULL OR turn = ?)
+		ORDER BY turn`, chat, only, only)
 	if err != nil {
 		return nil, err
 	}
@@ -535,8 +535,8 @@ func readSets(ctx context.Context, tx *sql.Tx, conv string, key *int64) ([]Set, 
 		err := row.Scan(&m.turn, &m.finding)
 		return m, err
 	}, `SELECT turn, finding FROM set_findings
-		WHERE conversation = ? AND (? IS NULL OR turn = ?)
-		ORDER BY turn, finding`, conv, only, only)
+		WHERE chat = ? AND (? IS NULL OR turn = ?)
+		ORDER BY turn, finding`, chat, only, only)
 	if err != nil {
 		return nil, err
 	}
@@ -551,16 +551,16 @@ func readSets(ctx context.Context, tx *sql.Tx, conv string, key *int64) ([]Set, 
 	return sets, nil
 }
 
-// readGroupings reads the groupings of conv in turn order. A non-nil key reads only that turn.
-func readGroupings(ctx context.Context, tx *sql.Tx, conv string, key *int64) ([]Grouping, error) {
+// readGroupings reads the groupings of chat in turn order. A non-nil key reads only that turn.
+func readGroupings(ctx context.Context, tx *sql.Tx, chat string, key *int64) ([]Grouping, error) {
 	only := nullSeq(key)
 	gs, err := queryRows(ctx, tx, func(row rowScanner) (Grouping, error) {
 		g := Grouping{Drops: []Drop{}}
 		err := row.Scan(&g.Turn, &g.After)
 		return g, err
 	}, `SELECT turn, after FROM groupings
-		WHERE conversation = ? AND (? IS NULL OR turn = ?)
-		ORDER BY turn`, conv, only, only)
+		WHERE chat = ? AND (? IS NULL OR turn = ?)
+		ORDER BY turn`, chat, only, only)
 	if err != nil {
 		return nil, err
 	}
@@ -573,8 +573,8 @@ func readGroupings(ctx context.Context, tx *sql.Tx, conv string, key *int64) ([]
 		err := row.Scan(&d.turn, &d.Finding, &d.Kept)
 		return d, err
 	}, `SELECT turn, finding, kept FROM drops
-		WHERE conversation = ? AND (? IS NULL OR turn = ?)
-		ORDER BY turn, finding`, conv, only, only)
+		WHERE chat = ? AND (? IS NULL OR turn = ?)
+		ORDER BY turn, finding`, chat, only, only)
 	if err != nil {
 		return nil, err
 	}
@@ -589,28 +589,28 @@ func readGroupings(ctx context.Context, tx *sql.Tx, conv string, key *int64) ([]
 	return gs, nil
 }
 
-// readSettles reads the settles of conv in finding order. A non-nil key reads only that finding.
-func readSettles(ctx context.Context, tx *sql.Tx, conv string, key *int64) ([]Settle, error) {
+// readSettles reads the settles of chat in finding order. A non-nil key reads only that finding.
+func readSettles(ctx context.Context, tx *sql.Tx, chat string, key *int64) ([]Settle, error) {
 	only := nullSeq(key)
 	return queryRows(ctx, tx, func(row rowScanner) (Settle, error) {
 		var s Settle
 		err := row.Scan(&s.Finding, &s.Proposal, &s.ProposalKind, &s.After)
 		return s, err
 	}, `SELECT finding, proposal, proposal_kind, after FROM settles
-		WHERE conversation = ? AND (? IS NULL OR finding = ?)
-		ORDER BY finding`, conv, only, only)
+		WHERE chat = ? AND (? IS NULL OR finding = ?)
+		ORDER BY finding`, chat, only, only)
 }
 
-// readFixes reads the fixes of conv in finding order. A non-nil key reads only that finding.
-func readFixes(ctx context.Context, tx *sql.Tx, conv string, key *int64) ([]Fix, error) {
+// readFixes reads the fixes of chat in finding order. A non-nil key reads only that finding.
+func readFixes(ctx context.Context, tx *sql.Tx, chat string, key *int64) ([]Fix, error) {
 	only := nullSeq(key)
 	return queryRows(ctx, tx, func(row rowScanner) (Fix, error) {
 		var f Fix
 		err := row.Scan(&f.Finding, &f.SettledAfter, &f.Fixed)
 		return f, err
 	}, `SELECT finding, settled_after, fixed FROM fixes
-		WHERE conversation = ? AND (? IS NULL OR finding = ?)
-		ORDER BY finding`, conv, only, only)
+		WHERE chat = ? AND (? IS NULL OR finding = ?)
+		ORDER BY finding`, chat, only, only)
 }
 
 func compareDrops(a, b Drop) int {

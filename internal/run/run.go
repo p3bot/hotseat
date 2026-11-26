@@ -48,11 +48,11 @@ const (
 	roleMember = "hotseat/member"
 	contextBus = "hotseat/bus"
 
-	statusLaunched   = "launched"
-	statusRegistered = "registered"
-	statusRunning    = "running"
-	statusExited     = "exited"
-	statusTimedOut   = "timed-out"
+	statusLaunched = "launched"
+	statusJoined   = "joined"
+	statusRunning  = "running"
+	statusExited   = "exited"
+	statusTimedOut = "timed-out"
 
 	classProcessExit    = "process exit"
 	classProcessLimit   = "process limit"
@@ -152,7 +152,7 @@ type engine struct {
 	minimum int
 
 	name       string
-	binding    client.Conversation
+	binding    client.Chat
 	continuing bool
 	// taskSeq is the instructions message this run published, which boot launches concern. It is set before any launch.
 	taskSeq int64
@@ -437,7 +437,7 @@ func (e *engine) createConversation(suffix bool) error {
 		}
 	}
 	e.name = name
-	e.binding = client.Conversation{Name: name, Task: id, Ticket: ticket, Seat: seat, Directory: dir, Prompts: prompts, Custom: custom, Roster: rosterNames(e.roster)}
+	e.binding = client.Chat{Name: name, Task: id, Ticket: ticket, Seat: seat, Directory: dir, Prompts: prompts, Custom: custom, Roster: rosterNames(e.roster)}
 	return e.finish(e.begin(body))
 }
 
@@ -516,7 +516,7 @@ func (e *engine) suffixed(bare string, taken map[string]bool) (string, error) {
 	return "", errors.New("conversation name is taken")
 }
 
-func (e *engine) agree(conv client.Conversation) error {
+func (e *engine) agree(conv client.Chat) error {
 	if e.cfg.TaskSet {
 		id, err := e.taskID(e.cfg.Task)
 		if err != nil {
@@ -661,7 +661,7 @@ func outcomeErr(op string, body any, res client.Result) error {
 // callLabel names a call in its error: the route, and the kind, member, or lease operation it concerns.
 func callLabel(op string, body any) string {
 	switch req := body.(type) {
-	case client.PublishRequest:
+	case client.SendRequest:
 		return op + " " + req.Kind
 	case client.MemberRequest:
 		return op + " " + req.Name
@@ -675,10 +675,10 @@ func callLabel(op string, body any) string {
 	return op
 }
 
-func (e *engine) find(name string) (client.Conversation, bool, error) {
+func (e *engine) find(name string) (client.Chat, bool, error) {
 	res, err := e.call(e.root, "list", struct{}{})
 	if err != nil {
-		return client.Conversation{}, false, err
+		return client.Chat{}, false, err
 	}
 	conv, ok := pickBinding(res, name)
 	return conv, ok, nil
@@ -690,8 +690,8 @@ func (e *engine) taken() (map[string]bool, error) {
 		return nil, err
 	}
 	names := make(map[string]bool)
-	if res.Conversations != nil {
-		for _, conv := range *res.Conversations {
+	if res.Chats != nil {
+		for _, conv := range *res.Chats {
 			names[conv.Name] = true
 		}
 	}

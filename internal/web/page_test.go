@@ -40,7 +40,7 @@ func TestRenderedMessageShowsLocalTimeKindAndSequence(t *testing.T) {
 		Seq: 4, Time: raw, From: "alice", To: []string{"bob"},
 		Body: "hello", TxID: "idem", Kind: "say",
 	}
-	p := conversationPage("job")
+	p := chatPage("job")
 	p.Group = &messageGroup{Outcome: "ok", Messages: []messageItem{newMessageItem("job", msg)}}
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, p); err != nil {
@@ -63,7 +63,7 @@ func TestRenderedMessageShowsLocalTimeKindAndSequence(t *testing.T) {
 	}
 }
 
-func TestEveryMessageItemNamesItsSeqAndConversation(t *testing.T) {
+func TestEveryMessageItemNamesItsSeqAndChat(t *testing.T) {
 	if n := strings.Count(pageSource, `<li class="message"`); n != 1 {
 		t.Fatalf("message item markup appears %d times", n)
 	}
@@ -71,7 +71,7 @@ func TestEveryMessageItemNamesItsSeqAndConversation(t *testing.T) {
 		newMessageItem("beta", client.Message{Seq: 9, From: "alice", Body: "b", Kind: "say"}),
 		newMessageItem("..", client.Message{Seq: 7, From: "alice", Body: "d", Kind: "say"}),
 	}}}
-	transcript := conversationPage("job")
+	transcript := chatPage("job")
 	transcript.Group = transcriptGroup("job", []client.Message{
 		{Seq: 4, From: "alice", Body: "one", Kind: "say"},
 		{Seq: 6, From: "bob", Body: "two", Kind: "say"},
@@ -82,12 +82,12 @@ func TestEveryMessageItemNamesItsSeqAndConversation(t *testing.T) {
 		items []string
 	}{
 		{name: "messages", page: messages, items: []string{
-			`<li class="message" id="msg-9" data-seq="9" data-conversation="beta"><p class="where"><a href="/conversations/beta">beta</a></p>`,
-			`<li class="message" id="msg-7" data-seq="7" data-conversation=".."><p class="where">..</p>`,
+			`<li class="message" id="msg-9" data-seq="9" data-chat="beta"><p class="where"><a href="/chats/beta">beta</a></p>`,
+			`<li class="message" id="msg-7" data-seq="7" data-chat=".."><p class="where">..</p>`,
 		}},
 		{name: "transcript", page: transcript, items: []string{
-			`<li class="message" id="msg-6" data-seq="6" data-conversation="job"><p class="where"><a href="/conversations/job">job</a></p>`,
-			`<li class="message" id="msg-4" data-seq="4" data-conversation="job"><p class="where"><a href="/conversations/job">job</a></p>`,
+			`<li class="message" id="msg-6" data-seq="6" data-chat="job"><p class="where"><a href="/chats/job">job</a></p>`,
+			`<li class="message" id="msg-4" data-seq="4" data-chat="job"><p class="where"><a href="/chats/job">job</a></p>`,
 		}},
 	}
 	for _, tc := range cases {
@@ -107,12 +107,12 @@ func TestEveryMessageItemNamesItsSeqAndConversation(t *testing.T) {
 		})
 	}
 	if !strings.Contains(renderPage(t, transcript), "#transcript .where { display: none; }") {
-		t.Fatal("transcript shows the conversation link on each message")
+		t.Fatal("transcript shows the chat link on each message")
 	}
 }
 
 func TestMessageFooterKeepsSourceBesideRenderedMarkdown(t *testing.T) {
-	p := conversationPage("job")
+	p := chatPage("job")
 	p.Group = &messageGroup{Outcome: "ok", Messages: []messageItem{newMessageItem("job", client.Message{
 		Seq: 4, From: "alice", Body: "**hello**", Kind: "instruction",
 	})}}
@@ -134,7 +134,7 @@ func TestMessageFooterKeepsSourceBesideRenderedMarkdown(t *testing.T) {
 func TestMessageControlsCopySourceAndToggleView(t *testing.T) {
 	p := transcriptFixture("job", "")
 	p.Group.Messages = []messageItem{newMessageItem("job", client.Message{Seq: 4, From: "alice", Body: "line\n**two**", Kind: "say"})}
-	d := loadPage(t, renderPage(t, p), "/conversations/job", "")
+	d := loadPage(t, renderPage(t, p), "/chats/job", "")
 	d.run(`var __copy = document.querySelector("button.copy"); var __md = document.querySelector("button.markdown");
 function __shown() {
   var r = document.querySelector("div.rendered").hidden, s = document.querySelector("pre.source").hidden;
@@ -173,27 +173,27 @@ func TestTabTitleNamesTheProduct(t *testing.T) {
 	if got := (page{}).TabTitle(); got != "Hotseat" {
 		t.Fatalf("recent %q", got)
 	}
-	if got := (page{Kind: kindList}).TabTitle(); got != "Hotseat - Conversations" {
+	if got := (page{Kind: kindList}).TabTitle(); got != "Hotseat - Chats" {
 		t.Fatalf("list %q", got)
 	}
 	if got := (page{Name: "job"}).TabTitle(); got != "Hotseat - job" {
-		t.Fatalf("conversation %q", got)
+		t.Fatalf("chat %q", got)
 	}
 }
 
-func TestPublishScriptMintsOnlyOnEmptyPublish(t *testing.T) {
-	d := loadPage(t, renderPage(t, conversationPage("job")), "/conversations/job", "")
+func TestSendScriptMintsOnlyOnEmptySend(t *testing.T) {
+	d := loadPage(t, renderPage(t, chatPage("job")), "/chats/job", "")
 	d.run(`function __submit(id, value) {
   __randomCalls = 0;
   document.getElementById("txid").value = value;
   document.getElementById("send-form").dispatchEvent({ type: "submit", submitter: document.getElementById(id) });
   return document.getElementById("txid").value + "|" + __randomCalls;
 }`)
-	if got, want := d.str(`__submit("publish-button", "")`), scriptFixedHex()+"|1"; got != want {
-		t.Fatalf("empty publish %s, want %s", got, want)
+	if got, want := d.str(`__submit("send-button", "")`), scriptFixedHex()+"|1"; got != want {
+		t.Fatalf("empty send %s, want %s", got, want)
 	}
-	if got := d.str(`__submit("publish-button", "keep-me")`); got != "keep-me|0" {
-		t.Fatalf("filled publish %s", got)
+	if got := d.str(`__submit("send-button", "keep-me")`); got != "keep-me|0" {
+		t.Fatalf("filled send %s", got)
 	}
 	if got := d.str(`__submit("send-cancel", "")`); got != "|0" {
 		t.Fatalf("other submitter %s", got)
@@ -209,13 +209,13 @@ func scriptFixedHex() string {
 }
 
 func TestRefusedSendOpensTheSameDialog(t *testing.T) {
-	refused := conversationPage("job")
+	refused := chatPage("job")
 	refused.SendOpen = true
 	refusedHTML := renderPage(t, refused)
 	if strings.Contains(refusedHTML, `id="send-dialog" open`) || !sendMarked(refusedHTML) {
 		t.Fatalf("marker\n%s", refusedHTML)
 	}
-	d := loadPage(t, refusedHTML, "/conversations/job/messages", "")
+	d := loadPage(t, refusedHTML, "/chats/job/messages", "")
 	if d.str("__shownCount") != "1" {
 		t.Fatal("refused send did not open the dialog")
 	}
@@ -224,11 +224,11 @@ func TestRefusedSendOpensTheSameDialog(t *testing.T) {
 		t.Fatal("pen opened a dialog that was already open")
 	}
 
-	quietHTML := renderPage(t, conversationPage("job"))
+	quietHTML := renderPage(t, chatPage("job"))
 	if sendMarked(quietHTML) {
 		t.Fatalf("marker\n%s", quietHTML)
 	}
-	d = loadPage(t, quietHTML, "/conversations/job", "")
+	d = loadPage(t, quietHTML, "/chats/job", "")
 	if d.str("__shownCount") != "0" {
 		t.Fatal("a closed send opened the dialog")
 	}
@@ -243,7 +243,7 @@ func sendMarked(html string) bool {
 }
 
 func TestOlderGroupAppendsToEitherListAndAFailureKeepsTheMarker(t *testing.T) {
-	transcript := transcriptFixture("job", "/conversations/job?before=3", 3)
+	transcript := transcriptFixture("job", "/chats/job?before=3", 3)
 	messages := messagesFixture("/?before=3", 3)
 	pages := []struct {
 		name    string
@@ -256,8 +256,8 @@ func TestOlderGroupAppendsToEitherListAndAFailureKeepsTheMarker(t *testing.T) {
 		other   page
 	}{
 		{
-			name: "transcript", page: transcript, url: "/conversations/job", list: "transcript",
-			marker: "/conversations/job?before=3", further: "/conversations/job?before=1",
+			name: "transcript", page: transcript, url: "/chats/job", list: "transcript",
+			marker: "/chats/job?before=3", further: "/chats/job?before=1",
 			at:    func(next string, seqs ...int64) page { return transcriptFixture("job", next, seqs...) },
 			other: messagesFixture("", 2),
 		},
@@ -328,12 +328,12 @@ func TestOlderGroupAppendsToEitherListAndAFailureKeepsTheMarker(t *testing.T) {
 
 func TestSearchKeepsListOrder(t *testing.T) {
 	p := page{Kind: kindList}
-	applyList(&p, &[]client.Conversation{
+	applyList(&p, &[]client.Chat{
 		{Name: "zeta", Status: "open", Task: "apple"},
 		{Name: "alpha", Status: "closed", Ticket: "pear"},
 		{Name: "quiet", Status: "open"},
 	})
-	d := loadPage(t, renderPage(t, p), "/conversations", "")
+	d := loadPage(t, renderPage(t, p), "/chats", "")
 	d.run(searchHelpers)
 	if got := d.str(`__query("A")`); got != "zeta open,alpha closed" || d.str("__results.hidden") != "false" {
 		t.Fatalf("names %q hidden %s", got, d.str("__results.hidden"))
@@ -377,9 +377,9 @@ func TestStreamOpensForItsViewAfterTheHighestSeq(t *testing.T) {
 		{name: "messages empty", page: messagesFixture(""), url: "/", want: "/events?after=0"},
 		{name: "messages read failed", page: refused, url: "/", want: "/events?after=0"},
 		{name: "older group", page: messagesFixture("/?before=38", 39, 38), url: "/?before=40", want: "/events?after=39"},
-		{name: "transcript", page: transcriptFixture("job", "", 6, 4), url: "/conversations/job", want: "/events?conversation=job&after=6"},
-		{name: "refused send", page: transcriptFixture("job", "", 6), url: "/conversations/job/messages", want: "/events?conversation=job&after=6"},
-		{name: "conversations", page: page{Kind: kindList}, url: "/conversations", want: "/events?view=list"},
+		{name: "transcript", page: transcriptFixture("job", "", 6, 4), url: "/chats/job", want: "/events?chat=job&after=6"},
+		{name: "refused send", page: transcriptFixture("job", "", 6), url: "/chats/job/messages", want: "/events?chat=job&after=6"},
+		{name: "chats", page: page{Kind: kindList}, url: "/chats", want: "/events?view=list"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -396,21 +396,21 @@ func TestStreamMessageInsertsAtTopOnceWithArrived(t *testing.T) {
 		name string
 		page page
 		url  string
-		conv string
+		chat string
 		list string
 	}{
-		{name: "messages", page: messagesFixture("", 7, 5), url: "/", conv: "beta", list: "messages"},
-		{name: "transcript", page: transcriptFixture("job", "", 7, 5), url: "/conversations/job", conv: "job", list: "transcript"},
+		{name: "messages", page: messagesFixture("", 7, 5), url: "/", chat: "beta", list: "messages"},
+		{name: "transcript", page: transcriptFixture("job", "", 7, 5), url: "/chats/job", chat: "job", list: "transcript"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := loadPage(t, renderPage(t, tc.page), tc.url, "")
-			d.emit("message", messageEvent(t, tc.conv, 9))
+			d.emit("message", messageEvent(t, tc.chat, 9))
 			if d.str(`__seqs("`+tc.list+`")`) != "9,7,5" || d.str(`__arrived("`+tc.list+`")`) != "9" {
 				t.Fatalf("seqs %s arrived %s", d.str(`__seqs("`+tc.list+`")`), d.str(`__arrived("`+tc.list+`")`))
 			}
-			d.emit("message", messageEvent(t, tc.conv, 9))
-			d.emit("message", messageEvent(t, tc.conv, 5))
+			d.emit("message", messageEvent(t, tc.chat, 9))
+			d.emit("message", messageEvent(t, tc.chat, 5))
 			if got := d.str(`__seqs("` + tc.list + `")`); got != "9,7,5" {
 				t.Fatalf("known seq inserted again: %s", got)
 			}
@@ -428,16 +428,16 @@ func TestStreamMessageInsertsAtTopOnceWithArrived(t *testing.T) {
 
 func TestFirstStreamedMessageReplacesTheEmptyPlaceholder(t *testing.T) {
 	cases := []struct {
-		name, url, conv, list, empty string
+		name, url, chat, list, empty string
 		page                         page
 	}{
-		{name: "messages", page: messagesFixture(""), url: "/", conv: "alpha", list: "messages", empty: "empty"},
-		{name: "transcript", page: transcriptFixture("job", ""), url: "/conversations/job", conv: "job", list: "transcript", empty: "transcript-empty"},
+		{name: "messages", page: messagesFixture(""), url: "/", chat: "alpha", list: "messages", empty: "empty"},
+		{name: "transcript", page: transcriptFixture("job", ""), url: "/chats/job", chat: "job", list: "transcript", empty: "transcript-empty"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := loadPage(t, renderPage(t, tc.page), tc.url, "")
-			d.emit("message", messageEvent(t, tc.conv, 3))
+			d.emit("message", messageEvent(t, tc.chat, 3))
 			if d.str(`__text_of("`+tc.empty+`")`) != "<none>" || d.str(`__seqs("`+tc.list+`")`) != "3" || d.str(`__text_of("group-error")`) != "" {
 				t.Fatalf("empty %s seqs %s", d.str(`__text_of("`+tc.empty+`")`), d.str(`__seqs("`+tc.list+`")`))
 			}
@@ -445,50 +445,50 @@ func TestFirstStreamedMessageReplacesTheEmptyPlaceholder(t *testing.T) {
 	}
 }
 
-func TestStreamConversationsFollowsTheListOnEveryPage(t *testing.T) {
-	before := []client.Conversation{
+func TestStreamChatsFollowsTheListOnEveryPage(t *testing.T) {
+	before := []client.Chat{
 		{Name: "alpha", Status: "open", Task: "fruit"},
 		{Name: "beta", Status: "open"},
 	}
-	after := []client.Conversation{
+	after := []client.Chat{
 		{Name: "gamma", Status: "open", Task: "fruit"},
 		{Name: "beta", Status: "open"},
 		{Name: "alpha", Status: "closed", Task: "fruit"},
 	}
 	list := page{Kind: kindList}
 	applyList(&list, &before)
-	d := loadPage(t, renderPage(t, list), "/conversations", "")
+	d := loadPage(t, renderPage(t, list), "/chats", "")
 	d.run(searchHelpers)
 	if got := d.str(`__query("fruit")`); got != "alpha open" {
 		t.Fatalf("before %q", got)
 	}
 	d.run(`var __boxBefore = __box`)
-	d.emit("conversations", conversationsEvent(t, "", after))
+	d.emit("chats", chatsEvent(t, "", after))
 	if got := d.str("__hits()"); got != "gamma open,alpha closed" {
 		t.Fatalf("search after event %q", got)
 	}
 	if d.str("__box.value") != "fruit" || d.str("document.getElementById(\"search\") === __boxBefore") != "true" {
 		t.Fatal("search box changed")
 	}
-	if got := d.str(`__names("open-conversations") + "|" + __names("closed-conversations")`); got != "gamma,beta|alpha" {
+	if got := d.str(`__names("open-chats") + "|" + __names("closed-chats")`); got != "gamma,beta|alpha" {
 		t.Fatalf("sections %q", got)
 	}
-	if got := d.str(`__arrived("open-conversations") + "|" + __arrived("closed-conversations")`); got != "gamma|alpha" {
+	if got := d.str(`__arrived("open-chats") + "|" + __arrived("closed-chats")`); got != "gamma|alpha" {
 		t.Fatalf("arrived %q", got)
 	}
-	d.emit("conversations", conversationsEvent(t, "", []client.Conversation{after[1], after[0], after[2]}))
-	if got := d.str(`__arrived("open-conversations") + "|" + __arrived("closed-conversations")`); got != "beta|" {
+	d.emit("chats", chatsEvent(t, "", []client.Chat{after[1], after[0], after[2]}))
+	if got := d.str(`__arrived("open-chats") + "|" + __arrived("closed-chats")`); got != "beta|" {
 		t.Fatalf("moved arrived %q", got)
 	}
-	d.emit("conversations", conversationsEvent(t, "", []client.Conversation{after[0], {Name: "beta", Status: "closed"}, after[2]}))
-	if got := d.str(`__arrived("open-conversations") + "|" + __arrived("closed-conversations")`); got != "|beta" {
+	d.emit("chats", chatsEvent(t, "", []client.Chat{after[0], {Name: "beta", Status: "closed"}, after[2]}))
+	if got := d.str(`__arrived("open-chats") + "|" + __arrived("closed-chats")`); got != "|beta" {
 		t.Fatalf("row left on top by a close arrived %q", got)
 	}
 
 	failed := page{Kind: kindList, ListOutcome: "unavailable"}
-	d = loadPage(t, renderPage(t, failed), "/conversations", "")
-	d.emit("conversations", conversationsEvent(t, "", after))
-	if got := d.str(`__names("open-conversations") + "|" + __text_of("list-error")`); got != "gamma,beta|<none>" {
+	d = loadPage(t, renderPage(t, failed), "/chats", "")
+	d.emit("chats", chatsEvent(t, "", after))
+	if got := d.str(`__names("open-chats") + "|" + __text_of("list-error")`); got != "gamma,beta|<none>" {
 		t.Fatalf("failed list %q", got)
 	}
 
@@ -496,7 +496,7 @@ func TestStreamConversationsFollowsTheListOnEveryPage(t *testing.T) {
 	applyList(&messages, &before)
 	d = loadPage(t, renderPage(t, messages), "/", "")
 	d.run(searchHelpers)
-	d.emit("conversations", conversationsEvent(t, "", after))
+	d.emit("chats", chatsEvent(t, "", after))
 	if got := d.str(`__query("gamma")`); got != "gamma open" {
 		t.Fatalf("messages search %q", got)
 	}
@@ -506,10 +506,10 @@ func TestStreamConversationsFollowsTheListOnEveryPage(t *testing.T) {
 
 	transcript := transcriptFixture("alpha", "", 1)
 	applyList(&transcript, &before)
-	d = loadPage(t, renderPage(t, transcript), "/conversations/alpha", "")
-	d.emit("conversations", conversationsEvent(t, "alpha", after))
+	d = loadPage(t, renderPage(t, transcript), "/chats/alpha", "")
+	d.emit("chats", chatsEvent(t, "alpha", after))
 	d.emit("meta", metaEvent(t, "alpha", after))
-	if got := d.str(`document.querySelector("#conversation-status .status").textContent`); got != "closed" {
+	if got := d.str(`document.querySelector("#chat-status .status").textContent`); got != "closed" {
 		t.Fatalf("meta status %q", got)
 	}
 	if d.str(`document.querySelectorAll("aside").length`) != "1" {
@@ -518,10 +518,10 @@ func TestStreamConversationsFollowsTheListOnEveryPage(t *testing.T) {
 }
 
 func TestStreamEventsKeepTheOpenSendDialog(t *testing.T) {
-	cs := []client.Conversation{{Name: "job", Status: "open"}}
+	cs := []client.Chat{{Name: "job", Status: "open"}}
 	p := transcriptFixture("job", "", 4)
 	applyList(&p, &cs)
-	d := loadPage(t, renderPage(t, p), "/conversations/job", "")
+	d := loadPage(t, renderPage(t, p), "/chats/job", "")
 	d.run(`__click(document.getElementById("send-pen"));
 var __f = { from: "alice", to: "bob\ncarol", kind: "say", body: "draft", txid: "tx1" };
 for (var k in __f) document.getElementById(k).value = __f[k];
@@ -533,8 +533,8 @@ function __form() {
 }`)
 	want := "alice|bob\ncarol|say|draft|tx1|true|true"
 	d.emit("message", messageEvent(t, "job", 5))
-	d.emit("conversations", conversationsEvent(t, "job", cs))
-	d.emit("meta", metaEvent(t, "job", []client.Conversation{{Name: "job", Status: "closed"}}))
+	d.emit("chats", chatsEvent(t, "job", cs))
+	d.emit("meta", metaEvent(t, "job", []client.Chat{{Name: "job", Status: "closed"}}))
 	if got := d.str("__form()"); got != want {
 		t.Fatalf("form %q", got)
 	}
@@ -630,7 +630,7 @@ func TestOlderLoadForAReplacedRegionIsDropped(t *testing.T) {
 }
 
 func TestFailedResetReloadRetriesWithBackoffWhileVisible(t *testing.T) {
-	d := loadPage(t, renderPage(t, transcriptFixture("job", "", 3, 2)), "/conversations/job", "")
+	d := loadPage(t, renderPage(t, transcriptFixture("job", "", 3, 2)), "/chats/job", "")
 	if d.str(`__attr("more", "data-next")`) != "<none>" {
 		t.Fatal("short group has an older marker")
 	}
@@ -662,9 +662,9 @@ func TestFailedResetReloadRetriesWithBackoffWhileVisible(t *testing.T) {
 	if got := d.str(`__pendingDelays()`); got != "30000" {
 		t.Fatalf("backoff cap %q", got)
 	}
-	d.serve(true, renderPage(t, transcriptFixture("job", "/conversations/job?before=60", 61, 60)))
+	d.serve(true, renderPage(t, transcriptFixture("job", "/chats/job?before=60", 61, 60)))
 	d.run(`__flushTimers()`)
-	if got := d.str(`__seqs("transcript") + "|" + __text_of("group-error") + "|" + __streamURLs() + "|" + __pendingDelays()`); got != "61,60||/events?conversation=job&after=61|" {
+	if got := d.str(`__seqs("transcript") + "|" + __text_of("group-error") + "|" + __streamURLs() + "|" + __pendingDelays()`); got != "61,60||/events?chat=job&after=61|" {
 		t.Fatalf("retry %q", got)
 	}
 	d.serve(true, renderPage(t, transcriptFixture("job", "", 59)))
@@ -682,23 +682,23 @@ func TestFailedResetReloadRetriesWithBackoffWhileVisible(t *testing.T) {
 func TestMessageOnAFailedReadReloadsTheGroup(t *testing.T) {
 	refused := transcriptFixture("job", "")
 	refused.Group = &messageGroup{Outcome: "refused", Reason: "nope"}
-	d := loadPage(t, renderPage(t, refused), "/conversations/job", "")
+	d := loadPage(t, renderPage(t, refused), "/chats/job", "")
 	d.serve(false, "boom")
 	d.emit("message", messageEvent(t, "job", 4))
-	if got := d.str(`__fetches.join(" ") + "|" + __text_of("read-outcome") + "|" + __text_of("group-error") + "|" + __streamURLs()`); got != "/conversations/job streams=0|refused|messages did not load|" {
+	if got := d.str(`__fetches.join(" ") + "|" + __text_of("read-outcome") + "|" + __text_of("group-error") + "|" + __streamURLs()`); got != "/chats/job streams=0|refused|messages did not load|" {
 		t.Fatalf("failed reload %q", got)
 	}
 	d.serve(true, renderPage(t, transcriptFixture("job", "", 4)))
 	d.run(`__setVisibility("hidden"); __setVisibility("visible")`)
-	if got := d.str(`__seqs("transcript") + "|" + __text_of("read-outcome") + "|" + __text_of("read-reason") + "|" + __text_of("group-error") + "|" + __streamURLs()`); got != "4|<none>|<none>||/events?conversation=job&after=4" {
+	if got := d.str(`__seqs("transcript") + "|" + __text_of("read-outcome") + "|" + __text_of("read-reason") + "|" + __text_of("group-error") + "|" + __streamURLs()`); got != "4|<none>|<none>||/events?chat=job&after=4" {
 		t.Fatalf("reloaded %q", got)
 	}
 }
 
-func TestConversationsOnAFailedReadReloadsAQuietGroup(t *testing.T) {
-	cs := []client.Conversation{{Name: "job", Status: "open"}}
+func TestChatsOnAFailedReadReloadsAQuietGroup(t *testing.T) {
+	cs := []client.Chat{{Name: "job", Status: "open"}}
 	cases := []struct {
-		name, url, conv, list, empty, stream string
+		name, url, chat, list, empty, stream string
 		failed, fresh                        page
 	}{
 		{
@@ -707,8 +707,8 @@ func TestConversationsOnAFailedReadReloadsAQuietGroup(t *testing.T) {
 			fresh:  messagesFixture(""),
 		},
 		{
-			name: "transcript", url: "/conversations/job", conv: "job", list: "transcript", empty: "transcript-empty",
-			stream: "/events?conversation=job&after=0",
+			name: "transcript", url: "/chats/job", chat: "job", list: "transcript", empty: "transcript-empty",
+			stream: "/events?chat=job&after=0",
 			failed: func() page {
 				p := transcriptFixture("job", "")
 				p.Group = &messageGroup{Outcome: "unavailable"}
@@ -721,7 +721,7 @@ func TestConversationsOnAFailedReadReloadsAQuietGroup(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			d := loadPage(t, renderPage(t, c.failed), c.url, "")
 			d.serve(true, renderPage(t, c.fresh))
-			d.emit("conversations", conversationsEvent(t, c.conv, cs))
+			d.emit("chats", chatsEvent(t, c.chat, cs))
 			if got := d.str(`__fetches.join(" ")`); got != c.url+" streams=0" {
 				t.Fatalf("fetches %q", got)
 			}
@@ -729,7 +729,7 @@ func TestConversationsOnAFailedReadReloadsAQuietGroup(t *testing.T) {
 			if got != "<none>|No messages.|"+c.stream {
 				t.Fatalf("recovered %q", got)
 			}
-			d.emit("conversations", conversationsEvent(t, c.conv, cs))
+			d.emit("chats", chatsEvent(t, c.chat, cs))
 			if got := d.str(`__fetches.length`); got != "1" {
 				t.Fatalf("a loaded group reloaded again: %s fetches", got)
 			}
@@ -739,13 +739,13 @@ func TestConversationsOnAFailedReadReloadsAQuietGroup(t *testing.T) {
 
 func TestRecoveryClearsALoadNoticeButNotASendNotice(t *testing.T) {
 	cases := []struct {
-		name, url, conv, list string
+		name, url, chat, list string
 		page                  page
 		want                  string
 	}{
-		{name: "messages", page: messagesFixture(""), url: "/", conv: "alpha", list: "messages", want: "<none>"},
-		{name: "transcript", page: transcriptFixture("job", ""), url: "/conversations/job", conv: "job", list: "transcript", want: "<none>"},
-		{name: "failed send", page: transcriptFixture("job", ""), url: "/conversations/job/messages", conv: "job", list: "transcript", want: "bus down"},
+		{name: "messages", page: messagesFixture(""), url: "/", chat: "alpha", list: "messages", want: "<none>"},
+		{name: "transcript", page: transcriptFixture("job", ""), url: "/chats/job", chat: "job", list: "transcript", want: "<none>"},
+		{name: "failed send", page: transcriptFixture("job", ""), url: "/chats/job/messages", chat: "job", list: "transcript", want: "bus down"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -753,18 +753,18 @@ func TestRecoveryClearsALoadNoticeButNotASendNotice(t *testing.T) {
 			failed.Group, failed.Notice = nil, "bus down"
 			d := loadPage(t, renderPage(t, failed), tc.url, "")
 			recovered := tc.page
-			recovered.Group = fixtureGroup(tc.conv, "", 4)
+			recovered.Group = fixtureGroup(tc.chat, "", 4)
 			d.serve(true, renderPage(t, recovered))
-			d.emit("message", messageEvent(t, tc.conv, 4))
+			d.emit("message", messageEvent(t, tc.chat, 4))
 			if got := d.str(`__seqs("` + tc.list + `") + "|" + __text_of("notice")`); got != "4|"+tc.want {
 				t.Fatalf("after reload %q", got)
 			}
 		})
 	}
 
-	d := loadPage(t, renderPage(t, page{Kind: kindList, Notice: "bus down"}), "/conversations", "")
-	d.emit("conversations", conversationsEvent(t, "", []client.Conversation{{Name: "job", Status: "open"}}))
-	if got := d.str(`__names("open-conversations") + "|" + __text_of("notice")`); got != "job|<none>" {
+	d := loadPage(t, renderPage(t, page{Kind: kindList, Notice: "bus down"}), "/chats", "")
+	d.emit("chats", chatsEvent(t, "", []client.Chat{{Name: "job", Status: "open"}}))
+	if got := d.str(`__names("open-chats") + "|" + __text_of("notice")`); got != "job|<none>" {
 		t.Fatalf("list after event %q", got)
 	}
 }
@@ -786,25 +786,25 @@ func TestInsertKeepsTheReaderStillWithoutScrollAnchoring(t *testing.T) {
 		name      string
 		page      page
 		url       string
-		conv      string
+		chat      string
 		layout    string
 		scroller  string
 		anchoring bool
 		top       int
 		want      int
 	}{
-		{name: "messages", page: messagesFixture("", 4), url: "/", conv: "alpha", layout: `document.getElementById("main")._overflowY = "auto"`, scroller: `document.getElementById("main")`, top: 300, want: 400},
-		{name: "wide transcript", page: transcriptFixture("job", "", 4), url: "/conversations/job", conv: "job", layout: `document.getElementById("main")._overflowY = "hidden"; document.getElementById("transcript-section")._overflowY = "auto"`, scroller: `document.getElementById("transcript-section")`, top: 300, want: 400},
-		{name: "narrow transcript", page: transcriptFixture("job", "", 4), url: "/conversations/job", conv: "job", scroller: "document.scrollingElement", top: 300, want: 400},
-		{name: "narrow empty", page: messagesFixture(""), url: "/", conv: "alpha", scroller: "document.scrollingElement", top: 300, want: 400},
-		{name: "at top", page: messagesFixture("", 4), url: "/", conv: "alpha", layout: `document.getElementById("main")._overflowY = "auto"`, scroller: `document.getElementById("main")`, top: 0, want: 0},
-		{name: "anchoring", page: messagesFixture("", 4), url: "/", conv: "alpha", layout: `document.getElementById("main")._overflowY = "auto"`, scroller: `document.getElementById("main")`, anchoring: true, top: 300, want: 300},
+		{name: "messages", page: messagesFixture("", 4), url: "/", chat: "alpha", layout: `document.getElementById("main")._overflowY = "auto"`, scroller: `document.getElementById("main")`, top: 300, want: 400},
+		{name: "wide transcript", page: transcriptFixture("job", "", 4), url: "/chats/job", chat: "job", layout: `document.getElementById("main")._overflowY = "hidden"; document.getElementById("transcript-section")._overflowY = "auto"`, scroller: `document.getElementById("transcript-section")`, top: 300, want: 400},
+		{name: "narrow transcript", page: transcriptFixture("job", "", 4), url: "/chats/job", chat: "job", scroller: "document.scrollingElement", top: 300, want: 400},
+		{name: "narrow empty", page: messagesFixture(""), url: "/", chat: "alpha", scroller: "document.scrollingElement", top: 300, want: 400},
+		{name: "at top", page: messagesFixture("", 4), url: "/", chat: "alpha", layout: `document.getElementById("main")._overflowY = "auto"`, scroller: `document.getElementById("main")`, top: 0, want: 0},
+		{name: "anchoring", page: messagesFixture("", 4), url: "/", chat: "alpha", layout: `document.getElementById("main")._overflowY = "auto"`, scroller: `document.getElementById("main")`, anchoring: true, top: 300, want: 300},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			setup := fmt.Sprintf("__anchoring = %t; %s; var __scroller = %s; __scroller.scrollTop = %d", tc.anchoring, tc.layout, tc.scroller, tc.top)
 			d := loadPage(t, renderPage(t, tc.page), tc.url, setup)
-			d.emit("message", messageEvent(t, tc.conv, 9))
+			d.emit("message", messageEvent(t, tc.chat, 9))
 			if got := d.str("String(__scroller.scrollTop)"); got != fmt.Sprint(tc.want) {
 				t.Fatalf("scrollTop %s", got)
 			}
@@ -878,18 +878,18 @@ func (d *pageDOM) emit(event, data string) {
 	d.run("__emit(" + quoteJS(event) + ", __arg)")
 }
 
-func fixtureItem(conv string, seq int64) messageItem {
-	return newMessageItem(conv, client.Message{
+func fixtureItem(chat string, seq int64) messageItem {
+	return newMessageItem(chat, client.Message{
 		Seq: seq, Time: "2026-10-31T00:00:00Z", From: "alice", To: []string{"bob"},
 		Body: fmt.Sprintf("body **%d**", seq), TxID: fmt.Sprintf("t%d", seq), Kind: "say",
 	})
 }
 
 // fixtureGroup lists seqs newest first. A non-empty next marks the group full.
-func fixtureGroup(conv, next string, seqs ...int64) *messageGroup {
+func fixtureGroup(chat, next string, seqs ...int64) *messageGroup {
 	g := &messageGroup{Outcome: "ok", Full: next != "", NextPage: next}
 	for _, s := range seqs {
-		g.Messages = append(g.Messages, fixtureItem(conv, s))
+		g.Messages = append(g.Messages, fixtureItem(chat, s))
 	}
 	return g
 }
@@ -899,41 +899,41 @@ func messagesFixture(next string, seqs ...int64) page {
 }
 
 func transcriptFixture(name, next string, seqs ...int64) page {
-	p := conversationPage(name)
+	p := chatPage(name)
 	p.Group = fixtureGroup(name, next, seqs...)
 	return p
 }
 
-func messageEvent(t *testing.T, conv string, seq int64) string {
+func messageEvent(t *testing.T, chat string, seq int64) string {
 	t.Helper()
-	frag, err := renderBlock("messageItem", fixtureItem(conv, seq))
+	frag, err := renderBlock("messageItem", fixtureItem(chat, seq))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return frag
 }
 
-// conversationsEvent is the conversations event data a stream for name sends.
-func conversationsEvent(t *testing.T, name string, cs []client.Conversation) string {
+// chatsEvent is the chats event data a stream for name sends.
+func chatsEvent(t *testing.T, name string, cs []client.Chat) string {
 	t.Helper()
 	p := page{Name: name}
 	applyList(&p, &cs)
-	sections, err := renderBlock("convSections", p)
+	sections, err := renderBlock("chatSections", p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	index, err := renderBlock("convIndex", p)
+	index, err := renderBlock("chatIndex", p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return sections + index
 }
 
-func metaEvent(t *testing.T, name string, cs []client.Conversation) string {
+func metaEvent(t *testing.T, name string, cs []client.Chat) string {
 	t.Helper()
 	p := page{Name: name}
 	applyList(&p, &cs)
-	frag, err := renderBlock("convMeta", p)
+	frag, err := renderBlock("chatMeta", p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1398,13 +1398,13 @@ function __arrived(id) {
   var list = document.getElementById(id);
   if (!list) return "";
   return list.querySelectorAll(".arrived").map(function (li) {
-    return li.getAttribute("data-seq") || li.querySelector(".conv-name").textContent;
+    return li.getAttribute("data-seq") || li.querySelector(".chat-name").textContent;
   }).join(",");
 }
 function __names(id) {
   var list = document.getElementById(id);
   if (!list) return "";
-  return list.querySelectorAll(".conv-name").map(function (n) { return n.textContent; }).join(",");
+  return list.querySelectorAll(".chat-name").map(function (n) { return n.textContent; }).join(",");
 }
 function __text_of(id) { var el = document.getElementById(id); return el ? el.textContent : "<none>"; }
 function __attr(id, name) {

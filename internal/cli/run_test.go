@@ -180,7 +180,7 @@ ticket: p3bot-e734
 seat: grok
 member: grok=hotseat/grok:grok-4
 member: opus=hotseat/claude:opus
-page: http://127.0.0.1:4728/conversations/p3bot-e734-ticket-triage
+page: http://127.0.0.1:4728/chats/p3bot-e734-ticket-triage
 `
 	if buf.String() != want || r.lw.err != nil {
 		t.Fatalf("got\n%s\nwant\n%s", buf.String(), want)

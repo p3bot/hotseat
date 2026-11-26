@@ -152,7 +152,7 @@ not on the bus, the task argument is required.
 run holds the conversation's conductor lease while it drives, renews it every
 5s, and releases it at exit. A second run on a conversation another run is
 driving waits once, at most 20s, then exits non-zero with outcome: error and
-conversation has a conductor on stderr, having done nothing. A run that loses
+chat has a conductor on stderr, having done nothing. A run that loses
 its lease stops launching and writing, kills no member, waits for the members
 it launched to exit, and exits non-zero with outcome: error. The next holder
 adopts and records its members. A continuation adopts a member process only
@@ -352,7 +352,7 @@ func (r *runReport) Header(h run.Header) {
 		r.lw.plain("roster", name)
 	}
 	if r.page != "" {
-		r.lw.plain("page", web.ConversationURL(r.page, h.Conversation))
+		r.lw.plain("page", web.ChatURL(r.page, h.Conversation))
 	}
 }
 

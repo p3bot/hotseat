@@ -13,10 +13,10 @@ import (
 	"github.com/p3bot/hotseat/internal/store"
 )
 
-// Register sets the registered time from the bus clock.
-// Status becomes registered only when the row is launched. The route returns the public row, with no pid or start.
-func (s *Service) Register(ctx context.Context, conv, name string) (Result, error) {
-	if err := requireConversation(conv); err != nil {
+// Join sets the joined time from the bus clock.
+// Status becomes joined only when the row is launched. The route returns the public row, with no pid or start.
+func (s *Service) Join(ctx context.Context, chat, name string) (Result, error) {
+	if err := requireChat(chat); err != nil {
 		return asRefused(err)
 	}
 	if err := requireParticipant(name); err != nil {
@@ -27,9 +27,9 @@ func (s *Service) Register(ctx context.Context, conv, name string) (Result, erro
 	if err := ctx.Err(); err != nil {
 		return Result{}, ErrDropped
 	}
-	m, err := s.store.RegisterMember(ctx, conv, name, s.now())
+	m, err := s.store.JoinMember(ctx, chat, name, s.now())
 	if err != nil {
-		return s.fail(err, "register")
+		return s.fail(err, "join")
 	}
 	return Result{Outcome: OutcomeOK, Member: &m}, nil
 }
@@ -39,9 +39,9 @@ func (s *Service) Register(ctx context.Context, conv, name string) (Result, erro
 // launched inserts a row. running, exited, and timed-out update an existing row.
 // pid and start are stored only on those writes, and a pid write without start clears the stored start.
 // start is the caller's opaque start token for the pid. The result does not carry a session id.
-// A write requires holder to hold the conversation lease. A read ignores holder.
-func (s *Service) Member(ctx context.Context, conv, name string, status *string, pid int64, hasPID bool, start *string, holder *string) (Result, error) {
-	if err := requireConversation(conv); err != nil {
+// A write requires holder to hold the chat lease. A read ignores holder.
+func (s *Service) Member(ctx context.Context, chat, name string, status *string, pid int64, hasPID bool, start *string, holder *string) (Result, error) {
+	if err := requireChat(chat); err != nil {
 		return asRefused(err)
 	}
 	if err := requireParticipant(name); err != nil {
@@ -76,7 +76,7 @@ func (s *Service) Member(ctx context.Context, conv, name string, status *string,
 		return Result{}, ErrDropped
 	}
 	if status != nil {
-		if err := s.fence(ctx, conv, fenceBy); err != nil {
+		if err := s.fence(ctx, chat, fenceBy); err != nil {
 			return s.fail(err, "member")
 		}
 	}
@@ -86,11 +86,11 @@ func (s *Service) Member(ctx context.Context, conv, name string, status *string,
 	)
 	switch {
 	case status == nil:
-		m, err = s.store.Member(ctx, conv, name)
+		m, err = s.store.Member(ctx, chat, name)
 	case *status == store.MemberLaunched:
-		m, err = s.store.LaunchMember(ctx, conv, name, s.now(), pid, hasPID, token)
+		m, err = s.store.LaunchMember(ctx, chat, name, s.now(), pid, hasPID, token)
 	default:
-		m, err = s.store.SetMemberStatus(ctx, conv, name, *status, pid, hasPID, token)
+		m, err = s.store.SetMemberStatus(ctx, chat, name, *status, pid, hasPID, token)
 	}
 	if err != nil {
 		return s.fail(err, "member")
@@ -99,13 +99,13 @@ func (s *Service) Member(ctx context.Context, conv, name string, status *string,
 }
 
 // Members returns roster rows in roster order, without session ids, pids, or starts.
-func (s *Service) Members(ctx context.Context, conv string) (Result, error) {
-	if err := requireConversation(conv); err != nil {
+func (s *Service) Members(ctx context.Context, chat string) (Result, error) {
+	if err := requireChat(chat); err != nil {
 		return asRefused(err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.store.Members(ctx, conv)
+	rows, err := s.store.Members(ctx, chat)
 	if err != nil {
 		return s.fail(err, "members")
 	}
@@ -117,9 +117,9 @@ func (s *Service) Members(ctx context.Context, conv string) (Result, error) {
 
 // Session stores, reads, or lists session ids.
 // hasName false lists every member. hasSession false reads one id.
-// A store requires holder to hold the conversation lease. A read ignores holder.
-func (s *Service) Session(ctx context.Context, conv, name string, hasName bool, session string, hasSession bool, holder *string) (Result, error) {
-	if err := requireConversation(conv); err != nil {
+// A store requires holder to hold the chat lease. A read ignores holder.
+func (s *Service) Session(ctx context.Context, chat, name string, hasName bool, session string, hasSession bool, holder *string) (Result, error) {
+	if err := requireChat(chat); err != nil {
 		return asRefused(err)
 	}
 	if !hasName {
@@ -128,7 +128,7 @@ func (s *Service) Session(ctx context.Context, conv, name string, hasName bool, 
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		rows, err := s.store.Sessions(ctx, conv)
+		rows, err := s.store.Sessions(ctx, chat)
 		if err != nil {
 			return s.fail(err, "session")
 		}
@@ -156,16 +156,16 @@ func (s *Service) Session(ctx context.Context, conv, name string, hasName bool, 
 		return Result{}, ErrDropped
 	}
 	if hasSession {
-		if err := s.fence(ctx, conv, fenceBy); err != nil {
+		if err := s.fence(ctx, chat, fenceBy); err != nil {
 			return s.fail(err, "session")
 		}
-		one, err := s.store.SetSession(ctx, conv, name, session)
+		one, err := s.store.SetSession(ctx, chat, name, session)
 		if err != nil {
 			return s.fail(err, "session")
 		}
 		return Result{Outcome: OutcomeOK, Session: &one}, nil
 	}
-	one, err := s.store.Session(ctx, conv, name)
+	one, err := s.store.Session(ctx, chat, name)
 	if err != nil {
 		return s.fail(err, "session")
 	}

@@ -96,21 +96,21 @@ type textFile struct {
 }
 
 type runFile struct {
-	Exit     int        `json:"exit"`
-	ExitOn   string     `json:"exitOn,omitempty"`
-	Sleep    string     `json:"sleep"`
-	JSON     string     `json:"json"`
-	Stderr   string     `json:"stderr,omitempty"`
-	Register bool       `json:"register"`
-	Steps    []stepFile `json:"steps,omitempty"`
+	Exit   int        `json:"exit"`
+	ExitOn string     `json:"exitOn,omitempty"`
+	Sleep  string     `json:"sleep"`
+	JSON   string     `json:"json"`
+	Stderr string     `json:"stderr,omitempty"`
+	Join   bool       `json:"join"`
+	Steps  []stepFile `json:"steps,omitempty"`
 }
 
 // stepFile is one scripted launch. The first unused step whose On text is in the prompt runs.
 type stepFile struct {
-	On      string        `json:"on"`
-	Publish []messageFile `json:"publish,omitempty"`
-	Sleep   string        `json:"sleep,omitempty"`
-	Exit    int           `json:"exit,omitempty"`
+	On    string        `json:"on"`
+	Send  []messageFile `json:"send,omitempty"`
+	Sleep string        `json:"sleep,omitempty"`
+	Exit  int           `json:"exit,omitempty"`
 }
 
 type messageFile struct {
@@ -219,7 +219,7 @@ func (h *harness) engineLease(conv string) string {
 
 func (h *harness) leaseAs(conv, op, holder string) client.Result {
 	h.t.Helper()
-	res := h.do("lease", client.LeaseRequest{Conversation: conv, Lease: op, Holder: holder})
+	res := h.do("lease", client.LeaseRequest{Chat: conv, Lease: op, Holder: holder})
 	if op != bus.LeaseAcquire && res.Outcome != bus.OutcomeOK {
 		h.t.Fatalf("lease %s %s: %s", op, conv, res.Reason)
 	}
@@ -241,7 +241,7 @@ func (h *harness) setMemberProc(conv, name, status string, pid *int64, start str
 	h.t.Helper()
 	var res client.Result
 	h.conduct(conv, func(holder string) {
-		res = h.do("member", client.MemberRequest{Conversation: conv, Name: name, Status: &status, PID: pid, Start: start, Holder: holder})
+		res = h.do("member", client.MemberRequest{Chat: conv, Name: name, Status: &status, PID: pid, Start: start, Holder: holder})
 	})
 	return res
 }
@@ -250,7 +250,7 @@ func (h *harness) setMemberProc(conv, name, status string, pid *int64, start str
 func (h *harness) setSession(conv, name, session string) {
 	h.t.Helper()
 	h.conduct(conv, func(holder string) {
-		if res := h.do("session", client.SessionRequest{Conversation: conv, Name: &name, Session: &session, Holder: holder}); res.Outcome != bus.OutcomeOK {
+		if res := h.do("session", client.SessionRequest{Chat: conv, Name: &name, Session: &session, Holder: holder}); res.Outcome != bus.OutcomeOK {
 			h.t.Fatalf("session %s: %s", name, res.Reason)
 		}
 	})
@@ -436,55 +436,63 @@ var txSeq atomic.Int64
 
 func (h *harness) publish(conv, from, kind, body string, to []string) client.Message {
 	h.t.Helper()
-	res := h.do("publish", client.PublishRequest{
-		Conversation: conv,
-		From:         from,
-		To:           to,
-		Body:         body,
-		TxID:         fmt.Sprintf("t%d", txSeq.Add(1)),
-		Kind:         kind,
+	res := h.do("send", client.SendRequest{
+		Chat: conv,
+		From: from,
+		To:   to,
+		Body: body,
+		TxID: fmt.Sprintf("t%d", txSeq.Add(1)),
+		Kind: kind,
 	})
 	if res.Outcome != bus.OutcomeOK || res.Message == nil {
-		h.t.Fatalf("publish %s: %s", kind, res.Reason)
+		h.t.Fatalf("send %s: %s", kind, res.Reason)
 	}
 	return *res.Message
 }
 
 func (h *harness) messages(conv string) []client.Message {
 	h.t.Helper()
-	res := h.do("read", client.ReadRequest{Conversation: conv, Cursor: 0, Limit: 2000})
-	if res.Outcome != bus.OutcomeOK || res.Messages == nil {
-		h.t.Fatalf("read %s", res.Reason)
+	all := []client.Message{}
+	var cursor int64
+	for {
+		res := h.do("read", client.ReadRequest{Chat: conv, Cursor: cursor, Limit: bus.MaxReadLimit})
+		if res.Outcome != bus.OutcomeOK || res.Messages == nil || res.More == nil {
+			h.t.Fatalf("read %s", res.Reason)
+		}
+		all = append(all, *res.Messages...)
+		if !*res.More {
+			return all
+		}
+		cursor = all[len(all)-1].Seq
 	}
-	return *res.Messages
 }
 
-func (h *harness) conv(name string) (client.Conversation, bool) {
+func (h *harness) conv(name string) (client.Chat, bool) {
 	h.t.Helper()
 	res := h.do("list", struct{}{})
-	if res.Outcome != bus.OutcomeOK || res.Conversations == nil {
+	if res.Outcome != bus.OutcomeOK || res.Chats == nil {
 		h.t.Fatalf("list %s", res.Reason)
 	}
-	for _, c := range *res.Conversations {
+	for _, c := range *res.Chats {
 		if c.Name == name {
 			return c, true
 		}
 	}
-	return client.Conversation{}, false
+	return client.Chat{}, false
 }
 
-func (h *harness) only() client.Conversation {
+func (h *harness) only() client.Chat {
 	h.t.Helper()
 	res := h.do("list", struct{}{})
-	if res.Outcome != bus.OutcomeOK || res.Conversations == nil || len(*res.Conversations) != 1 {
-		h.t.Fatalf("conversations %+v %s", res.Conversations, res.Reason)
+	if res.Outcome != bus.OutcomeOK || res.Chats == nil || len(*res.Chats) != 1 {
+		h.t.Fatalf("conversations %+v %s", res.Chats, res.Reason)
 	}
-	return (*res.Conversations)[0]
+	return (*res.Chats)[0]
 }
 
 func (h *harness) member(conv, name string) client.Member {
 	h.t.Helper()
-	res := h.do("member", client.MemberRequest{Conversation: conv, Name: name})
+	res := h.do("member", client.MemberRequest{Chat: conv, Name: name})
 	if res.Outcome != bus.OutcomeOK || res.Member == nil {
 		h.t.Fatalf("member %s %s", name, res.Reason)
 	}
@@ -508,14 +516,14 @@ func (h *harness) release(name string) {
 	}
 }
 
-// awaitRegistered waits until name has a registered time and returns its row.
+// awaitJoined waits until name has a joined time and returns its row.
 // A seat that fails before its backup registers finds no backup and halts the run.
-func (h *harness) awaitRegistered(conv, name string) client.Member {
+func (h *harness) awaitJoined(conv, name string) client.Member {
 	h.t.Helper()
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		res := h.do("member", client.MemberRequest{Conversation: conv, Name: name})
-		if res.Member != nil && res.Member.Registered != "" {
+		res := h.do("member", client.MemberRequest{Chat: conv, Name: name})
+		if res.Member != nil && res.Member.Joined != "" {
 			return *res.Member
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -578,7 +586,7 @@ func ctx() (context.Context, context.CancelFunc) {
 
 func TestRunCreatesNamedConversationAndPublishesInstructions(t *testing.T) {
 	h := newHarness(t)
-	h.plan.Launch = map[string]runFile{"alpha": {Register: true}, "bravo": {Register: true}}
+	h.plan.Launch = map[string]runFile{"alpha": {Join: true}, "bravo": {Join: true}}
 	cfg := h.base()
 	cfg.Prompts = "tasks:hotseat/review/extra"
 	cfg.PromptsSet = true
@@ -596,7 +604,7 @@ func TestRunCreatesNamedConversationAndPublishesInstructions(t *testing.T) {
 		done <- err
 	}()
 	deadline := time.Now().Add(8 * time.Second)
-	var conv client.Conversation
+	var conv client.Chat
 	for time.Now().Before(deadline) {
 		if c, ok := h.conv("foo-x234-review-ticket"); ok {
 			conv = c
@@ -670,12 +678,12 @@ func TestSecondRunMintsOneCodeAndDoesNotPublishIntoTheFirst(t *testing.T) {
 	go func() {
 		_, _, _ = h2.run(c2, cfg2)
 	}()
-	var second client.Conversation
+	var second client.Chat
 	deadline = time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		res := h.do("list", struct{}{})
-		if res.Conversations != nil {
-			for _, c := range *res.Conversations {
+		if res.Chats != nil {
+			for _, c := range *res.Chats {
 				if strings.HasPrefix(c.Name, "foo-x234-review-ticket-") && c.Name != "foo-x234-review-ticket" {
 					second = c
 				}
@@ -753,7 +761,7 @@ func TestOversizeBodyUppercaseAndMissingModuleCreateNothing(t *testing.T) {
 
 func (h *harness) onlyExists() bool {
 	res := h.do("list", struct{}{})
-	return res.Conversations != nil && len(*res.Conversations) > 0
+	return res.Chats != nil && len(*res.Chats) > 0
 }
 
 func TestContinueRebuildsMissingInstructionsAndRejectsMismatch(t *testing.T) {
@@ -847,10 +855,10 @@ func TestFirstLaunchHasNoResumeAndLaterLaunchReusesIt(t *testing.T) {
 	var name string
 	for time.Now().Before(deadline) {
 		res := h.do("list", struct{}{})
-		if res.Conversations != nil && len(*res.Conversations) == 1 {
-			mem := h.do("member", client.MemberRequest{Conversation: (*res.Conversations)[0].Name, Name: "bravo"})
+		if res.Chats != nil && len(*res.Chats) == 1 {
+			mem := h.do("member", client.MemberRequest{Chat: (*res.Chats)[0].Name, Name: "bravo"})
 			if mem.Member != nil && mem.Member.Status == statusExited {
-				name = (*res.Conversations)[0].Name
+				name = (*res.Chats)[0].Name
 				break
 			}
 		}
@@ -924,8 +932,8 @@ func TestPermissionRefusalCreatesNothing(t *testing.T) {
 		t.Fatalf("out %s", out)
 	}
 	res := h.do("list", struct{}{})
-	if res.Outcome != bus.OutcomeOK || (res.Conversations != nil && len(*res.Conversations) != 0) {
-		t.Fatalf("list %+v %s", res.Conversations, res.Reason)
+	if res.Outcome != bus.OutcomeOK || (res.Chats != nil && len(*res.Chats) != 0) {
+		t.Fatalf("list %+v %s", res.Chats, res.Reason)
 	}
 	if len(launches(h.calls(), "alpha")) != 0 || len(launches(h.calls(), "bravo")) != 0 {
 		t.Fatalf("calls %+v", h.calls())
@@ -948,7 +956,7 @@ func TestLocatorFailureTextIsShownOnce(t *testing.T) {
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{
 		"alpha": {JSON: `{"sessionId":"UNIQUEFRAGMENT"}`},
-		"bravo": {Register: true},
+		"bravo": {Join: true},
 	}
 	h.plan.Locator = map[string]textFile{
 		"hotseat/grok": {Stderr: "no such field\n", Exit: 1},
@@ -968,7 +976,7 @@ func TestLocatorFailureTextIsShownOnce(t *testing.T) {
 		errCh <- err
 	}()
 	name := h.waitName()
-	boot := h.awaitRegistered(name, "bravo")
+	boot := h.awaitJoined(name, "bravo")
 	h.release("alpha")
 	h.awaitRelaunchEnd(name, boot)
 	if h.member(name, "alpha").Status != statusTimedOut {
@@ -1005,7 +1013,7 @@ func missingSessionTimesOutOneMember(t *testing.T, setup func(*harness)) {
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{
 		"alpha": {JSON: `{"sessionId":"UNIQUEFRAGMENT"}`},
-		"bravo": {Register: true},
+		"bravo": {Join: true},
 	}
 	setup(h)
 	cfg := h.base()
@@ -1019,7 +1027,7 @@ func missingSessionTimesOutOneMember(t *testing.T, setup func(*harness)) {
 		errCh <- err
 	}()
 	name := h.waitName()
-	boot := h.awaitRegistered(name, "bravo")
+	boot := h.awaitJoined(name, "bravo")
 	h.release("alpha")
 	bravo := h.awaitRelaunchEnd(name, boot)
 	if alpha := h.member(name, "alpha"); alpha.Status != statusTimedOut || bravo.Status != statusExited {
@@ -1044,7 +1052,7 @@ func TestMemberStderrIsShownAndSessionTextIsNot(t *testing.T) {
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{
 		"alpha": {Exit: 1, Sleep: "1s", JSON: `{"sessionId":"UNIQUEFRAGMENT"}`, Stderr: "model failed\n"},
-		"bravo": {Register: true},
+		"bravo": {Join: true},
 	}
 	cfg := h.base()
 	cfg.TicketSet = false
@@ -1061,7 +1069,7 @@ func TestMemberStderrIsShownAndSessionTextIsNot(t *testing.T) {
 		errCh <- err
 	}()
 	name := h.waitName()
-	boot := h.awaitRegistered(name, "bravo")
+	boot := h.awaitJoined(name, "bravo")
 	h.release("alpha")
 	bravo := h.awaitRelaunchEnd(name, boot)
 	if alpha := h.member(name, "alpha"); alpha.Status != statusTimedOut || bravo.Status != statusExited {
@@ -1203,7 +1211,7 @@ func TestFollowUpWaitsForBootstrapAndLimitSkipsIt(t *testing.T) {
 	name := h.waitName()
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		res := h.do("member", client.MemberRequest{Conversation: name, Name: "bravo"})
+		res := h.do("member", client.MemberRequest{Chat: name, Name: "bravo"})
 		if res.Member != nil && res.Member.Status == statusExited {
 			break
 		}
@@ -1345,7 +1353,7 @@ func (h *harness) proxy(intercept func(w http.ResponseWriter, path string, body 
 	return ln.Addr().String()
 }
 
-func TestBackupSkipsAMissingRowAndUsesTheNextRegisteredName(t *testing.T) {
+func TestBackupSkipsAMissingRowAndUsesTheNextJoinedName(t *testing.T) {
 	h := newHarness(t)
 	res := h.do("create", client.CreateRequest{
 		Name: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha",
@@ -1370,7 +1378,7 @@ func TestBackupSkipsAMissingRowAndUsesTheNextRegisteredName(t *testing.T) {
 	if wrote.Outcome != bus.OutcomeOK {
 		t.Fatal(wrote.Reason)
 	}
-	reg := h.do("register", client.RegisterRequest{Conversation: "kept", Name: "charlie"})
+	reg := h.do("join", client.JoinRequest{Chat: "kept", Name: "charlie"})
 	if reg.Outcome != bus.OutcomeOK {
 		t.Fatal(reg.Reason)
 	}
@@ -1403,7 +1411,7 @@ func TestDoneFromTrailerAfterTimeoutAndNotFromAnotherName(t *testing.T) {
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{
 		"alpha":   {Exit: 1, Sleep: "1s"},
-		"bravo":   {Register: true},
+		"bravo":   {Join: true},
 		"charlie": {},
 	}
 	cfg := h.base()
@@ -1420,11 +1428,11 @@ func TestDoneFromTrailerAfterTimeoutAndNotFromAnotherName(t *testing.T) {
 		errCh <- err
 	}()
 	name := h.waitName()
-	h.awaitRegistered(name, "bravo")
+	h.awaitJoined(name, "bravo")
 	h.release("alpha")
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		res := h.do("member", client.MemberRequest{Conversation: name, Name: "alpha"})
+		res := h.do("member", client.MemberRequest{Chat: name, Name: "alpha"})
 		if res.Outcome == bus.OutcomeOK && res.Member != nil && res.Member.Status == statusTimedOut {
 			break
 		}
@@ -1465,7 +1473,7 @@ func TestDoneFromTheBackupCloses(t *testing.T) {
 	h.setMember("kept", "alpha", launched, nil)
 	h.setMember("kept", "alpha", timed, nil)
 	h.setMember("kept", "bravo", launched, nil)
-	h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"})
+	h.do("join", client.JoinRequest{Chat: "kept", Name: "bravo"})
 	h.setMember("kept", "bravo", exited, nil)
 	h.publish("kept", "bravo", "done", "yes", nil)
 	cfg := h.base()
@@ -1491,8 +1499,8 @@ func TestHandoffIsOnlyTheTimeoutFactAndFollowUpStillRuns(t *testing.T) {
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{
 		"alpha":   {Exit: 1, Sleep: "1s"},
-		"bravo":   {Register: true, Exit: 1, ExitOn: "acting seat"},
-		"charlie": {Register: true},
+		"bravo":   {Join: true, Exit: 1, ExitOn: "acting seat"},
+		"charlie": {Join: true},
 	}
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
@@ -1504,8 +1512,8 @@ func TestHandoffIsOnlyTheTimeoutFactAndFollowUpStillRuns(t *testing.T) {
 		_, _, _ = h.run(cctx, cfg)
 	}()
 	name := h.waitName()
-	h.awaitRegistered(name, "bravo")
-	h.awaitRegistered(name, "charlie")
+	h.awaitJoined(name, "bravo")
+	h.awaitJoined(name, "charlie")
 	h.release("alpha")
 	deadline := time.Now().Add(8 * time.Second)
 	var handoff call
@@ -1908,7 +1916,7 @@ func TestInteractiveKeepsTheCapAndDropsTheProcessLimit(t *testing.T) {
 	deadline := time.Now().Add(8 * time.Second)
 	var status string
 	for time.Now().Before(deadline) {
-		res := h.do("member", client.MemberRequest{Conversation: name, Name: "alpha"})
+		res := h.do("member", client.MemberRequest{Chat: name, Name: "alpha"})
 		if res.Member != nil {
 			status = res.Member.Status
 			if status == statusExited {
@@ -1958,7 +1966,7 @@ func TestRestartDeadPidTimesOutBeforeLaunchAndLivePidIsWaited(t *testing.T) {
 	h.publish("review-ticket-foo-x234", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
 	launched := statusLaunched
 	h.setMember("review-ticket-foo-x234", "alpha", launched, &deadPID)
-	registered := h.do("register", client.RegisterRequest{Conversation: "review-ticket-foo-x234", Name: "alpha"})
+	registered := h.do("join", client.JoinRequest{Chat: "review-ticket-foo-x234", Name: "alpha"})
 	if registered.Outcome != bus.OutcomeOK {
 		t.Fatal(registered.Reason)
 	}
@@ -2095,7 +2103,7 @@ func TestForeignProcessLimitStopsTheProcess(t *testing.T) {
 	launched := statusLaunched
 	h.setMember("kept", "alpha", launched, &live)
 	h.setMember("kept", "bravo", launched, nil)
-	if registered := h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"}); registered.Outcome != bus.OutcomeOK {
+	if registered := h.do("join", client.JoinRequest{Chat: "kept", Name: "bravo"}); registered.Outcome != bus.OutcomeOK {
 		t.Fatal(registered.Reason)
 	}
 	exited := statusExited
@@ -2246,7 +2254,7 @@ func TestLivePidBlocksTheNextLaunch(t *testing.T) {
 	s := "sess-alpha"
 	h.setSession("kept", n, s)
 	h.setMember("kept", "bravo", launched, nil)
-	if registered := h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"}); registered.Outcome != bus.OutcomeOK {
+	if registered := h.do("join", client.JoinRequest{Chat: "kept", Name: "bravo"}); registered.Outcome != bus.OutcomeOK {
 		t.Fatal(registered.Reason)
 	}
 	h.setMember("kept", "bravo", exited, nil)
@@ -2480,7 +2488,7 @@ func TestRestartSkipsAFinishedTurnAndResumesAfterSay(t *testing.T) {
 	exited := statusExited
 	for _, name := range []string{"alpha", "bravo"} {
 		h.setMember("kept", name, launched, nil)
-		h.do("register", client.RegisterRequest{Conversation: "kept", Name: name})
+		h.do("join", client.JoinRequest{Chat: "kept", Name: name})
 		h.setMember("kept", name, exited, nil)
 		n := name
 		s := "sess-" + name
@@ -2538,7 +2546,7 @@ func TestResumeLaunchesAnExitedRecipientWhoHasNotSpoken(t *testing.T) {
 	exited := statusExited
 	for _, name := range []string{"alpha", "bravo"} {
 		h.setMember("kept", name, launched, nil)
-		h.do("register", client.RegisterRequest{Conversation: "kept", Name: name})
+		h.do("join", client.JoinRequest{Chat: "kept", Name: name})
 		h.setMember("kept", name, exited, nil)
 		n := name
 		s := "sess-" + name
@@ -2596,7 +2604,7 @@ func TestResumeWithoutRosterWatchesAndALaterRosterLaunches(t *testing.T) {
 	exited := statusExited
 	for _, name := range []string{"alpha", "bravo"} {
 		h.setMember("kept", name, launched, nil)
-		h.do("register", client.RegisterRequest{Conversation: "kept", Name: name})
+		h.do("join", client.JoinRequest{Chat: "kept", Name: name})
 		h.setMember("kept", name, exited, nil)
 		n := name
 		s := "sess-" + name
@@ -2796,7 +2804,7 @@ func TestReportAndStderrOmitSessionPidAndToken(t *testing.T) {
 
 func (h *harness) memberStatus(conv, name string) string {
 	h.t.Helper()
-	res := h.do("member", client.MemberRequest{Conversation: conv, Name: name})
+	res := h.do("member", client.MemberRequest{Chat: conv, Name: name})
 	if res.Member == nil {
 		return ""
 	}
@@ -2808,8 +2816,8 @@ func (h *harness) waitName() string {
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		res := h.do("list", struct{}{})
-		if res.Conversations != nil && len(*res.Conversations) == 1 {
-			return (*res.Conversations)[0].Name
+		if res.Chats != nil && len(*res.Chats) == 1 {
+			return (*res.Chats)[0].Name
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

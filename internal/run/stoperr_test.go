@@ -109,7 +109,7 @@ func TestRefusedMemberWriteStopsItsSiblingsAtOnceAndSaysStoppedByRefusalBeforeTh
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"outcome":"refused","reason":"`+bus.ReasonMemberMissing+`"}`)
 			return true
-		case path == bus.PathPublish && bytes.Contains(body, []byte(stopRefusal)):
+		case path == bus.PathSend && bytes.Contains(body, []byte(stopRefusal)):
 			order = append(order, "stop")
 		case path == bus.PathMember && bytes.Contains(body, []byte(`"name":"alpha"`)) && bytes.Contains(body, []byte(`"status":"`+statusTimedOut+`"`)):
 			order = append(order, "alpha reaped")
@@ -290,11 +290,11 @@ func TestLaunchCapHitByABootHandoffWithNothingInFlightNamesItsStoredErrorInTheSt
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{
 		"alpha": {Exit: 1, Sleep: "500ms"},
-		"bravo": {Register: true},
+		"bravo": {Join: true},
 	}
 	// A slow launch cap publish leaves the wind-down without its error for a while after nothing is in flight.
 	addr := h.proxy(func(_ http.ResponseWriter, path string, body []byte) bool {
-		if path == bus.PathPublish && bytes.Contains(body, []byte(`"body":"`+classLaunchCap+`"`)) {
+		if path == bus.PathSend && bytes.Contains(body, []byte(`"body":"`+classLaunchCap+`"`)) {
 			time.Sleep(300 * time.Millisecond)
 		}
 		return false

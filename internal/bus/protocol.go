@@ -23,16 +23,16 @@ const (
 	OutcomeUnavailable = "unavailable"
 )
 
-// ConversationClosed is the status a binding carries once the conversation is closed.
-const ConversationClosed = store.StatusClosed
+// ChatClosed is the status a binding carries once the chat is closed.
+const ChatClosed = store.StatusClosed
 
 // Reasons are the exact text of the reason field on a refused call.
 const (
 	ReasonBadName              = "name must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
 	ReasonNameRequired         = "name is required"
-	ReasonConversationRequired = "conversation is required"
-	ReasonBadConversation      = "conversation must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
-	ReasonNotFound             = "conversation not found"
+	ReasonChatRequired         = "chat is required"
+	ReasonBadChat              = "chat must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
+	ReasonNotFound             = "chat not found"
 	ReasonFromRequired         = "from is required"
 	ReasonFromAll              = "from must not be all"
 	ReasonFromBad              = "from must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
@@ -51,7 +51,7 @@ const (
 	ReasonKindRequired         = "kind is required"
 	ReasonKindBad              = "kind must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
 	ReasonReRange              = "re must be an integer greater than zero"
-	ReasonReTarget             = "re must be the seq of an earlier message of the same conversation"
+	ReasonReTarget             = "re must be the seq of an earlier message of the same chat"
 	ReasonKindsShape           = "kinds must be an array of names"
 	ReasonKindsEmpty           = "kinds must not be empty"
 	ReasonKindsBadName         = "kinds contains a name that is not 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
@@ -99,13 +99,14 @@ const (
 	ReasonLeaseBad             = "lease must be acquire, renew, release, or get"
 	ReasonHolderRequired       = "holder is required"
 	ReasonHolderBad            = "holder must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
-	ReasonConductorHeld        = "conversation has a conductor"
+	ReasonConductorHeld        = "chat has a conductor"
 	ReasonLeaseNotHeld         = "lease is not held"
-	ReasonLeaseWrite           = "write requires the conversation lease"
+	ReasonLeaseWrite           = "write requires the chat lease"
 	ReasonCursorRequired       = "cursor is required"
 	ReasonCursorRange          = "cursor must be an integer greater than or equal to zero"
 	ReasonLimitRequired        = "limit is required"
 	ReasonLimitRange           = "limit must be a positive integer"
+	ReasonLimitCap             = "limit must be at most 1000"
 	ReasonBeforeRange          = "before must be an integer greater than zero"
 	ReasonDeadline             = "deadline must be a non-negative duration such as 30s or 500ms, or an RFC3339 time"
 	ReasonBadJSON              = "request is not valid JSON"
@@ -115,7 +116,10 @@ const (
 	ReasonUnavailable          = "could not make the change durable"
 )
 
-// MaxNameLen is the length limit for a conversation, a participant, a kind, a kinds entry, and a roster name.
+// MaxReadLimit is the largest read limit. A body can be 512 KiB, so even a full page can be large.
+const MaxReadLimit = 1000
+
+// MaxNameLen is the length limit for a chat, a participant, a kind, a kinds entry, and a roster name.
 const MaxNameLen = 64
 
 const valueAll = "all"
@@ -124,14 +128,14 @@ const valueAll = "all"
 // PathHealth is the unauthenticated pass or fail check. It is not an operation.
 const (
 	PathCreate   = "/create"
-	PathPublish  = "/publish"
+	PathSend     = "/send"
 	PathRead     = "/read"
 	PathWait     = "/wait"
 	PathWatch    = "/watch"
 	PathClose    = "/close"
 	PathList     = "/list"
 	PathMessages = "/messages"
-	PathRegister = "/register"
+	PathJoin     = "/join"
 	PathMember   = "/member"
 	PathSession  = "/session"
 	PathMembers  = "/members"

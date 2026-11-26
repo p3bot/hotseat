@@ -26,7 +26,7 @@ const (
 // It holds no session id, pid, start token, lease holder, token, or decision record.
 type Status struct {
 	// Binding is the conversation as /list returned it.
-	Binding client.Conversation
+	Binding client.Chat
 	// State is StateRunning while a conductor holds the lease, else StateClosed once the conversation is closed,
 	// else StateIdle. It is a fact, not a judgement of how a run ended.
 	State string
@@ -83,7 +83,7 @@ func ReadStatus(ctx context.Context, address, token, conversation string) (Statu
 		}
 		return res, outcomeErr(op, body, res)
 	}
-	lease, err := call(ctx, "lease", client.LeaseRequest{Conversation: conversation, Lease: bus.LeaseGet})
+	lease, err := call(ctx, "lease", client.LeaseRequest{Chat: conversation, Lease: bus.LeaseGet})
 	if err != nil {
 		return Status{}, err
 	}
@@ -103,7 +103,7 @@ func ReadStatus(ctx context.Context, address, token, conversation string) (Statu
 		return Status{}, err
 	}
 	// Records first: a record's references and after are stored seqs, so the transcript read next holds them all.
-	recRes, err := call(ctx, "records", client.RecordsRequest{Conversation: conversation})
+	recRes, err := call(ctx, "records", client.RecordsRequest{Chat: conversation})
 	if err != nil {
 		return Status{}, err
 	}
@@ -119,7 +119,7 @@ func ReadStatus(ctx context.Context, address, token, conversation string) (Statu
 	case *lease.Held:
 		st.State = StateRunning
 		st.Since, st.Expires = lease.Since, lease.Expires
-	case binding.Status == bus.ConversationClosed:
+	case binding.Status == bus.ChatClosed:
 		st.State = StateClosed
 	}
 	for _, m := range rows {
@@ -159,16 +159,16 @@ func (st *Status) countFindings(l ledger) {
 	st.Dropped = len(l.droppedAll())
 }
 
-func pickBinding(res client.Result, name string) (client.Conversation, bool) {
-	if res.Conversations == nil {
-		return client.Conversation{}, false
+func pickBinding(res client.Result, name string) (client.Chat, bool) {
+	if res.Chats == nil {
+		return client.Chat{}, false
 	}
-	for _, conv := range *res.Conversations {
+	for _, conv := range *res.Chats {
 		if conv.Name == name {
 			return conv, true
 		}
 	}
-	return client.Conversation{}, false
+	return client.Chat{}, false
 }
 
 // FailedCall is the outcome and reason of the bus call err reports, when err is a call that answered other than ok.

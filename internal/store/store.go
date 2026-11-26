@@ -7,14 +7,14 @@
 // Package store is the bus SQLite database.
 // One process holds hotseat.db.lock. Cursors and blocked waits are not stored.
 // A message carries kind and an optional re, the seq of an earlier message of
-// the same conversation it responds to. A conversation row holds the binding.
-// A member row holds registration, status, pid, and session id for one roster name.
+// the same chat it responds to. A chat row holds the binding.
+// A member row holds joining, status, pid, and session id for one roster name.
 //
 // Decision records are hotseat run's insert-only facts about messages: a set
 // closed with its findings, a set's grouping of duplicates, a settle, a fix,
-// a halt, and a stop. Each references messages of its conversation by
+// a halt, and a stop. Each references messages of its chat by
 // composite foreign keys that also fix the referenced kind (turn, finding,
-// propose, dismiss, fixed, done). after on a record is the conversation's
+// propose, dismiss, fixed, done). after on a record is the chat's
 // highest seq when it commits, read in the write transaction. A stop holds
 // only its done and has no after. A write that matches the stored
 // record on its key, ignoring after, returns it and writes nothing. One that
@@ -50,22 +50,22 @@ const LockName = FileName + ".lock"
 const SchemaVersion = "1"
 
 const (
-	// StatusOpen is a conversation that accepts publishes.
+	// StatusOpen is a chat that accepts sends.
 	StatusOpen = "open"
-	// StatusClosed is a recorded state. Publish still appends. The transcript stays readable.
+	// StatusClosed is a recorded state. Send still appends. The transcript stays readable.
 	StatusClosed = "closed"
 )
 
 // Member status values stored on a roster row.
 const (
-	MemberLaunched   = "launched"
-	MemberRegistered = "registered"
-	MemberRunning    = "running"
-	MemberExited     = "exited"
-	MemberTimedOut   = "timed-out"
+	MemberLaunched = "launched"
+	MemberJoined   = "joined"
+	MemberRunning  = "running"
+	MemberExited   = "exited"
+	MemberTimedOut = "timed-out"
 )
 
-const conversationColumns = `name, status, task, ticket, seat, directory, prompts, custom, roster`
+const chatColumns = `name, status, task, ticket, seat, directory, prompts, custom, roster`
 
 const messageColumns = `seq, time, sender, recipients, body, txid, kind, re`
 
@@ -74,7 +74,7 @@ var schemaStmts = []string{
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT`,
-	`CREATE TABLE IF NOT EXISTS conversations (
+	`CREATE TABLE IF NOT EXISTS chats (
   name TEXT PRIMARY KEY,
   status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
   task TEXT NOT NULL,
@@ -87,7 +87,7 @@ var schemaStmts = []string{
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS messages (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   time TEXT NOT NULL,
   sender TEXT NOT NULL,
   recipients TEXT NOT NULL,
@@ -95,97 +95,97 @@ var schemaStmts = []string{
   txid TEXT NOT NULL,
   kind TEXT NOT NULL,
   re INTEGER CHECK (re < seq),
-  UNIQUE (conversation, sender, txid),
-  UNIQUE (conversation, seq),
-  UNIQUE (conversation, seq, kind),
-  FOREIGN KEY (conversation, re) REFERENCES messages (conversation, seq)
+  UNIQUE (chat, sender, txid),
+  UNIQUE (chat, seq),
+  UNIQUE (chat, seq, kind),
+  FOREIGN KEY (chat, re) REFERENCES messages (chat, seq)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS members (
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   name TEXT NOT NULL,
   launched TEXT NOT NULL,
-  registered TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('launched', 'registered', 'running', 'exited', 'timed-out')),
+  joined TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('launched', 'joined', 'running', 'exited', 'timed-out')),
   session TEXT NOT NULL,
   pid INTEGER,
   start TEXT CHECK (start IS NULL OR pid IS NOT NULL),
-  PRIMARY KEY (conversation, name)
+  PRIMARY KEY (chat, name)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS sets (
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   turn INTEGER NOT NULL,
   turn_kind TEXT NOT NULL DEFAULT 'turn' CHECK (turn_kind = 'turn'),
   after INTEGER NOT NULL,
-  PRIMARY KEY (conversation, turn),
-  FOREIGN KEY (conversation, turn, turn_kind) REFERENCES messages (conversation, seq, kind),
+  PRIMARY KEY (chat, turn),
+  FOREIGN KEY (chat, turn, turn_kind) REFERENCES messages (chat, seq, kind),
   CHECK (after >= turn)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS set_findings (
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   turn INTEGER NOT NULL,
   finding INTEGER NOT NULL,
   finding_kind TEXT NOT NULL DEFAULT 'finding' CHECK (finding_kind = 'finding'),
-  PRIMARY KEY (conversation, finding),
-  UNIQUE (conversation, turn, finding),
-  FOREIGN KEY (conversation, turn) REFERENCES sets (conversation, turn),
-  FOREIGN KEY (conversation, finding, finding_kind) REFERENCES messages (conversation, seq, kind)
+  PRIMARY KEY (chat, finding),
+  UNIQUE (chat, turn, finding),
+  FOREIGN KEY (chat, turn) REFERENCES sets (chat, turn),
+  FOREIGN KEY (chat, finding, finding_kind) REFERENCES messages (chat, seq, kind)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS groupings (
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   turn INTEGER NOT NULL,
   after INTEGER NOT NULL,
-  PRIMARY KEY (conversation, turn),
-  FOREIGN KEY (conversation, turn) REFERENCES sets (conversation, turn),
+  PRIMARY KEY (chat, turn),
+  FOREIGN KEY (chat, turn) REFERENCES sets (chat, turn),
   CHECK (after >= turn)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS drops (
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   turn INTEGER NOT NULL,
   finding INTEGER NOT NULL,
   kept INTEGER NOT NULL,
-  PRIMARY KEY (conversation, finding),
-  FOREIGN KEY (conversation, turn) REFERENCES groupings (conversation, turn),
-  FOREIGN KEY (conversation, turn, finding) REFERENCES set_findings (conversation, turn, finding),
-  FOREIGN KEY (conversation, turn, kept) REFERENCES set_findings (conversation, turn, finding),
+  PRIMARY KEY (chat, finding),
+  FOREIGN KEY (chat, turn) REFERENCES groupings (chat, turn),
+  FOREIGN KEY (chat, turn, finding) REFERENCES set_findings (chat, turn, finding),
+  FOREIGN KEY (chat, turn, kept) REFERENCES set_findings (chat, turn, finding),
   CHECK (finding <> kept)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS settles (
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   finding INTEGER NOT NULL,
   proposal INTEGER NOT NULL,
   proposal_kind TEXT NOT NULL CHECK (proposal_kind IN ('finding', 'propose', 'dismiss')),
   after INTEGER NOT NULL,
-  PRIMARY KEY (conversation, finding),
-  UNIQUE (conversation, finding, after),
-  FOREIGN KEY (conversation, finding) REFERENCES set_findings (conversation, finding),
-  FOREIGN KEY (conversation, proposal, proposal_kind) REFERENCES messages (conversation, seq, kind),
+  PRIMARY KEY (chat, finding),
+  UNIQUE (chat, finding, after),
+  FOREIGN KEY (chat, finding) REFERENCES set_findings (chat, finding),
+  FOREIGN KEY (chat, proposal, proposal_kind) REFERENCES messages (chat, seq, kind),
   CHECK (proposal >= finding AND after >= proposal),
   CHECK (proposal_kind <> 'finding' OR proposal = finding)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS fixes (
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   finding INTEGER NOT NULL,
   settled_after INTEGER NOT NULL,
   fixed INTEGER NOT NULL,
   fixed_kind TEXT NOT NULL DEFAULT 'fixed' CHECK (fixed_kind = 'fixed'),
-  PRIMARY KEY (conversation, finding),
-  UNIQUE (conversation, fixed),
-  FOREIGN KEY (conversation, finding, settled_after) REFERENCES settles (conversation, finding, after),
-  FOREIGN KEY (conversation, fixed, fixed_kind) REFERENCES messages (conversation, seq, kind),
+  PRIMARY KEY (chat, finding),
+  UNIQUE (chat, fixed),
+  FOREIGN KEY (chat, finding, settled_after) REFERENCES settles (chat, finding, after),
+  FOREIGN KEY (chat, fixed, fixed_kind) REFERENCES messages (chat, seq, kind),
   CHECK (fixed > settled_after)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS halts (
-  conversation TEXT NOT NULL PRIMARY KEY REFERENCES conversations(name),
+  chat TEXT NOT NULL PRIMARY KEY REFERENCES chats(name),
   finding INTEGER NOT NULL,
   after INTEGER NOT NULL,
-  FOREIGN KEY (conversation, finding) REFERENCES set_findings (conversation, finding),
+  FOREIGN KEY (chat, finding) REFERENCES set_findings (chat, finding),
   CHECK (after >= finding)
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS stops (
-  conversation TEXT NOT NULL PRIMARY KEY REFERENCES conversations(name),
+  chat TEXT NOT NULL PRIMARY KEY REFERENCES chats(name),
   done INTEGER NOT NULL,
   done_kind TEXT NOT NULL DEFAULT 'done' CHECK (done_kind = 'done'),
-  FOREIGN KEY (conversation, done, done_kind) REFERENCES messages (conversation, seq, kind)
+  FOREIGN KEY (chat, done, done_kind) REFERENCES messages (chat, seq, kind)
 ) STRICT`,
 }
 
@@ -193,8 +193,8 @@ var schemaStmts = []string{
 var recordTables = []string{"sets", "set_findings", "groupings", "drops", "settles", "fixes", "halts", "stops"}
 
 var (
-	// ErrNotFound means the conversation does not exist.
-	ErrNotFound = errors.New("conversation not found")
+	// ErrNotFound means the chat does not exist.
+	ErrNotFound = errors.New("chat not found")
 	// ErrConflict means the transaction id is already stored with different content.
 	ErrConflict = errors.New("transaction id reused with different content")
 	// ErrHeld means another process already has the database.
@@ -202,17 +202,17 @@ var (
 	// ErrSchema means this binary will not serve the file.
 	// The recorded version differs, or a version-1 file lacks kind, re, the binding columns, the member table,
 	// any decision record table (sets, set_findings, groupings, drops, settles, fixes, halts, stops),
-	// or the unique keys (conversation, seq) and (conversation, seq, kind) on messages,
+	// or the unique keys (chat, seq) and (chat, seq, kind) on messages,
 	// or its messages primary key is not seq alone.
 	ErrSchema = errors.New("store schema is not supported by this binary")
-	// ErrNotRoster means the name is not on the conversation roster.
+	// ErrNotRoster means the name is not on the chat roster.
 	ErrNotRoster = errors.New("name is not in the roster")
 	// ErrNotMember means the roster name has no member row.
 	ErrNotMember = errors.New("member has not been launched")
 	// ErrLaunched means launched was asked for a name that already has a row.
 	ErrLaunched = errors.New("member is already launched")
-	// ErrReplyTarget means re is not the seq of an earlier message of the same conversation.
-	ErrReplyTarget = errors.New("re is not an earlier message of the conversation")
+	// ErrReplyTarget means re is not the seq of an earlier message of the same chat.
+	ErrReplyTarget = errors.New("re is not an earlier message of the chat")
 	// ErrRecordReference means a record breaks a foreign key, kind, CHECK, or uniqueness rule
 	// of the record tables other than its own key.
 	ErrRecordReference = errors.New("record breaks a reference, kind, or uniqueness rule")
@@ -224,12 +224,12 @@ var (
 	ErrFixDismissed = errors.New("fix belongs to a dismissed settle")
 
 	// errNoChange tells withTx to roll the transaction back and return nil.
-	// Idempotent publish and close of an already-closed conversation take it
+	// Idempotent send and close of an already-closed chat take it
 	// so a reread does not commit an empty write.
 	errNoChange = errors.New("store transaction made no change")
 )
 
-// Binding is the conversation row beside the name and status.
+// Binding is the chat row beside the name and status.
 // Prompts and Roster keep the caller's order.
 type Binding struct {
 	Task      string
@@ -241,52 +241,52 @@ type Binding struct {
 	Roster    []string
 }
 
-// Conversation is a name, its status, and its binding.
-type Conversation struct {
+// Chat is a name, its status, and its binding.
+type Chat struct {
 	Name   string
 	Status string
 	Binding
 }
 
-// Message is one accepted publish. To keeps the caller's order.
+// Message is one accepted send. To keeps the caller's order.
 // Seq is assigned at commit and increases across the whole store. Within one
-// conversation it increases with gaps where other conversations published.
-// Conversation is set by Newest and After. Other reads leave it empty.
+// chat it increases with gaps where other chats sent.
+// Chat is set by Newest and After. Other reads leave it empty.
 // Re is nil when the message responds to nothing.
 type Message struct {
-	Conversation string
-	Seq          int64
-	Time         string
-	From         string
-	To           []string
-	Body         string
-	TxID         string
-	Kind         string
-	Re           *int64
+	Chat string
+	Seq  int64
+	Time string
+	From string
+	To   []string
+	Body string
+	TxID string
+	Kind string
+	Re   *int64
 }
 
-// Publish is a validated publish to commit. A nil Re responds to nothing.
-type Publish struct {
-	Conversation string
-	From         string
-	To           []string
-	Body         string
-	TxID         string
-	Kind         string
-	Re           *int64
-	Time         string
+// Send is a validated send to commit. A nil Re responds to nothing.
+type Send struct {
+	Chat string
+	From string
+	To   []string
+	Body string
+	TxID string
+	Kind string
+	Re   *int64
+	Time string
 }
 
 // Member is one roster row without its session id.
 // PID is set only when HasPID is true. Start is the host's start token for that pid, or empty when none was read.
 type Member struct {
-	Name       string
-	Status     string
-	Launched   string
-	Registered string
-	PID        int64
-	HasPID     bool
-	Start      string
+	Name     string
+	Status   string
+	Launched string
+	Joined   string
+	PID      int64
+	HasPID   bool
+	Start    string
 }
 
 // MemberSession is a roster name and the session id stored for it.
@@ -462,35 +462,35 @@ func (s *Store) Close() error {
 	return err
 }
 
-// Create inserts an open conversation and its binding.
-// A name already present returns the stored conversation and already true, and writes nothing.
+// Create inserts an open chat and its binding.
+// A name already present returns the stored chat and already true, and writes nothing.
 // The binding on that call is ignored.
-func (s *Store) Create(ctx context.Context, name string, b Binding) (Conversation, bool, error) {
+func (s *Store) Create(ctx context.Context, name string, b Binding) (Chat, bool, error) {
 	b = normalizeBinding(b)
 	prompts, err := marshalTo(b.Prompts)
 	if err != nil {
-		return Conversation{}, false, err
+		return Chat{}, false, err
 	}
 	roster, err := marshalTo(b.Roster)
 	if err != nil {
-		return Conversation{}, false, err
+		return Chat{}, false, err
 	}
-	var conv Conversation
+	var chat Chat
 	var already bool
 	err = s.withTx(ctx, true, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO conversations (
+			INSERT INTO chats (
 				name, status, task, ticket, seat, directory, prompts, custom, roster
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			name, StatusOpen, b.Task, b.Ticket, b.Seat, b.Directory, prompts, b.Custom, roster)
 		if err == nil {
-			conv = Conversation{Name: name, Status: StatusOpen, Binding: b}
+			chat = Chat{Name: name, Status: StatusOpen, Binding: b}
 			return nil
 		}
 		if !isConstraint(err) {
 			return err
 		}
-		conv, err = conversationByName(ctx, tx, name)
+		chat, err = chatByName(ctx, tx, name)
 		if err != nil {
 			return err
 		}
@@ -498,59 +498,59 @@ func (s *Store) Create(ctx context.Context, name string, b Binding) (Conversatio
 		return errNoChange
 	})
 	if err != nil {
-		return Conversation{}, false, err
+		return Chat{}, false, err
 	}
-	return conv, already, nil
+	return chat, already, nil
 }
 
-// CloseConversation sets status to closed and appends nothing.
-// already is true when the conversation was closed before this call. That
+// CloseChat sets status to closed and appends nothing.
+// already is true when the chat was closed before this call. That
 // path writes nothing and returns the stored row.
-func (s *Store) CloseConversation(ctx context.Context, name string) (Conversation, bool, error) {
-	var conv Conversation
+func (s *Store) CloseChat(ctx context.Context, name string) (Chat, bool, error) {
+	var chat Chat
 	var already bool
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
 		var err error
-		conv, err = conversationByName(ctx, tx, name)
+		chat, err = chatByName(ctx, tx, name)
 		if err != nil {
 			return err
 		}
-		if conv.Status == StatusClosed {
+		if chat.Status == StatusClosed {
 			already = true
 			return errNoChange
 		}
 		_, err = tx.ExecContext(ctx,
-			`UPDATE conversations SET status = ? WHERE name = ?`,
+			`UPDATE chats SET status = ? WHERE name = ?`,
 			StatusClosed, name)
 		if err != nil {
 			return err
 		}
-		conv.Status = StatusClosed
+		chat.Status = StatusClosed
 		return nil
 	})
 	if err != nil {
-		return Conversation{}, false, err
+		return Chat{}, false, err
 	}
-	return conv, already, nil
+	return chat, already, nil
 }
 
-// Conversation returns one conversation and its binding.
-// A missing conversation returns ErrNotFound.
-func (s *Store) Conversation(ctx context.Context, name string) (Conversation, error) {
-	var conv Conversation
+// Chat returns one chat and its binding.
+// A missing chat returns ErrNotFound.
+func (s *Store) Chat(ctx context.Context, name string) (Chat, error) {
+	var chat Chat
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		conv, err = conversationByName(ctx, tx, name)
+		chat, err = chatByName(ctx, tx, name)
 		return err
 	})
 	if err != nil {
-		return Conversation{}, err
+		return Chat{}, err
 	}
-	return conv, nil
+	return chat, nil
 }
 
-// Newest returns at most limit messages across every conversation, highest
-// seq first, each with its conversation. A before greater than zero keeps
+// Newest returns at most limit messages across every chat, highest
+// seq first, each with its chat. A before greater than zero keeps
 // only messages whose seq is less than before. A before of zero is no bound.
 func (s *Store) Newest(ctx context.Context, limit int, before int64) ([]Message, error) {
 	if limit < 1 {
@@ -564,13 +564,13 @@ func (s *Store) Newest(ctx context.Context, limit int, before int64) ([]Message,
 		var err error
 		if before == 0 {
 			out, err = queryRows(ctx, tx, scanPlaced, `
-				SELECT conversation, `+messageColumns+`
+				SELECT chat, `+messageColumns+`
 				FROM messages
 				ORDER BY seq DESC
 				LIMIT ?`, limit)
 		} else {
 			out, err = queryRows(ctx, tx, scanPlaced, `
-				SELECT conversation, `+messageColumns+`
+				SELECT chat, `+messageColumns+`
 				FROM messages
 				WHERE seq < ?
 				ORDER BY seq DESC
@@ -582,10 +582,10 @@ func (s *Store) Newest(ctx context.Context, limit int, before int64) ([]Message,
 }
 
 // After returns at most limit messages with seq greater than after, oldest
-// first, each with its conversation. An empty conversation reads every
-// conversation. A conversation that does not exist yields no messages and
+// first, each with its chat. An empty chat reads every
+// chat. A chat that does not exist yields no messages and
 // no error. more reports a further message after the last one returned.
-func (s *Store) After(ctx context.Context, conversation string, after int64, limit int) (msgs []Message, more bool, err error) {
+func (s *Store) After(ctx context.Context, chat string, after int64, limit int) (msgs []Message, more bool, err error) {
 	if limit < 1 {
 		return nil, false, errors.New("after limit must be positive")
 	}
@@ -596,20 +596,20 @@ func (s *Store) After(ctx context.Context, conversation string, after int64, lim
 	}
 	err = s.withTx(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		if conversation == "" {
+		if chat == "" {
 			msgs, err = queryRows(ctx, tx, scanPlaced, `
-				SELECT conversation, `+messageColumns+`
+				SELECT chat, `+messageColumns+`
 				FROM messages
 				WHERE seq > ?
 				ORDER BY seq
 				LIMIT ?`, after, probe)
 		} else {
 			msgs, err = queryRows(ctx, tx, scanPlaced, `
-				SELECT conversation, `+messageColumns+`
+				SELECT chat, `+messageColumns+`
 				FROM messages
-				WHERE conversation = ? AND seq > ?
+				WHERE chat = ? AND seq > ?
 				ORDER BY seq
-				LIMIT ?`, conversation, after, probe)
+				LIMIT ?`, chat, after, probe)
 		}
 		return err
 	})
@@ -622,46 +622,46 @@ func (s *Store) After(ctx context.Context, conversation string, after int64, lim
 	return msgs, false, nil
 }
 
-// List returns every conversation, open and closed.
-// The conversation whose newest message has the highest seq is first.
-// Conversations with no message follow, ordered by name.
-func (s *Store) List(ctx context.Context) ([]Conversation, error) {
-	var out []Conversation
+// List returns every chat, open and closed.
+// The chat whose newest message has the highest seq is first.
+// Chats with no message follow, ordered by name.
+func (s *Store) List(ctx context.Context) ([]Chat, error) {
+	var out []Chat
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		out, err = queryRows(ctx, tx, scanConversation, `
-			SELECT `+conversationColumns+`
-			FROM conversations
+		out, err = queryRows(ctx, tx, scanChat, `
+			SELECT `+chatColumns+`
+			FROM chats
 			ORDER BY (
 				SELECT MAX(seq) FROM messages
-				WHERE conversation = conversations.name
+				WHERE chat = chats.name
 			) DESC NULLS LAST, name`)
 		return err
 	})
 	return out, err
 }
 
-// Publish commits one message, or returns the original when this sender
+// Send commits one message, or returns the original when this sender
 // already stored this txid with the same kind, to, body, and re.
 // The same sender and txid with a different kind, to, body, or re returns ErrConflict.
-// A re that is not the seq of an earlier message of the conversation returns
+// A re that is not the seq of an earlier message of the chat returns
 // ErrReplyTarget and writes nothing.
 // Another sender using that txid is a different attempt.
 // A matching attempt returns the original message and writes nothing.
-// The conversation is the row committed with that result.
-// A missing conversation returns ErrNotFound and writes nothing.
-func (s *Store) Publish(ctx context.Context, in Publish) (Message, Conversation, bool, error) {
+// The chat is the row committed with that result.
+// A missing chat returns ErrNotFound and writes nothing.
+func (s *Store) Send(ctx context.Context, in Send) (Message, Chat, bool, error) {
 	var msg Message
-	var conv Conversation
+	var chat Chat
 	var already bool
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
 		var err error
-		conv, err = conversationByName(ctx, tx, in.Conversation)
+		chat, err = chatByName(ctx, tx, in.Chat)
 		if err != nil {
 			return err
 		}
 
-		stored, found, err := messageByAttempt(ctx, tx, in.Conversation, in.From, in.TxID)
+		stored, found, err := messageByAttempt(ctx, tx, in.Chat, in.From, in.TxID)
 		if err != nil {
 			return err
 		}
@@ -683,10 +683,10 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, Conversation,
 		var seq int64
 		err = tx.QueryRowContext(ctx, `
 			INSERT INTO messages (
-				conversation, time, sender, recipients, body, txid, kind, re
+				chat, time, sender, recipients, body, txid, kind, re
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			RETURNING seq`,
-			in.Conversation, in.Time, in.From, rec, in.Body, in.TxID, in.Kind, nullSeq(in.Re)).Scan(&seq)
+			in.Chat, in.Time, in.From, rec, in.Body, in.TxID, in.Kind, nullSeq(in.Re)).Scan(&seq)
 		if isBadReply(err) {
 			return ErrReplyTarget
 		}
@@ -706,13 +706,13 @@ func (s *Store) Publish(ctx context.Context, in Publish) (Message, Conversation,
 		return nil
 	})
 	if err != nil {
-		return Message{}, Conversation{}, false, err
+		return Message{}, Chat{}, false, err
 	}
-	return msg, conv, already, nil
+	return msg, chat, already, nil
 }
 
-// Transcript returns the conversation status and every message with seq greater than after.
-// The messages are oldest first. A missing conversation returns ErrNotFound.
+// Transcript returns the chat status and every message with seq greater than after.
+// The messages are oldest first. A missing chat returns ErrNotFound.
 func (s *Store) Transcript(ctx context.Context, name string, after int64) (string, []Message, error) {
 	msgs := make([]Message, 0)
 	status, err := s.Scan(ctx, name, after, func(m Message) bool {
@@ -727,22 +727,22 @@ func (s *Store) Transcript(ctx context.Context, name string, after int64) (strin
 
 // Scan calls fn for each message with seq greater than after, oldest first.
 // fn returns false to stop. Messages after the stop are not read.
-// A missing conversation returns ErrNotFound.
+// A missing chat returns ErrNotFound.
 func (s *Store) Scan(ctx context.Context, name string, after int64, fn func(Message) bool) (string, error) {
 	if fn == nil {
 		return "", errors.New("scan function is required")
 	}
 	var status string
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		conv, err := conversationByName(ctx, tx, name)
+		chat, err := chatByName(ctx, tx, name)
 		if err != nil {
 			return err
 		}
-		status = conv.Status
+		status = chat.Status
 		rows, err := tx.QueryContext(ctx, `
 			SELECT `+messageColumns+`
 			FROM messages
-			WHERE conversation = ? AND seq > ?
+			WHERE chat = ? AND seq > ?
 			ORDER BY seq`, name, after)
 		if err != nil {
 			return err
@@ -859,35 +859,35 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func conversationByName(ctx context.Context, tx *sql.Tx, name string) (Conversation, error) {
-	conv, err := scanConversation(tx.QueryRowContext(ctx,
-		`SELECT `+conversationColumns+` FROM conversations WHERE name = ?`, name))
+func chatByName(ctx context.Context, tx *sql.Tx, name string) (Chat, error) {
+	chat, err := scanChat(tx.QueryRowContext(ctx,
+		`SELECT `+chatColumns+` FROM chats WHERE name = ?`, name))
 	if errors.Is(err, sql.ErrNoRows) {
-		return Conversation{}, ErrNotFound
+		return Chat{}, ErrNotFound
 	}
-	return conv, err
+	return chat, err
 }
 
-func scanConversation(row rowScanner) (Conversation, error) {
-	var c Conversation
+func scanChat(row rowScanner) (Chat, error) {
+	var c Chat
 	var prompts, roster string
 	if err := row.Scan(
 		&c.Name, &c.Status, &c.Task, &c.Ticket, &c.Seat, &c.Directory, &prompts, &c.Custom, &roster,
 	); err != nil {
-		return Conversation{}, err
+		return Chat{}, err
 	}
-	return finishConversation(c, prompts, roster)
+	return finishChat(c, prompts, roster)
 }
 
-func finishConversation(c Conversation, prompts, roster string) (Conversation, error) {
+func finishChat(c Chat, prompts, roster string) (Chat, error) {
 	var err error
 	c.Prompts, err = unmarshalTo(prompts)
 	if err != nil {
-		return Conversation{}, fmt.Errorf("conversation %s prompts: %w", c.Name, err)
+		return Chat{}, fmt.Errorf("chat %s prompts: %w", c.Name, err)
 	}
 	c.Roster, err = unmarshalTo(roster)
 	if err != nil {
-		return Conversation{}, fmt.Errorf("conversation %s roster: %w", c.Name, err)
+		return Chat{}, fmt.Errorf("chat %s roster: %w", c.Name, err)
 	}
 	return c, nil
 }
@@ -916,7 +916,7 @@ func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 		}
 	}
 	for _, col := range []string{"task", "ticket", "seat", "directory", "prompts", "custom", "roster"} {
-		ok, err := columnExists(ctx, tx, "conversations", col)
+		ok, err := columnExists(ctx, tx, "chats", col)
 		if err != nil || !ok {
 			return false, err
 		}
@@ -924,8 +924,11 @@ func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 	if ok, err := tableExists(ctx, tx, "members"); err != nil || !ok {
 		return false, err
 	}
-	if ok, err := columnExists(ctx, tx, "members", "start"); err != nil || !ok {
-		return false, err
+	for _, col := range []string{"joined", "start"} {
+		ok, err := columnExists(ctx, tx, "members", col)
+		if err != nil || !ok {
+			return false, err
+		}
 	}
 	seqKey, err := seqIsPrimaryKey(ctx, tx)
 	if err != nil || !seqKey {
@@ -935,7 +938,7 @@ func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, want := range [][]string{{"conversation", "seq"}, {"conversation", "seq", "kind"}} {
+	for _, want := range [][]string{{"chat", "seq"}, {"chat", "seq", "kind"}} {
 		if !hasKey(keys, want) {
 			return false, nil
 		}
@@ -991,7 +994,7 @@ func hasKey(keys [][]string, want []string) bool {
 }
 
 // seqIsPrimaryKey reports whether seq alone is the messages primary key.
-// The per-conversation shape also has a seq column, so presence cannot tell them apart.
+// The per-chat shape also has a seq column, so presence cannot tell them apart.
 func seqIsPrimaryKey(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var n int
 	var name string
@@ -1012,8 +1015,8 @@ func columnExists(ctx context.Context, tx *sql.Tx, table, col string) (bool, err
 	switch table {
 	case "messages":
 		q = `SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = ?`
-	case "conversations":
-		q = `SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = ?`
+	case "chats":
+		q = `SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = ?`
 	case "members":
 		q = `SELECT COUNT(*) FROM pragma_table_info('members') WHERE name = ?`
 	default:
@@ -1024,19 +1027,19 @@ func columnExists(ctx context.Context, tx *sql.Tx, table, col string) (bool, err
 	return n > 0, err
 }
 
-// scanPlaced reads one message row that leads with the conversation column.
+// scanPlaced reads one message row that leads with the chat column.
 func scanPlaced(row rowScanner) (Message, error) {
 	return scanMessage(row, true)
 }
 
-// scanMessage reads messageColumns, led by conversation when placed is true.
+// scanMessage reads messageColumns, led by chat when placed is true.
 func scanMessage(row rowScanner, placed bool) (Message, error) {
 	var m Message
 	var rec string
 	var re sql.NullInt64
 	dest := []any{&m.Seq, &m.Time, &m.From, &rec, &m.Body, &m.TxID, &m.Kind, &re}
 	if placed {
-		dest = append([]any{&m.Conversation}, dest...)
+		dest = append([]any{&m.Chat}, dest...)
 	}
 	if err := row.Scan(dest...); err != nil {
 		return Message{}, err
@@ -1044,7 +1047,7 @@ func scanMessage(row rowScanner, placed bool) (Message, error) {
 	to, err := unmarshalTo(rec)
 	if err != nil {
 		if placed {
-			return Message{}, fmt.Errorf("message %s/%d recipients: %w", m.Conversation, m.Seq, err)
+			return Message{}, fmt.Errorf("message %s/%d recipients: %w", m.Chat, m.Seq, err)
 		}
 		return Message{}, fmt.Errorf("message %d recipients: %w", m.Seq, err)
 	}
@@ -1088,12 +1091,12 @@ func joinClose(err, cerr error) error {
 	return fmt.Errorf("%w; close rows: %v", err, cerr)
 }
 
-func messageByAttempt(ctx context.Context, tx *sql.Tx, conversation, sender, txid string) (Message, bool, error) {
+func messageByAttempt(ctx context.Context, tx *sql.Tx, chat, sender, txid string) (Message, bool, error) {
 	m, err := scanMessage(tx.QueryRowContext(ctx, `
 		SELECT `+messageColumns+`
 		FROM messages
-		WHERE conversation = ? AND sender = ? AND txid = ?`,
-		conversation, sender, txid), false)
+		WHERE chat = ? AND sender = ? AND txid = ?`,
+		chat, sender, txid), false)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, false, nil
 	}
@@ -1229,7 +1232,7 @@ func sqlitePrimary(err error) int {
 }
 
 // isBadReply reports a message insert refused by the re foreign key or the re < seq check.
-// The conversation is read in the same transaction first, so its foreign key cannot be the cause.
+// The chat is read in the same transaction first, so its foreign key cannot be the cause.
 // The result code does not name the constraint, so re < seq must stay the only CHECK on messages.
 func isBadReply(err error) bool {
 	switch sqliteCode(err) {

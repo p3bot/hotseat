@@ -123,7 +123,7 @@ func TestSecondRunAgainstALiveConductorWaitsOnceThenIsRefusedAndActsOnNothing(t 
 		t.Fatalf("messages %d, want %d", got, before)
 	}
 	h.noRecords("kept")
-	if rows := h.do("members", client.MembersRequest{Conversation: "kept"}); rows.Members == nil || len(*rows.Members) != 0 {
+	if rows := h.do("members", client.MembersRequest{Chat: "kept"}); rows.Members == nil || len(*rows.Members) != 0 {
 		t.Fatalf("members %+v", rows.Members)
 	}
 	if res := h.leaseAs("kept", bus.LeaseRenew, "live"); res.Outcome != bus.OutcomeOK {
@@ -305,7 +305,7 @@ func (h *harness) continueVia(name, addr string) Config {
 func TestRunThatLosesItsLeaseLeavesItsMemberRunningAndTheNextHolderRecordsIt(t *testing.T) {
 	clock := newBusClock()
 	h := newHarnessClock(t, clock.read)
-	h.plan.Launch = map[string]runFile{"bravo": {Register: true}}
+	h.plan.Launch = map[string]runFile{"bravo": {Join: true}}
 	cfg := h.base()
 	cfg.TicketSet = false
 	firstAddr, refused := h.refusedRenewTap()
@@ -633,7 +633,7 @@ func TestHolderIsSentOnEveryConductorWriteAndStaysOffPromptsOutputAndTranscript(
 		if req.Holder != nil {
 			holders[*req.Holder] = true
 		}
-		fenced := path == bus.PathRecord || path == bus.PathPublish ||
+		fenced := path == bus.PathRecord || path == bus.PathSend ||
 			(path == bus.PathMember && req.Status != nil) || (path == bus.PathSession && req.Session != nil)
 		if fenced && req.Holder == nil {
 			unfenced[path]++

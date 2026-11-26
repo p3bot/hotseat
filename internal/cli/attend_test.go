@@ -34,7 +34,7 @@ func TestAttendPrintsOwnerAskErrorAndDone(t *testing.T) {
 	launched := "launched"
 	asConductor(t, ctx, addr, "job", func(holder string) {
 		if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
-			Conversation: "job", Name: "alpha", Status: &launched, Holder: holder,
+			Chat: "job", Name: "alpha", Status: &launched, Holder: holder,
 		}); err != nil || res.Outcome != bus.OutcomeOK {
 			t.Fatalf("launch %v %+v", err, res)
 		}
@@ -288,13 +288,13 @@ func runCommand(t *testing.T, args ...string) (string, string, error) {
 
 func publishAs(t *testing.T, ctx context.Context, addr, conv, from, kind string, to []string, body, key string) client.Message {
 	t.Helper()
-	res, err := client.Do(ctx, addr, "publish", "", client.PublishRequest{
-		Conversation: conv,
-		From:         from,
-		To:           to,
-		Body:         body,
-		TxID:         key,
-		Kind:         kind,
+	res, err := client.Do(ctx, addr, "send", "", client.SendRequest{
+		Chat: conv,
+		From: from,
+		To:   to,
+		Body: body,
+		TxID: key,
+		Kind: kind,
 	})
 	if err != nil || res.Outcome != bus.OutcomeOK || res.Message == nil {
 		t.Fatalf("publish %s: %v %+v", key, err, res)
@@ -314,7 +314,7 @@ func createRoster(t *testing.T, ctx context.Context, addr, name, seat string) {
 
 func memberRows(t *testing.T, ctx context.Context, addr, conv string) []client.Member {
 	t.Helper()
-	res, err := client.Do(ctx, addr, "members", "", client.MembersRequest{Conversation: conv})
+	res, err := client.Do(ctx, addr, "members", "", client.MembersRequest{Chat: conv})
 	if err != nil || res.Outcome != bus.OutcomeOK || res.Members == nil {
 		t.Fatalf("members %v %+v", err, res)
 	}
@@ -324,7 +324,7 @@ func memberRows(t *testing.T, ctx context.Context, addr, conv string) []client.M
 func transcript(t *testing.T, ctx context.Context, addr, conv string) []client.Message {
 	t.Helper()
 	res, err := client.Do(ctx, addr, "read", "", client.ReadRequest{
-		Conversation: conv, Cursor: 0, Limit: 50,
+		Chat: conv, Cursor: 0, Limit: 50,
 	})
 	if err != nil || res.Outcome != bus.OutcomeOK || res.Messages == nil {
 		t.Fatalf("read %v %+v", err, res)

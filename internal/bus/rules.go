@@ -31,12 +31,12 @@ func validName(s string) bool {
 	return true
 }
 
-func requireConversation(name string) error {
+func requireChat(name string) error {
 	if name == "" {
-		return rule(ReasonConversationRequired)
+		return rule(ReasonChatRequired)
 	}
 	if !validName(name) {
-		return rule(ReasonBadConversation)
+		return rule(ReasonBadChat)
 	}
 	return nil
 }
@@ -133,7 +133,7 @@ func parseDeadline(raw json.RawMessage) (waitLimit, error) {
 
 // decideWait reports the wait result. pending is true when the caller must block.
 // msgs are the messages with seq greater than the cursor, oldest first.
-// Conversation status is not an end. A wait ends on a match.
+// Chat status is not an end. A wait ends on a match.
 func decideWait(msgs []store.Message, name string, hasName bool, kinds []string, hasKinds bool) (Result, bool) {
 	if !hasName {
 		for _, m := range msgs {
@@ -158,31 +158,43 @@ func decideWait(msgs []store.Message, name string, hasName bool, kinds []string,
 	return Result{}, true
 }
 
-// nextRead reports whether m belongs in a read result and whether a later message is required.
-// kept is how many messages are already chosen. A named read skips a message that is not addressed to name.
+// readPage collects one read result. A named read skips a message that is not addressed to name.
 // A kinds list skips a message whose kind is not listed. Skipped messages do not count toward limit.
-func nextRead(m store.Message, name string, hasName bool, kinds []string, hasKinds bool, kept, limit int) (keep, more bool) {
-	if hasName && !addressed(m, name) {
-		return false, true
-	}
-	if !kindListed(m.Kind, kinds, hasKinds) {
-		return false, true
-	}
-	return true, kept+1 < limit
+type readPage struct {
+	name     string
+	hasName  bool
+	kinds    []string
+	hasKinds bool
+	limit    int
+	msgs     []store.Message
+	more     bool
 }
 
-func selectRead(msgs []store.Message, name string, hasName bool, kinds []string, hasKinds bool, limit int) []store.Message {
-	out := make([]store.Message, 0)
+// take adds m when it matches and the page has room, and reports whether to keep scanning.
+// The scan goes past a full page only to find one further match, which sets more and is not kept.
+func (p *readPage) take(m store.Message) bool {
+	if p.hasName && !addressed(m, p.name) {
+		return true
+	}
+	if !kindListed(m.Kind, p.kinds, p.hasKinds) {
+		return true
+	}
+	if len(p.msgs) == p.limit {
+		p.more = true
+		return false
+	}
+	p.msgs = append(p.msgs, m)
+	return true
+}
+
+func selectRead(msgs []store.Message, name string, hasName bool, kinds []string, hasKinds bool, limit int) ([]store.Message, bool) {
+	p := readPage{name: name, hasName: hasName, kinds: kinds, hasKinds: hasKinds, limit: limit, msgs: make([]store.Message, 0)}
 	for _, m := range msgs {
-		keep, more := nextRead(m, name, hasName, kinds, hasKinds, len(out), limit)
-		if keep {
-			out = append(out, m)
-		}
-		if !more {
+		if !p.take(m) {
 			break
 		}
 	}
-	return out
+	return p.msgs, p.more
 }
 
 func kindListed(kind string, kinds []string, hasKinds bool) bool {
@@ -214,8 +226,8 @@ func addressed(m store.Message, name string) bool {
 	return false
 }
 
-func validatePublish(in PublishInput, maxBody int) error {
-	if err := requireConversation(in.Conversation); err != nil {
+func validateSend(in SendInput, maxBody int) error {
+	if err := requireChat(in.Chat); err != nil {
 		return err
 	}
 	if in.From == "" {

@@ -24,10 +24,10 @@ import (
 const (
 	routeEvents = "/events"
 
-	eventMessage       = "message"
-	eventConversations = "conversations"
-	eventMeta          = "meta"
-	eventReset         = "reset"
+	eventMessage = "message"
+	eventChats   = "chats"
+	eventMeta    = "meta"
+	eventReset   = "reset"
 
 	viewParamList    = "list"
 	viewParamHistory = "history"
@@ -40,7 +40,7 @@ const (
 var watchDeadline = 25 * time.Second
 
 // streamView is the part of the bus one /events stream follows.
-// A transcript and a history name their conversation. Conversations and a history have no messages.
+// A transcript and a history name their chat. Chats and a history have no messages.
 type streamView int
 
 const (
@@ -65,7 +65,7 @@ func (v streamView) String() string {
 	}
 }
 
-// named reports a view of one conversation.
+// named reports a view of one chat.
 func (v streamView) named() bool {
 	return v == viewTranscript || v == viewHistory
 }
@@ -76,16 +76,16 @@ func (v streamView) follows() bool {
 }
 
 // stream is the state of one /events response.
-// cursor is the highest seq of the view sent. rev, conversations, and meta are
+// cursor is the highest seq of the view sent. rev, chats, and meta are
 // what was last sent. hasRev is false until a list after a watch has been sent.
 type stream struct {
-	view          streamView
-	name          string
-	cursor        int64
-	rev           uint64
-	hasRev        bool
-	conversations string
-	meta          string
+	view   streamView
+	name   string
+	cursor int64
+	rev    uint64
+	hasRev bool
+	chats  string
+	meta   string
 }
 
 // parseStream reads the view and the start position. A false result carries
@@ -96,28 +96,28 @@ func parseStream(r *http.Request) (stream, string, bool) {
 	switch {
 	case !q.Has("view"):
 	case q.Get("view") == viewParamList:
-		if q.Has("conversation") {
-			return stream{}, "view list does not take a conversation", false
+		if q.Has("chat") {
+			return stream{}, "view list does not take a chat", false
 		}
 		return stream{view: viewList}, "", true
 	case q.Get("view") == viewParamHistory:
-		if !q.Has("conversation") || q.Get("conversation") == "" {
-			return stream{}, "view history requires a conversation", false
+		if !q.Has("chat") || q.Get("chat") == "" {
+			return stream{}, "view history requires a chat", false
 		}
 		if q.Has("after") {
 			return stream{}, "view history does not take after", false
 		}
 		// Last-Event-ID is ignored: a history stream sends no message, so it has no position.
-		return stream{view: viewHistory, name: q.Get("conversation")}, "", true
+		return stream{view: viewHistory, name: q.Get("chat")}, "", true
 	default:
 		return stream{}, "view must be list, history, or omitted", false
 	}
-	if q.Has("conversation") {
+	if q.Has("chat") {
 		st.view = viewTranscript
-		st.name = q.Get("conversation")
-		// The watch body omits an empty conversation, which would watch every conversation.
+		st.name = q.Get("chat")
+		// The watch body omits an empty chat, which would watch every chat.
 		if st.name == "" {
-			return stream{}, bus.ReasonConversationRequired, false
+			return stream{}, bus.ReasonChatRequired, false
 		}
 	}
 	if q.Has("after") {
@@ -150,9 +150,9 @@ func position(raw string) (int64, bool) {
 // than a group, so a gap wider than a group is seen as a reset.
 func (st *stream) watchRequest() client.WatchRequest {
 	req := client.WatchRequest{}
-	// A history watch names its conversation only so the bus refuses a bad name.
+	// A history watch names its chat only so the bus refuses a bad name.
 	if st.view.named() {
-		req.Conversation = st.name
+		req.Chat = st.name
 	}
 	if st.view.follows() {
 		cursor := st.cursor
@@ -185,7 +185,7 @@ func (s Server) handleEvents(stop context.Context, w http.ResponseWriter, r *htt
 
 	log := s.logger().With("op", "events", "view", st.view.String())
 	if st.view.named() {
-		log = log.With("conversation", st.name)
+		log = log.With("chat", st.name)
 	}
 
 	res, err := s.watch(ctx, &st)
@@ -279,7 +279,7 @@ func (s Server) apply(ctx context.Context, st *stream, res client.Result, out ev
 		return errReset
 	}
 	for _, m := range msgs {
-		frag, err := renderBlock("messageItem", newMessageItem(m.Conversation, m))
+		frag, err := renderBlock("messageItem", newMessageItem(m.Chat, m))
 		if err != nil {
 			return err
 		}
@@ -298,7 +298,7 @@ func (s Server) apply(ctx context.Context, st *stream, res client.Result, out ev
 	return nil
 }
 
-// sendList lists conversations and sends each fragment that changed.
+// sendList lists chats and sends each fragment that changed.
 // The first pass sends both, since the tab may hold a change made while no stream was open.
 func (s Server) sendList(ctx context.Context, st *stream, out eventWriter) error {
 	res, err := s.list(ctx)
@@ -309,25 +309,25 @@ func (s Server) sendList(ctx context.Context, st *stream, out eventWriter) error
 		return &streamFailure{call: "list", outcome: res.Outcome, reason: res.Reason}
 	}
 	p := page{Name: st.name}
-	applyList(&p, res.Conversations)
-	sections, err := renderBlock("convSections", p)
+	applyList(&p, res.Chats)
+	sections, err := renderBlock("chatSections", p)
 	if err != nil {
 		return err
 	}
-	index, err := renderBlock("convIndex", p)
+	index, err := renderBlock("chatIndex", p)
 	if err != nil {
 		return err
 	}
-	if frag := sections + index; frag != st.conversations {
-		if err := out.event(eventConversations, "", frag); err != nil {
+	if frag := sections + index; frag != st.chats {
+		if err := out.event(eventChats, "", frag); err != nil {
 			return err
 		}
-		st.conversations = frag
+		st.chats = frag
 	}
 	if !st.view.named() {
 		return nil
 	}
-	meta, err := renderBlock("convMeta", p)
+	meta, err := renderBlock("chatMeta", p)
 	if err != nil {
 		return err
 	}

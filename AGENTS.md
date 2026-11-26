@@ -8,7 +8,7 @@ A task module defines the work. Reviews are the commonest: ticket triage, ticket
 
 The parts, in the order they were built:
 
-- The bus is a durable, ordered log of conversations. It stores speech and knows no kind's meaning. It was built first and stays general.
+- The bus is a durable, ordered log of chats. It stores speech and knows no kind's meaning. It was built first and stays general.
 - A member is an agent process. `run` starts it for one step, it publishes and exits, and a later step resumes it by session id. Members do not wait on the bus.
 - `run` is the conductor: a deterministic engine that drives the task's parallel and serial turns, and stops and continues from what the bus holds. For a task whose members publish `finding`s, it also runs the finding protocol: one finding discussed at a time, settled by agreement, fixed by the finder, then a satisfaction pass.
 - A chief session conducts runs and answers `ask`. `attend` and the page are how the owner watches.
@@ -66,12 +66,12 @@ Note: lint is not clean on main. The existing findings are unchecked `Close` err
 - One writer. Seq order is commit order only because of it. The flock is on `hotseat.db.lock`, not the database inode, because on macOS flock shares SQLite's lock table and closing any descriptor drops every lock.
 - DSN: `busy_timeout=0` (another holder fails this process instead of stalling it), `journal_mode=WAL`, `locking_mode=EXCLUSIVE` (checked after open), `foreign_keys=1`, `synchronous=FULL` (commit returns after the write is durable), `_txlock=immediate`. `SetMaxOpenConns(1)`.
 - `Open` resolves the directory to an absolute path first, chmods it `0700`, refuses symlinks for the database, wal, shm, and lock, and opens the lock with `O_NOFOLLOW` and mode `0600`.
-- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. The version-1 shape includes the members `start` column, the host start token stored beside `pid`, and the decision record tables `sets`, `set_findings`, `groupings`, `drops`, `settles`, `fixes`, `halts`, and `stops`. A schema change means deleting the database.
-- A write that changes nothing (idempotent publish, a record replay, close of a closed conversation) returns `errNoChange`, so the transaction rolls back.
+- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. The version-1 shape includes the `chats` table, a `chat` column on every other table, the members `joined` column and status value, the members `start` column, the host start token stored beside `pid`, and the decision record tables `sets`, `set_findings`, `groupings`, `drops`, `settles`, `fixes`, `halts`, and `stops`. A schema change means deleting the database.
+- A write that changes nothing (idempotent send, a record replay, close of a closed chat) returns `errNoChange`, so the transaction rolls back.
 - Store sentinels are `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, `ErrLaunched`, `ErrReplyTarget`, `ErrRecordReference`, `ErrKeptDropped`, `ErrNotKept`, and `ErrFixDismissed`. Wrap with `%w` when the caller branches on the cause.
 - Refusal text is a `bus.Reason*` constant. A new reason is a constant beside the others, plus a test whose name states the rule.
-- Session ids, pids, member start tokens, the token, and lease holders stay off read, wait, list, member list, `/register`, the page, logs, status lines, and prompts. Pids and start tokens appear only on a one-row `/member` read or write. A holder is also off `/lease` `get`. Decision records stay off read, wait, watch, list, member list, the page, and logs.
-- Conductor leases live in `Service` memory under `s.mu`, never in the store. A fenced write (`/record`, `/member` with a status, `/session` with a session, `/publish` with a holder) checks the lease and writes under that one lock. A launch has no fence of its own: `recordLaunch` writes a fenced member row right after `cmd.Start` and kills the process group when it is refused. That is the only member a lost lease kills. `run` then waits for the members it launched and stops watching the ones it adopted, and the next holder adopts them by start token.
+- Session ids, pids, member start tokens, the token, and lease holders stay off read, wait, list, member list, `/join`, the page, logs, status lines, and prompts. Pids and start tokens appear only on a one-row `/member` read or write. A holder is also off `/lease` `get`. Decision records stay off read, wait, watch, list, member list, the page, and logs.
+- Conductor leases live in `Service` memory under `s.mu`, never in the store. A fenced write (`/record`, `/member` with a status, `/session` with a session, `/send` with a holder) checks the lease and writes under that one lock. A launch has no fence of its own: `recordLaunch` writes a fenced member row right after `cmd.Start` and kills the process group when it is refused. That is the only member a lost lease kills. `run` then waits for the members it launched and stops watching the ones it adopted, and the next holder adopts them by start token.
 - `from` is caller-supplied. The token does not authenticate the sender.
 - The page listens on loopback only, because it holds the bus token.
 - CLI stdout is `key: value`, and a value with a newline is `key <<N` and then those bytes. Usage errors go to stderr with no stdout. Commands set `SilenceUsage` and `SilenceErrors`. SIGINT and SIGTERM exit `128+signal`, read before the error path.
@@ -107,7 +107,7 @@ Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/impleme
   - member rows replace a registration ack;
   - `run.DoneGrace` has no flag;
   - agy has no module, and `herdr` is not a dependency.
-- In `internal/web`, `kindMessages`, `kindList`, and `kindConversation` are page modes, not the message field.
+- In `internal/web`, `kindMessages`, `kindList`, and `kindChat` are page modes, not the message field.
 
 ## Code
 

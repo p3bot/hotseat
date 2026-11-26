@@ -17,19 +17,19 @@ import (
 	"github.com/p3bot/hotseat/internal/store"
 )
 
-func TestPublishWithoutKindIsRefused(t *testing.T) {
+func TestSendWithoutKindIsRefused(t *testing.T) {
 	base, _, st, _ := startServer(t, Options{})
 	create(t, base, "job")
 	cases := []struct {
 		name string
 		body map[string]any
 	}{
-		{"missing", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x", "txid": "a"}},
-		{"empty", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x", "txid": "b", "kind": ""}},
+		{"missing", map[string]any{"chat": "job", "from": "alice", "to": []string{}, "body": "x", "txid": "a"}},
+		{"empty", map[string]any{"chat": "job", "from": "alice", "to": []string{}, "body": "x", "txid": "b", "kind": ""}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			res := mustPost(t, base, PathPublish, tt.body)
+			res := mustPost(t, base, PathSend, tt.body)
 			if res.Outcome != OutcomeRefused || res.Reason != ReasonKindRequired || res.Message != nil {
 				t.Fatalf("%+v", res)
 			}
@@ -43,8 +43,8 @@ func TestPublishWithoutKindIsRefused(t *testing.T) {
 func TestKindOutsideTheNameGrammarIsRefused(t *testing.T) {
 	base, _, st, _ := startServer(t, Options{})
 	create(t, base, "job")
-	res := mustPost(t, base, PathPublish, map[string]any{
-		"conversation": "job", "from": "alice", "to": []string{}, "body": "x", "txid": "a", "kind": "bad kind",
+	res := mustPost(t, base, PathSend, map[string]any{
+		"chat": "job", "from": "alice", "to": []string{}, "body": "x", "txid": "a", "kind": "bad kind",
 	})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonKindBad {
 		t.Fatalf("%+v", res)
@@ -54,26 +54,26 @@ func TestKindOutsideTheNameGrammarIsRefused(t *testing.T) {
 	}
 }
 
-func TestKindIsPartOfPublishContent(t *testing.T) {
+func TestKindIsPartOfSendContent(t *testing.T) {
 	at := time.Date(2026, 10, 10, 1, 0, 0, 0, time.UTC)
 	base, _, st, _ := startServer(t, Options{Clock: func() time.Time { return at }})
 	create(t, base, "job")
-	act := publishKind(t, base, "alice", "act", []string{"bob"}, "do it", "a1")
+	act := sendKind(t, base, "alice", "act", []string{"bob"}, "do it", "a1")
 	if act.Outcome != OutcomeOK || act.Message == nil || act.Message.Kind != "act" {
 		t.Fatalf("act %+v", act)
 	}
-	turn := publishKind(t, base, "alice", "turn", []string{"bob"}, "not a mode line", "t1")
+	turn := sendKind(t, base, "alice", "turn", []string{"bob"}, "not a mode line", "t1")
 	if turn.Outcome != OutcomeOK || turn.Message == nil || turn.Message.Kind != "turn" || turn.Message.Body != "not a mode line" {
 		t.Fatalf("turn %+v", turn)
 	}
-	if closeRes := mustPost(t, base, PathClose, map[string]any{"conversation": "job"}); closeRes.Outcome != OutcomeOK {
+	if closeRes := mustPost(t, base, PathClose, map[string]any{"chat": "job"}); closeRes.Outcome != OutcomeOK {
 		t.Fatal(closeRes)
 	}
-	again := publishKind(t, base, "alice", "act", []string{"bob"}, "do it", "a1")
-	if again.Outcome != OutcomeOK || again.AlreadyStored == nil || !*again.AlreadyStored || again.Message == nil || again.Message.Kind != "act" || again.Conversation == nil || again.Conversation.Status != "closed" {
+	again := sendKind(t, base, "alice", "act", []string{"bob"}, "do it", "a1")
+	if again.Outcome != OutcomeOK || again.AlreadyStored == nil || !*again.AlreadyStored || again.Message == nil || again.Message.Kind != "act" || again.Chat == nil || again.Chat.Status != "closed" {
 		t.Fatalf("retry %+v", again)
 	}
-	conflict := publishKind(t, base, "alice", "say", []string{"bob"}, "do it", "a1")
+	conflict := sendKind(t, base, "alice", "say", []string{"bob"}, "do it", "a1")
 	if conflict.Outcome != OutcomeRefused || conflict.Reason != ReasonKeyConflict {
 		t.Fatalf("kind conflict %+v", conflict)
 	}
@@ -86,7 +86,7 @@ func TestEmptyKindsArrayIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	for _, path := range []string{PathRead, PathWait} {
-		body := map[string]any{"conversation": "job", "cursor": 0, "kinds": []string{}}
+		body := map[string]any{"chat": "job", "cursor": 0, "kinds": []string{}}
 		if path == PathRead {
 			body["limit"] = 10
 		}
@@ -102,7 +102,7 @@ func TestKindsThatAreNotAnArrayAreRefused(t *testing.T) {
 	create(t, base, "job")
 	for _, kinds := range []any{"say", nil} {
 		res := mustPost(t, base, PathRead, map[string]any{
-			"conversation": "job", "cursor": 0, "limit": 10, "kinds": kinds,
+			"chat": "job", "cursor": 0, "limit": 10, "kinds": kinds,
 		})
 		if res.Outcome != OutcomeRefused || res.Reason != ReasonKindsShape {
 			t.Fatalf("kinds %#v %+v", kinds, res)
@@ -114,7 +114,7 @@ func TestKindsNameOutsideTheGrammarIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	res := mustPost(t, base, PathWait, map[string]any{
-		"conversation": "job", "cursor": 0, "kinds": []string{"bad kind"},
+		"chat": "job", "cursor": 0, "kinds": []string{"bad kind"},
 	})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonKindsBadName {
 		t.Fatalf("%+v", res)
@@ -124,11 +124,11 @@ func TestKindsNameOutsideTheGrammarIsRefused(t *testing.T) {
 func TestNamedWaitWithKindsReturnsTheSpan(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
-	publishKind(t, base, "alice", "say", []string{"carol"}, "side", "1")
-	publishKind(t, base, "alice", "say", []string{"bob"}, "earlier", "2")
-	publishKind(t, base, "alice", "turn", []string{"bob"}, "mode: parallel\nphase", "3")
+	sendKind(t, base, "alice", "say", []string{"carol"}, "side", "1")
+	sendKind(t, base, "alice", "say", []string{"bob"}, "earlier", "2")
+	sendKind(t, base, "alice", "turn", []string{"bob"}, "mode: parallel\nphase", "3")
 	filtered := mustPost(t, base, PathWait, map[string]any{
-		"conversation": "job", "cursor": 0, "name": "bob", "kinds": []string{"turn"}, "deadline": "0s",
+		"chat": "job", "cursor": 0, "name": "bob", "kinds": []string{"turn"}, "deadline": "0s",
 	})
 	if filtered.Outcome != OutcomeOK || filtered.MatchSeq == nil || *filtered.MatchSeq != 3 || messageLen(filtered) != 3 {
 		t.Fatalf("span %+v len %d", filtered, messageLen(filtered))
@@ -137,7 +137,7 @@ func TestNamedWaitWithKindsReturnsTheSpan(t *testing.T) {
 		t.Fatalf("messages %+v", filtered.Messages)
 	}
 	open := mustPost(t, base, PathWait, map[string]any{
-		"conversation": "job", "cursor": 0, "name": "bob", "deadline": "0s",
+		"chat": "job", "cursor": 0, "name": "bob", "deadline": "0s",
 	})
 	if open.Outcome != OutcomeOK || open.MatchSeq == nil || *open.MatchSeq != 2 || messageLen(open) != 2 {
 		t.Fatalf("address match %+v len %d", open, messageLen(open))
@@ -147,10 +147,10 @@ func TestNamedWaitWithKindsReturnsTheSpan(t *testing.T) {
 func TestUnnamedWaitWithKindsReturnsOnlyTheMatch(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
-	publishKind(t, base, "alice", "say", []string{"bob"}, "earlier", "1")
-	publishKind(t, base, "alice", "turn", []string{"bob"}, "mode: parallel\nphase", "2")
+	sendKind(t, base, "alice", "say", []string{"bob"}, "earlier", "1")
+	sendKind(t, base, "alice", "turn", []string{"bob"}, "mode: parallel\nphase", "2")
 	res := mustPost(t, base, PathWait, map[string]any{
-		"conversation": "job", "cursor": 0, "kinds": []string{"turn"}, "deadline": "0s",
+		"chat": "job", "cursor": 0, "kinds": []string{"turn"}, "deadline": "0s",
 	})
 	if res.Outcome != OutcomeOK || res.MatchSeq == nil || *res.MatchSeq != 2 || messageLen(res) != 1 || (*res.Messages)[0].Kind != "turn" {
 		t.Fatalf("unnamed %+v", res.Messages)
@@ -160,24 +160,24 @@ func TestUnnamedWaitWithKindsReturnsOnlyTheMatch(t *testing.T) {
 func TestReadKindsFiltersAndLimitCountsReturned(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
-	publishKind(t, base, "alice", "say", []string{"carol"}, "for-carol", "1")
-	publishKind(t, base, "alice", "say", []string{"bob"}, "one", "2")
-	publishKind(t, base, "alice", "turn", []string{"bob"}, "phase", "3")
-	publishKind(t, base, "alice", "say", []string{"bob"}, "two", "4")
+	sendKind(t, base, "alice", "say", []string{"carol"}, "for-carol", "1")
+	sendKind(t, base, "alice", "say", []string{"bob"}, "one", "2")
+	sendKind(t, base, "alice", "turn", []string{"bob"}, "phase", "3")
+	sendKind(t, base, "alice", "say", []string{"bob"}, "two", "4")
 	named := mustPost(t, base, PathRead, map[string]any{
-		"conversation": "job", "cursor": 0, "limit": 1, "name": "bob", "kinds": []string{"say"},
+		"chat": "job", "cursor": 0, "limit": 1, "name": "bob", "kinds": []string{"say"},
 	})
 	if named.Outcome != OutcomeOK || messageLen(named) != 1 || (*named.Messages)[0].Body != "one" {
 		t.Fatalf("named %+v", named.Messages)
 	}
 	skipped := mustPost(t, base, PathRead, map[string]any{
-		"conversation": "job", "cursor": 0, "limit": 10, "name": "bob", "kinds": []string{"ask"},
+		"chat": "job", "cursor": 0, "limit": 10, "name": "bob", "kinds": []string{"ask"},
 	})
 	if skipped.Outcome != OutcomeOK || messageLen(skipped) != 0 {
 		t.Fatalf("skipped %+v", skipped.Messages)
 	}
 	unnamed := mustPost(t, base, PathRead, map[string]any{
-		"conversation": "job", "cursor": 0, "limit": 10, "kinds": []string{"turn"},
+		"chat": "job", "cursor": 0, "limit": 10, "kinds": []string{"turn"},
 	})
 	if unnamed.Outcome != OutcomeOK || messageLen(unnamed) != 1 || (*unnamed.Messages)[0].Kind != "turn" {
 		t.Fatalf("unnamed %+v", unnamed.Messages)
@@ -196,10 +196,10 @@ func TestCreateBindingRoundTrip(t *testing.T) {
 		"custom":    "line\nname: hidden",
 		"roster":    []string{"bravo", "alpha"},
 	})
-	if res.Outcome != OutcomeOK || res.Conversation == nil {
+	if res.Outcome != OutcomeOK || res.Chat == nil {
 		t.Fatalf("%+v", res)
 	}
-	c := res.Conversation
+	c := res.Chat
 	if c.Seat != "bravo" || c.Task != "tasks:hotseat/review/ticket" || len(c.Prompts) != 2 || c.Prompts[0] != "tasks:hotseat/review/extra" || len(c.Roster) != 2 || c.Roster[0] != "bravo" || c.Roster[1] != "alpha" {
 		t.Fatalf("binding %+v", c)
 	}
@@ -207,14 +207,14 @@ func TestCreateBindingRoundTrip(t *testing.T) {
 		t.Fatalf("json %s", raw)
 	}
 	plain, _ := mustRaw(t, base, PathCreate, map[string]any{"name": "plain"})
-	if plain.Conversation == nil || plain.Conversation.Task != "" || plain.Conversation.Prompts == nil || len(plain.Conversation.Prompts) != 0 || plain.Conversation.Roster == nil || len(plain.Conversation.Roster) != 0 {
-		t.Fatalf("name-only %+v", plain.Conversation)
+	if plain.Chat == nil || plain.Chat.Task != "" || plain.Chat.Prompts == nil || len(plain.Chat.Prompts) != 0 || plain.Chat.Roster == nil || len(plain.Chat.Roster) != 0 {
+		t.Fatalf("name-only %+v", plain.Chat)
 	}
 	list := mustPost(t, base, PathList, map[string]any{})
-	if list.Conversations == nil || len(*list.Conversations) != 2 || (*list.Conversations)[0].Name != "job" || (*list.Conversations)[0].Roster[1] != "alpha" {
-		t.Fatalf("list %+v", list.Conversations)
+	if list.Chats == nil || len(*list.Chats) != 2 || (*list.Chats)[0].Name != "job" || (*list.Chats)[0].Roster[1] != "alpha" {
+		t.Fatalf("list %+v", list.Chats)
 	}
-	members := mustPost(t, base, PathMembers, map[string]any{"conversation": "job"})
+	members := mustPost(t, base, PathMembers, map[string]any{"chat": "job"})
 	if members.Outcome != OutcomeOK || members.Members == nil || len(*members.Members) != 0 {
 		t.Fatalf("create inserted members %+v", members.Members)
 	}
@@ -228,8 +228,8 @@ func TestDuplicateRosterNameIsRefused(t *testing.T) {
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonRosterDuplicate {
 		t.Fatalf("%+v", res)
 	}
-	if list := mustPost(t, base, PathList, map[string]any{}); messageLenConv(list) != 0 {
-		t.Fatalf("wrote %+v", list.Conversations)
+	if list := mustPost(t, base, PathList, map[string]any{}); chatCount(list) != 0 {
+		t.Fatalf("wrote %+v", list.Chats)
 	}
 }
 
@@ -247,8 +247,8 @@ func TestSeatOutsideTheRosterIsRefused(t *testing.T) {
 	if missing.Outcome != OutcomeRefused || missing.Reason != ReasonSeatNotInRoster {
 		t.Fatalf("empty seat %+v", missing)
 	}
-	if list := mustPost(t, base, PathList, map[string]any{}); messageLenConv(list) != 0 {
-		t.Fatal("wrote a conversation")
+	if list := mustPost(t, base, PathList, map[string]any{}); chatCount(list) != 0 {
+		t.Fatal("wrote a chat")
 	}
 }
 
@@ -258,8 +258,8 @@ func TestSeatWithAnEmptyRosterIsRefused(t *testing.T) {
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonSeatNeedsRoster {
 		t.Fatalf("%+v", res)
 	}
-	if list := mustPost(t, base, PathList, map[string]any{}); messageLenConv(list) != 0 {
-		t.Fatal("wrote a conversation")
+	if list := mustPost(t, base, PathList, map[string]any{}); chatCount(list) != 0 {
+		t.Fatal("wrote a chat")
 	}
 }
 
@@ -284,12 +284,12 @@ func TestSecondCreateWritesNothing(t *testing.T) {
 	second := mustPost(t, base, PathCreate, map[string]any{
 		"name": "job", "seat": "bravo", "roster": []string{"bravo"}, "custom": "other",
 	})
-	if second.Outcome != OutcomeOK || second.AlreadyExisted == nil || !*second.AlreadyExisted || second.Conversation == nil || second.Conversation.Custom != "keep" || len(second.Conversation.Roster) != 1 || second.Conversation.Roster[0] != "alpha" {
-		t.Fatalf("second %+v", second.Conversation)
+	if second.Outcome != OutcomeOK || second.AlreadyExisted == nil || !*second.AlreadyExisted || second.Chat == nil || second.Chat.Custom != "keep" || len(second.Chat.Roster) != 1 || second.Chat.Roster[0] != "alpha" {
+		t.Fatalf("second %+v", second.Chat)
 	}
 }
 
-func TestRegisterKeepsStatusExceptWhenLaunched(t *testing.T) {
+func TestJoinKeepsStatusExceptWhenLaunched(t *testing.T) {
 	at := time.Date(2026, 10, 10, 1, 0, 0, 0, time.UTC)
 	base, _, _, _ := startServer(t, Options{Clock: func() time.Time { return at }})
 	mustPost(t, base, PathCreate, map[string]any{
@@ -298,79 +298,79 @@ func TestRegisterKeepsStatusExceptWhenLaunched(t *testing.T) {
 	conduct(t, base, "job")
 	pid := 424242
 	launched := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "launched", "pid": pid, "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "launched", "pid": pid, "holder": testHolder,
 	})
-	if launched.Outcome != OutcomeOK || launched.Member == nil || launched.Member.Status != "launched" || launched.Member.Registered != "" || launched.Member.PID == nil || *launched.Member.PID != int64(pid) {
+	if launched.Outcome != OutcomeOK || launched.Member == nil || launched.Member.Status != "launched" || launched.Member.Joined != "" || launched.Member.PID == nil || *launched.Member.PID != int64(pid) {
 		t.Fatalf("launch %+v", launched.Member)
 	}
 	second := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "launched", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "launched", "holder": testHolder,
 	})
 	if second.Outcome != OutcomeRefused || second.Reason != ReasonAlreadyLaunched {
 		t.Fatalf("second launch %+v", second)
 	}
 	at = at.Add(time.Minute)
-	registered := mustPost(t, base, PathRegister, map[string]any{"conversation": "job", "name": "alpha"})
-	if registered.Outcome != OutcomeOK || registered.Member == nil || registered.Member.Status != "registered" || registered.Member.Registered == "" || registered.Member.Launched == registered.Member.Registered || registered.Member.PID != nil {
-		t.Fatalf("register %+v", registered.Member)
+	joined := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "alpha"})
+	if joined.Outcome != OutcomeOK || joined.Member == nil || joined.Member.Status != "joined" || joined.Member.Joined == "" || joined.Member.Launched == joined.Member.Joined || joined.Member.PID != nil {
+		t.Fatalf("join %+v", joined.Member)
 	}
 	at = at.Add(time.Minute)
-	keep := mustPost(t, base, PathRegister, map[string]any{"conversation": "job", "name": "alpha"})
-	if keep.Outcome != OutcomeOK || keep.Member == nil || keep.Member.Status != "registered" || keep.Member.Registered == registered.Member.Registered {
-		t.Fatalf("second register %+v", keep.Member)
+	keep := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "alpha"})
+	if keep.Outcome != OutcomeOK || keep.Member == nil || keep.Member.Status != "joined" || keep.Member.Joined == joined.Member.Joined {
+		t.Fatalf("second join %+v", keep.Member)
 	}
 	for _, status := range []string{"running", "exited", "timed-out"} {
 		// The bus clock moved past the lease, so the conductor acquires again.
 		conduct(t, base, "job")
 		set := mustPost(t, base, PathMember, map[string]any{
-			"conversation": "job", "name": "alpha", "status": status, "holder": testHolder,
+			"chat": "job", "name": "alpha", "status": status, "holder": testHolder,
 		})
 		if set.Outcome != OutcomeOK || set.Member == nil || set.Member.Status != status || set.Member.PID == nil || *set.Member.PID != int64(pid) {
 			t.Fatalf("set %s %+v", status, set.Member)
 		}
-		before := set.Member.Registered
+		before := set.Member.Joined
 		at = at.Add(time.Minute)
-		again := mustPost(t, base, PathRegister, map[string]any{"conversation": "job", "name": "alpha"})
-		if again.Outcome != OutcomeOK || again.Member == nil || again.Member.Status != status || again.Member.Registered == before {
-			t.Fatalf("register while %s %+v", status, again.Member)
+		again := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "alpha"})
+		if again.Outcome != OutcomeOK || again.Member == nil || again.Member.Status != status || again.Member.Joined == before {
+			t.Fatalf("join while %s %+v", status, again.Member)
 		}
 	}
-	// A running row can still have an empty registered time.
+	// A running row can still have an empty joined time.
 	conduct(t, base, "job")
 	mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "bravo", "status": "launched", "holder": testHolder,
+		"chat": "job", "name": "bravo", "status": "launched", "holder": testHolder,
 	})
 	running := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "bravo", "status": "running", "holder": testHolder,
+		"chat": "job", "name": "bravo", "status": "running", "holder": testHolder,
 	})
-	if running.Outcome != OutcomeOK || running.Member == nil || running.Member.Status != "running" || running.Member.Registered != "" {
-		t.Fatalf("running before register %+v", running.Member)
+	if running.Outcome != OutcomeOK || running.Member == nil || running.Member.Status != "running" || running.Member.Joined != "" {
+		t.Fatalf("running before join %+v", running.Member)
 	}
 	at = at.Add(time.Minute)
-	late := mustPost(t, base, PathRegister, map[string]any{"conversation": "job", "name": "bravo"})
-	if late.Outcome != OutcomeOK || late.Member == nil || late.Member.Status != "running" || late.Member.Registered == "" {
-		t.Fatalf("register while running and unregistered %+v", late.Member)
+	late := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "bravo"})
+	if late.Outcome != OutcomeOK || late.Member == nil || late.Member.Status != "running" || late.Member.Joined == "" {
+		t.Fatalf("join while running and not joined %+v", late.Member)
 	}
 }
 
-func TestRegisterWithoutARowIsRefused(t *testing.T) {
+func TestJoinWithoutARowIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
-	missing := mustPost(t, base, PathRegister, map[string]any{"conversation": "job", "name": "alpha"})
+	missing := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "alpha"})
 	if missing.Outcome != OutcomeRefused || missing.Reason != ReasonNotFound {
-		t.Fatalf("missing conversation %+v", missing)
+		t.Fatalf("missing chat %+v", missing)
 	}
 	mustPost(t, base, PathCreate, map[string]any{
 		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
 	})
-	outside := mustPost(t, base, PathRegister, map[string]any{"conversation": "job", "name": "bravo"})
+	outside := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "bravo"})
 	if outside.Outcome != OutcomeRefused || outside.Reason != ReasonNotInRoster {
 		t.Fatalf("outside %+v", outside)
 	}
-	none := mustPost(t, base, PathRegister, map[string]any{"conversation": "job", "name": "alpha"})
+	none := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "alpha"})
 	if none.Outcome != OutcomeRefused || none.Reason != ReasonMemberMissing {
 		t.Fatalf("no row %+v", none)
 	}
-	if rows := mustPost(t, base, PathMembers, map[string]any{"conversation": "job"}); rows.Members == nil || len(*rows.Members) != 0 {
+	if rows := mustPost(t, base, PathMembers, map[string]any{"chat": "job"}); rows.Members == nil || len(*rows.Members) != 0 {
 		t.Fatalf("rows %+v", rows.Members)
 	}
 }
@@ -408,7 +408,7 @@ func TestNameOutsideTheRosterIsRefused(t *testing.T) {
 	})
 	conduct(t, base, "job")
 	res := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "bravo", "status": "launched", "holder": testHolder,
+		"chat": "job", "name": "bravo", "status": "launched", "holder": testHolder,
 	})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonNotInRoster {
 		t.Fatalf("%+v", res)
@@ -422,7 +422,7 @@ func TestMemberStatusOutsideTheSetIsRefused(t *testing.T) {
 	})
 	conduct(t, base, "job")
 	res := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "registered", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "joined", "holder": testHolder,
 	})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonStatusBad {
 		t.Fatalf("%+v", res)
@@ -436,18 +436,18 @@ func TestSecondLaunchedIsRefused(t *testing.T) {
 	})
 	conduct(t, base, "job")
 	first := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "launched", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "launched", "holder": testHolder,
 	})
 	if first.Outcome != OutcomeOK {
 		t.Fatalf("first %+v", first)
 	}
 	second := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "launched", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "launched", "holder": testHolder,
 	})
 	if second.Outcome != OutcomeRefused || second.Reason != ReasonAlreadyLaunched {
 		t.Fatalf("second %+v", second)
 	}
-	rows := mustPost(t, base, PathMembers, map[string]any{"conversation": "job"})
+	rows := mustPost(t, base, PathMembers, map[string]any{"chat": "job"})
 	if rows.Members == nil || len(*rows.Members) != 1 {
 		t.Fatalf("rows %+v", rows.Members)
 	}
@@ -460,19 +460,19 @@ func TestPidWithoutAStatusIsRefused(t *testing.T) {
 	})
 	conduct(t, base, "job")
 	launched := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "launched", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "launched", "holder": testHolder,
 	})
 	if launched.Outcome != OutcomeOK || launched.Member == nil || launched.Member.PID != nil {
 		t.Fatalf("launch %+v", launched.Member)
 	}
 	res := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "pid": 4242,
+		"chat": "job", "name": "alpha", "pid": 4242,
 	})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonPIDNeedsStatus || res.Member != nil {
 		t.Fatalf("pid without status %+v", res)
 	}
 	got := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha",
+		"chat": "job", "name": "alpha",
 	})
 	if got.Outcome != OutcomeOK || got.Member == nil || got.Member.Status != "launched" || got.Member.PID != nil {
 		t.Fatalf("row %+v", got.Member)
@@ -486,12 +486,12 @@ func TestStartWithoutAPidIsRefusedAndWritesNothing(t *testing.T) {
 	})
 	conduct(t, base, "job")
 	res := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "launched", "start": "boot/1", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "launched", "start": "boot/1", "holder": testHolder,
 	})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonStartNeedsPID || res.Member != nil {
 		t.Fatalf("start without pid %+v", res)
 	}
-	got := mustPost(t, base, PathMember, map[string]any{"conversation": "job", "name": "alpha"})
+	got := mustPost(t, base, PathMember, map[string]any{"chat": "job", "name": "alpha"})
 	if got.Outcome != OutcomeRefused || got.Reason != ReasonMemberMissing {
 		t.Fatalf("row %+v", got)
 	}
@@ -505,7 +505,7 @@ func TestStartMustBePrintableASCIIWithNoSpaces(t *testing.T) {
 	conduct(t, base, "job")
 	for _, start := range []string{"", "boot 1", "boot\n1", "booté1", strings.Repeat("a", 129)} {
 		res := mustPost(t, base, PathMember, map[string]any{
-			"conversation": "job", "name": "alpha", "status": "launched", "pid": 4242, "start": start, "holder": testHolder,
+			"chat": "job", "name": "alpha", "status": "launched", "pid": 4242, "start": start, "holder": testHolder,
 		})
 		if res.Outcome != OutcomeRefused || res.Reason != ReasonStart {
 			t.Fatalf("start %q %+v", start, res)
@@ -520,22 +520,22 @@ func TestPidWriteReplacesTheStartTokenAndAPidWriteWithoutOneClearsIt(t *testing.
 	})
 	conduct(t, base, "job")
 	mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "launched", "pid": 41, "start": "boot/1", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "launched", "pid": 41, "start": "boot/1", "holder": testHolder,
 	})
 	moved := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "running", "pid": 42, "start": "boot/2", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "running", "pid": 42, "start": "boot/2", "holder": testHolder,
 	})
 	if moved.Member == nil || moved.Member.PID == nil || *moved.Member.PID != 42 || moved.Member.Start == nil || *moved.Member.Start != "boot/2" {
 		t.Fatalf("relaunch %+v", moved.Member)
 	}
 	kept := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "exited", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "exited", "holder": testHolder,
 	})
 	if kept.Member == nil || kept.Member.Start == nil || *kept.Member.Start != "boot/2" {
 		t.Fatalf("status write %+v", kept.Member)
 	}
 	cleared := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "running", "pid": 43, "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "running", "pid": 43, "holder": testHolder,
 	})
 	if cleared.Member == nil || cleared.Member.PID == nil || *cleared.Member.PID != 43 || cleared.Member.Start != nil {
 		t.Fatalf("pid without start %+v", cleared.Member)
@@ -550,7 +550,7 @@ func TestPidMustBeAPositiveInteger(t *testing.T) {
 	conduct(t, base, "job")
 	for _, pid := range []any{0, -1, 1.5, "2"} {
 		res := mustPost(t, base, PathMember, map[string]any{
-			"conversation": "job", "name": "alpha", "status": "launched", "pid": pid, "holder": testHolder,
+			"chat": "job", "name": "alpha", "status": "launched", "pid": pid, "holder": testHolder,
 		})
 		if res.Outcome != OutcomeRefused || res.Reason != ReasonPID {
 			t.Fatalf("pid %#v %+v", pid, res)
@@ -558,7 +558,7 @@ func TestPidMustBeAPositiveInteger(t *testing.T) {
 	}
 }
 
-func TestSessionPidAndStartStayOffRegisterTheTranscriptListAndLog(t *testing.T) {
+func TestSessionPidAndStartStayOffJoinTheTranscriptListAndLog(t *testing.T) {
 	var logs bytes.Buffer
 	base, _, _, _ := startServer(t, Options{
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
@@ -568,55 +568,55 @@ func TestSessionPidAndStartStayOffRegisterTheTranscriptListAndLog(t *testing.T) 
 	})
 	conduct(t, base, "job")
 	mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "launched", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "launched", "holder": testHolder,
 	})
 	const token = "boot-7c1e/313131"
 	mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "bravo", "status": "launched", "pid": 424242, "start": token, "holder": testHolder,
+		"chat": "job", "name": "bravo", "status": "launched", "pid": 424242, "start": token, "holder": testHolder,
 	})
 	const secret = "sess-secret-9f3a"
 	set := mustPost(t, base, PathSession, map[string]any{
-		"conversation": "job", "name": "bravo", "session": secret, "holder": testHolder,
+		"chat": "job", "name": "bravo", "session": secret, "holder": testHolder,
 	})
 	if set.Outcome != OutcomeOK || set.Session == nil || set.Session.Session != secret || set.Session.Name != "bravo" {
 		t.Fatalf("set %+v", set.Session)
 	}
 	empty := mustPost(t, base, PathSession, map[string]any{
-		"conversation": "job", "name": "bravo", "session": "", "holder": testHolder,
+		"chat": "job", "name": "bravo", "session": "", "holder": testHolder,
 	})
 	if empty.Outcome != OutcomeRefused || empty.Reason != ReasonSessionEmpty {
 		t.Fatalf("empty %+v", empty)
 	}
-	got := mustPost(t, base, PathSession, map[string]any{"conversation": "job", "name": "bravo"})
+	got := mustPost(t, base, PathSession, map[string]any{"chat": "job", "name": "bravo"})
 	if got.Outcome != OutcomeOK || got.Session == nil || got.Session.Session != secret {
 		t.Fatalf("get %+v", got.Session)
 	}
-	all, raw := mustRaw(t, base, PathSession, map[string]any{"conversation": "job"})
+	all, raw := mustRaw(t, base, PathSession, map[string]any{"chat": "job"})
 	if all.Sessions == nil || len(*all.Sessions) != 2 || (*all.Sessions)[0].Name != "bravo" || (*all.Sessions)[0].Session != secret || (*all.Sessions)[1].Name != "alpha" || (*all.Sessions)[1].Session != "" {
 		t.Fatalf("sessions %+v", all.Sessions)
 	}
 	if !bytes.Contains(raw, []byte(secret)) {
 		t.Fatal("session route hid the id from its caller")
 	}
-	_, memberBody := mustRaw(t, base, PathMember, map[string]any{"conversation": "job", "name": "bravo"})
-	reg, registerBody := mustRaw(t, base, PathRegister, map[string]any{"conversation": "job", "name": "bravo"})
-	if reg.Outcome != OutcomeOK || reg.Member == nil || reg.Member.Name != "bravo" || reg.Member.Status != "registered" || reg.Member.Launched == "" || reg.Member.Registered == "" {
-		t.Fatalf("register %s", registerBody)
+	_, memberBody := mustRaw(t, base, PathMember, map[string]any{"chat": "job", "name": "bravo"})
+	reg, joinBody := mustRaw(t, base, PathJoin, map[string]any{"chat": "job", "name": "bravo"})
+	if reg.Outcome != OutcomeOK || reg.Member == nil || reg.Member.Name != "bravo" || reg.Member.Status != "joined" || reg.Member.Launched == "" || reg.Member.Joined == "" {
+		t.Fatalf("join %s", joinBody)
 	}
-	registerRaw := string(registerBody)
-	_, listBody := mustRaw(t, base, PathMembers, map[string]any{"conversation": "job"})
-	publishKind(t, base, "alice", "say", []string{"bravo"}, "hello", "m1")
-	_, readBody := mustRaw(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
-	_, listConv := mustRaw(t, base, PathList, map[string]any{})
+	joinRaw := string(joinBody)
+	_, listBody := mustRaw(t, base, PathMembers, map[string]any{"chat": "job"})
+	sendKind(t, base, "alice", "say", []string{"bravo"}, "hello", "m1")
+	_, readBody := mustRaw(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
+	_, listChat := mustRaw(t, base, PathList, map[string]any{})
 	memberRaw := string(memberBody)
 	listRaw := string(listBody)
 	readRaw := string(readBody)
 	for _, part := range []struct{ name, body string }{
 		{"member", memberRaw},
-		{"register", registerRaw},
+		{"join", joinRaw},
 		{"members", listRaw},
 		{"read", readRaw},
-		{"list", string(listConv)},
+		{"list", string(listChat)},
 		{"log", logs.String()},
 	} {
 		if strings.Contains(part.body, secret) {
@@ -624,10 +624,10 @@ func TestSessionPidAndStartStayOffRegisterTheTranscriptListAndLog(t *testing.T) 
 		}
 	}
 	for _, part := range []struct{ name, body string }{
-		{"register", registerRaw},
+		{"join", joinRaw},
 		{"members", listRaw},
 		{"read", readRaw},
-		{"list", string(listConv)},
+		{"list", string(listChat)},
 		{"log", logs.String()},
 	} {
 		if strings.Contains(part.body, "424242") {
@@ -638,7 +638,7 @@ func TestSessionPidAndStartStayOffRegisterTheTranscriptListAndLog(t *testing.T) 
 		}
 	}
 	for _, part := range []struct{ name, body string }{
-		{"register", registerRaw},
+		{"join", joinRaw},
 		{"members", listRaw},
 	} {
 		if strings.Contains(part.body, `"pid"`) || strings.Contains(part.body, `"start"`) || strings.Contains(part.body, `"session"`) {
@@ -657,30 +657,30 @@ func TestMemberWriteAfterCloseIsStored(t *testing.T) {
 	})
 	conduct(t, base, "job")
 	mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "launched", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "launched", "holder": testHolder,
 	})
-	if res := mustPost(t, base, PathClose, map[string]any{"conversation": "job"}); res.Outcome != OutcomeOK || res.Conversation == nil || res.Conversation.Status != "closed" {
+	if res := mustPost(t, base, PathClose, map[string]any{"chat": "job"}); res.Outcome != OutcomeOK || res.Chat == nil || res.Chat.Status != "closed" {
 		t.Fatalf("close %+v", res)
 	}
-	pub := publishKind(t, base, "alpha", "say", []string{}, "later report", "late")
-	if pub.Outcome != OutcomeOK || pub.Conversation == nil || pub.Conversation.Status != "closed" || pub.Message == nil || pub.Message.Body != "later report" {
-		t.Fatalf("publish %+v", pub)
+	pub := sendKind(t, base, "alpha", "say", []string{}, "later report", "late")
+	if pub.Outcome != OutcomeOK || pub.Chat == nil || pub.Chat.Status != "closed" || pub.Message == nil || pub.Message.Body != "later report" {
+		t.Fatalf("send %+v", pub)
 	}
 	updated := mustPost(t, base, PathMember, map[string]any{
-		"conversation": "job", "name": "alpha", "status": "exited", "holder": testHolder,
+		"chat": "job", "name": "alpha", "status": "exited", "holder": testHolder,
 	})
 	if updated.Outcome != OutcomeOK || updated.Member == nil || updated.Member.Status != "exited" {
 		t.Fatalf("status %+v", updated)
 	}
-	reg := mustPost(t, base, PathRegister, map[string]any{"conversation": "job", "name": "alpha"})
-	if reg.Outcome != OutcomeOK || reg.Member == nil || reg.Member.Status != "exited" || reg.Member.Registered == "" {
-		t.Fatalf("register after close %+v", reg.Member)
+	reg := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "alpha"})
+	if reg.Outcome != OutcomeOK || reg.Member == nil || reg.Member.Status != "exited" || reg.Member.Joined == "" {
+		t.Fatalf("join after close %+v", reg.Member)
 	}
-	rows := mustPost(t, base, PathMembers, map[string]any{"conversation": "job"})
+	rows := mustPost(t, base, PathMembers, map[string]any{"chat": "job"})
 	if rows.Outcome != OutcomeOK || rows.Members == nil || len(*rows.Members) != 1 || (*rows.Members)[0].Status != "exited" {
 		t.Fatalf("list %+v", rows.Members)
 	}
-	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	read := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if read.Outcome != OutcomeOK || messageLen(read) != 1 || (*read.Messages)[0].Body != "later report" {
 		t.Fatalf("read %+v", read.Messages)
 	}
@@ -689,30 +689,30 @@ func TestMemberWriteAfterCloseIsStored(t *testing.T) {
 	}
 }
 
-func publishKind(t *testing.T, base, from, kind string, to []string, body, key string) wire {
+func sendKind(t *testing.T, base, from, kind string, to []string, body, key string) wire {
 	t.Helper()
-	return mustPost(t, base, PathPublish, map[string]any{
-		"conversation": "job",
-		"from":         from,
-		"to":           to,
-		"body":         body,
-		"txid":         key,
-		"kind":         kind,
+	return mustPost(t, base, PathSend, map[string]any{
+		"chat": "job",
+		"from": from,
+		"to":   to,
+		"body": body,
+		"txid": key,
+		"kind": kind,
 	})
 }
 
-func transcriptLen(t *testing.T, st *store.Store, conv string) int {
+func transcriptLen(t *testing.T, st *store.Store, chat string) int {
 	t.Helper()
-	_, msgs, err := st.Transcript(context.Background(), conv, 0)
+	_, msgs, err := st.Transcript(context.Background(), chat, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return len(msgs)
 }
 
-func messageLenConv(res wire) int {
-	if res.Conversations == nil {
+func chatCount(res wire) int {
+	if res.Chats == nil {
 		return 0
 	}
-	return len(*res.Conversations)
+	return len(*res.Chats)
 }

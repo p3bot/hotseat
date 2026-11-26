@@ -17,7 +17,7 @@ import (
 	"testing"
 )
 
-// recordStore opens a store with conversation job and returns a publisher of kinds into it.
+// recordStore opens a store with chat job and returns a kindSender of kinds into it.
 func recordStore(t *testing.T) (*Store, func(kind string) int64) {
 	t.Helper()
 	st := openStore(t)
@@ -28,8 +28,8 @@ func recordStore(t *testing.T) (*Store, func(kind string) int64) {
 	return st, func(kind string) int64 {
 		t.Helper()
 		n++
-		m, _, _, err := st.Publish(context.Background(), Publish{
-			Conversation: "job", From: "alice", To: []string{}, Body: kind,
+		m, _, _, err := st.Send(context.Background(), Send{
+			Chat: "job", From: "alice", To: []string{}, Body: kind,
 			TxID: fmt.Sprint(n), Kind: kind, Time: "t",
 		})
 		if err != nil {
@@ -507,7 +507,7 @@ func TestStopOfASeqThatIsNotADoneIsAReferenceFailure(t *testing.T) {
 	}
 	done := put("done")
 	if _, _, err := st.WriteStop(context.Background(), "other", done); !errors.Is(err, ErrRecordReference) {
-		t.Fatalf("other conversation: %v", err)
+		t.Fatalf("other chat: %v", err)
 	}
 	assertNoRecords(t, st)
 }
@@ -530,19 +530,19 @@ func TestRecordsListsAreEmptyNotNilAndInKeyOrder(t *testing.T) {
 	}
 }
 
-// everyWrite writes one record of each kind to conv and returns each write's error by record name.
-func everyWrite(st *Store, conv string) map[string]error {
+// everyWrite writes one record of each kind to chat and returns each write's error by record name.
+func everyWrite(st *Store, chat string) map[string]error {
 	ctx := context.Background()
-	_, _, _, setErr := st.WriteSet(ctx, conv, 1, []int64{2})
-	_, _, groupingErr := st.WriteGrouping(ctx, conv, 1, nil)
-	_, _, settleErr := st.WriteSettle(ctx, conv, 2, 2, "finding")
-	_, _, fixErr := st.WriteFix(ctx, conv, 2, 3)
-	_, _, haltErr := st.WriteHalt(ctx, conv, 2)
-	_, _, stopErr := st.WriteStop(ctx, conv, 4)
+	_, _, _, setErr := st.WriteSet(ctx, chat, 1, []int64{2})
+	_, _, groupingErr := st.WriteGrouping(ctx, chat, 1, nil)
+	_, _, settleErr := st.WriteSettle(ctx, chat, 2, 2, "finding")
+	_, _, fixErr := st.WriteFix(ctx, chat, 2, 3)
+	_, _, haltErr := st.WriteHalt(ctx, chat, 2)
+	_, _, stopErr := st.WriteStop(ctx, chat, 4)
 	return map[string]error{"set": setErr, "grouping": groupingErr, "settle": settleErr, "fix": fixErr, "halt": haltErr, "stop": stopErr}
 }
 
-func TestRecordsOfAMissingConversationIsNotFound(t *testing.T) {
+func TestRecordsOfAMissingChatIsNotFound(t *testing.T) {
 	st, _ := recordStore(t)
 	if _, err := st.Records(context.Background(), "nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("records = %v", err)
@@ -554,7 +554,7 @@ func TestRecordsOfAMissingConversationIsNotFound(t *testing.T) {
 	}
 }
 
-func TestRecordWriteToAConversationWithNoMessagesIsAReferenceFailure(t *testing.T) {
+func TestRecordWriteToAChatWithNoMessagesIsAReferenceFailure(t *testing.T) {
 	st, _ := recordStore(t)
 	for record, err := range everyWrite(st, "job") {
 		if !errors.Is(err, ErrRecordReference) {
@@ -567,7 +567,7 @@ func TestRecordWriteToAConversationWithNoMessagesIsAReferenceFailure(t *testing.
 func TestOpenRejectsVersion1WithoutARecordTable(t *testing.T) {
 	for _, table := range recordTables {
 		t.Run(table, func(t *testing.T) {
-			dir := writeVersion1(t, replyMessagesHead+`, UNIQUE (conversation, seq), UNIQUE (conversation, seq, kind)) STRICT`)
+			dir := writeVersion1(t, replyMessagesHead+`, UNIQUE (chat, seq), UNIQUE (chat, seq, kind)) STRICT`)
 			db := openRaw(t, dir)
 			if _, err := db.Exec(`DROP TABLE ` + table); err != nil {
 				t.Fatal(err)

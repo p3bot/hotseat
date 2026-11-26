@@ -130,9 +130,9 @@ func attend(ctx context.Context, cfg attendConfig, w io.Writer) error {
 	name := ownerName
 	kinds := []string{kindAsk, kindError, kindDone}
 	req := client.WaitRequest{
-		Conversation: cfg.Conversation,
-		Name:         &name,
-		Kinds:        &kinds,
+		Chat:  cfg.Conversation,
+		Name:  &name,
+		Kinds: &kinds,
 	}
 	cursor := cfg.Cursor
 	for {
@@ -156,10 +156,10 @@ func attend(ctx context.Context, cfg attendConfig, w io.Writer) error {
 		}
 		seq := msg.Seq
 		if err := writeResult(w, client.Result{
-			Outcome:      bus.OutcomeOK,
-			MatchSeq:     &seq,
-			Conversation: &client.Conversation{Name: cfg.Conversation},
-			Message:      &msg,
+			Outcome:  bus.OutcomeOK,
+			MatchSeq: &seq,
+			Chat:     &client.Chat{Name: cfg.Conversation},
+			Message:  &msg,
 		}); err != nil {
 			return err
 		}

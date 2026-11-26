@@ -55,7 +55,7 @@ func sameLaunch(id procID) bool {
 	return ok && start == id.start
 }
 
-func (e *engine) ensureInstructions(conv client.Conversation) error {
+func (e *engine) ensureInstructions(conv client.Chat) error {
 	msgs, err := e.readFrom(0)
 	if err != nil {
 		return err
@@ -113,7 +113,7 @@ func (e *engine) reapDead() ([]liveProc, error) {
 		switch row.Status {
 		case statusExited, statusTimedOut:
 			continue
-		case statusLaunched, statusRunning, statusRegistered:
+		case statusLaunched, statusRunning, statusJoined:
 		default:
 			continue
 		}
@@ -334,7 +334,7 @@ func alive(pid int) bool {
 }
 
 func (e *engine) memberRow(name string) (*client.Member, error) {
-	res, err := e.call(e.root, "member", client.MemberRequest{Conversation: e.name, Name: name})
+	res, err := e.call(e.root, "member", client.MemberRequest{Chat: e.name, Name: name})
 	if refusedFor(err, bus.ReasonMemberMissing) {
 		return nil, nil
 	}
@@ -350,8 +350,8 @@ func (e *engine) memberRow(name string) (*client.Member, error) {
 func (e *engine) readSession(name string) (string, error) {
 	n := name
 	res, err := e.call(e.root, "session", client.SessionRequest{
-		Conversation: e.name,
-		Name:         &n,
+		Chat: e.name,
+		Name: &n,
 	})
 	if refusedFor(err, bus.ReasonMemberMissing) {
 		return "", nil
@@ -368,7 +368,7 @@ func (e *engine) readSession(name string) (string, error) {
 // writeStatus writes name's status, and id's pid and start token when id is a process.
 func (e *engine) writeStatus(name, status string, id procID) error {
 	st := status
-	req := client.MemberRequest{Conversation: e.name, Name: name, Status: &st, Holder: e.holder}
+	req := client.MemberRequest{Chat: e.name, Name: name, Status: &st, Holder: e.holder}
 	if id.pid > 0 {
 		p := int64(id.pid)
 		req.PID = &p
@@ -385,10 +385,10 @@ func (e *engine) storeSession(name, id string) error {
 	n := name
 	s := id
 	_, err := e.call(e.root, "session", client.SessionRequest{
-		Conversation: e.name,
-		Name:         &n,
-		Session:      &s,
-		Holder:       e.holder,
+		Chat:    e.name,
+		Name:    &n,
+		Session: &s,
+		Holder:  e.holder,
 	})
 	if err != nil {
 		return err
@@ -404,7 +404,7 @@ func (e *engine) memberRows(ctx context.Context) ([]client.Member, error) {
 
 // readMembers reads every member row of conv through call.
 func readMembers(ctx context.Context, call caller, conv string) ([]client.Member, error) {
-	res, err := call(ctx, "members", client.MembersRequest{Conversation: conv})
+	res, err := call(ctx, "members", client.MembersRequest{Chat: conv})
 	if err != nil {
 		return nil, err
 	}
@@ -424,18 +424,18 @@ func (e *engine) backup() (string, error) {
 }
 
 // backupOf is the seat's backup: the first roster name in ASCII byte order, other than the seat, whose row has a
-// registered time and a status of registered, running, or exited. An empty name means nobody is eligible.
+// joined time and a status of joined, running, or exited. An empty name means nobody is eligible.
 func backupOf(roster []string, seat string, rows []client.Member) string {
 	for _, name := range slices.Sorted(slices.Values(roster)) {
 		if name == seat {
 			continue
 		}
 		i := slices.IndexFunc(rows, func(r client.Member) bool { return r.Name == name })
-		if i < 0 || rows[i].Registered == "" {
+		if i < 0 || rows[i].Joined == "" {
 			continue
 		}
 		switch rows[i].Status {
-		case statusRegistered, statusRunning, statusExited:
+		case statusJoined, statusRunning, statusExited:
 			return name
 		}
 	}
@@ -494,7 +494,7 @@ func (e *engine) turnPrompt(name string, msg client.Message, mode, phase string)
 
 func (e *engine) isActing(name string) (bool, error) {
 	switch e.localStatus(e.seat) {
-	case statusLaunched, statusRegistered, statusRunning, statusExited:
+	case statusLaunched, statusJoined, statusRunning, statusExited:
 		return name == e.seat, nil
 	}
 	backup, err := e.backup()

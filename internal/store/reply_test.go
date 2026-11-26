@@ -26,19 +26,19 @@ func reText(p *int64) string {
 	return strconv.FormatInt(*p, 10)
 }
 
-func publishRe(t *testing.T, st *Store, conv, txid string, re *int64) Message {
+func sendRe(t *testing.T, st *Store, chat, txid string, re *int64) Message {
 	t.Helper()
-	m, _, already, err := st.Publish(context.Background(), Publish{
-		Conversation: conv, From: "alice", To: []string{"bob"},
+	m, _, already, err := st.Send(context.Background(), Send{
+		Chat: chat, From: "alice", To: []string{"bob"},
 		Body: "b " + txid, TxID: txid, Kind: "say", Re: re, Time: "t",
 	})
 	if err != nil || already {
-		t.Fatalf("publish %s: %+v already=%v err=%v", txid, m, already, err)
+		t.Fatalf("send %s: %+v already=%v err=%v", txid, m, already, err)
 	}
 	return m
 }
 
-func TestPublishReplyNamesAnEarlierMessageOfTheConversation(t *testing.T) {
+func TestSendReplyNamesAnEarlierMessageOfTheChat(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	for _, name := range []string{"job", "other"} {
@@ -46,11 +46,11 @@ func TestPublishReplyNamesAnEarlierMessageOfTheConversation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	first := publishRe(t, st, "job", "1", nil)
-	publishRe(t, st, "other", "2", nil)
-	reply := publishRe(t, st, "job", "3", seqPtr(first.Seq))
+	first := sendRe(t, st, "job", "1", nil)
+	sendRe(t, st, "other", "2", nil)
+	reply := sendRe(t, st, "job", "3", seqPtr(first.Seq))
 	if first.Re != nil || reply.Re == nil || *reply.Re != first.Seq {
-		t.Fatalf("publish re: first=%s reply=%s", reText(first.Re), reText(reply.Re))
+		t.Fatalf("send re: first=%s reply=%s", reText(first.Re), reText(reply.Re))
 	}
 
 	_, msgs, err := st.Transcript(ctx, "job", 0)
@@ -75,12 +75,12 @@ func TestPublishReplyNamesAnEarlierMessageOfTheConversation(t *testing.T) {
 	}
 }
 
-func TestPublishRefusesReplyThatIsNotAnEarlierMessageOfTheConversation(t *testing.T) {
+func TestSendRefusesReplyThatIsNotAnEarlierMessageOfTheChat(t *testing.T) {
 	cases := []struct {
 		name string
 		re   func(job, other Message) int64
 	}{
-		{"message of another conversation", func(_, other Message) int64 { return other.Seq }},
+		{"message of another chat", func(_, other Message) int64 { return other.Seq }},
 		{"seq that does not exist", func(_, _ Message) int64 { return 99 }},
 		{"zero", func(_, _ Message) int64 { return 0 }},
 		// The foreign key alone accepts this: SQLite checks it after the row exists.
@@ -95,11 +95,11 @@ func TestPublishRefusesReplyThatIsNotAnEarlierMessageOfTheConversation(t *testin
 					t.Fatal(err)
 				}
 			}
-			job := publishRe(t, st, "job", "1", nil)
-			other := publishRe(t, st, "other", "2", nil)
+			job := sendRe(t, st, "job", "1", nil)
+			other := sendRe(t, st, "other", "2", nil)
 			re := tc.re(job, other)
-			_, _, _, err := st.Publish(ctx, Publish{
-				Conversation: "job", From: "alice", To: []string{"bob"},
+			_, _, _, err := st.Send(ctx, Send{
+				Chat: "job", From: "alice", To: []string{"bob"},
 				Body: "reply", TxID: "3", Kind: "say", Re: &re, Time: "t",
 			})
 			if !errors.Is(err, ErrReplyTarget) {
@@ -116,19 +116,19 @@ func TestPublishRefusesReplyThatIsNotAnEarlierMessageOfTheConversation(t *testin
 	}
 }
 
-func TestPublishReplyIsAttemptContent(t *testing.T) {
+func TestSendReplyIsAttemptContent(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
-	first := publishRe(t, st, "job", "1", nil)
-	second := publishRe(t, st, "job", "2", nil)
-	reply := publishRe(t, st, "job", "3", seqPtr(first.Seq))
+	first := sendRe(t, st, "job", "1", nil)
+	second := sendRe(t, st, "job", "2", nil)
+	reply := sendRe(t, st, "job", "3", seqPtr(first.Seq))
 
 	attempt := func(txid string, re *int64) (Message, bool, error) {
-		m, _, already, err := st.Publish(ctx, Publish{
-			Conversation: "job", From: "alice", To: []string{"bob"},
+		m, _, already, err := st.Send(ctx, Send{
+			Chat: "job", From: "alice", To: []string{"bob"},
 			Body: "b " + txid, TxID: txid, Kind: "say", Re: re, Time: "later",
 		})
 		return m, already, err
@@ -159,19 +159,19 @@ func TestPublishReplyIsAttemptContent(t *testing.T) {
 // previousMessages is the messages table of the binary before re.
 const previousMessages = `CREATE TABLE messages (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   time TEXT NOT NULL,
   sender TEXT NOT NULL,
   recipients TEXT NOT NULL,
   body TEXT NOT NULL,
   txid TEXT NOT NULL,
   kind TEXT NOT NULL,
-  UNIQUE (conversation, sender, txid)
+  UNIQUE (chat, sender, txid)
 ) STRICT`
 
 const replyMessagesHead = `CREATE TABLE messages (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation TEXT NOT NULL REFERENCES conversations(name),
+  chat TEXT NOT NULL REFERENCES chats(name),
   time TEXT NOT NULL,
   sender TEXT NOT NULL,
   recipients TEXT NOT NULL,
@@ -179,10 +179,10 @@ const replyMessagesHead = `CREATE TABLE messages (
   txid TEXT NOT NULL,
   kind TEXT NOT NULL,
   re INTEGER,
-  UNIQUE (conversation, sender, txid)`
+  UNIQUE (chat, sender, txid)`
 
 // writeVersion1 writes a version-1 file whose messages table is built by
-// messages, with one conversation and one message, the members table, and
+// messages, with one chat and one message, the members table, and
 // the record tables, in WAL mode.
 func writeVersion1(t *testing.T, messages ...string) string {
 	t.Helper()
@@ -192,7 +192,7 @@ func writeVersion1(t *testing.T, messages ...string) string {
 		`PRAGMA journal_mode=WAL`,
 		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`,
 		`INSERT INTO meta (key, value) VALUES ('schema', '1')`,
-		`CREATE TABLE conversations (
+		`CREATE TABLE chats (
 			name TEXT PRIMARY KEY,
 			status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
 			task TEXT NOT NULL,
@@ -203,12 +203,12 @@ func writeVersion1(t *testing.T, messages ...string) string {
 			custom TEXT NOT NULL,
 			roster TEXT NOT NULL
 		) STRICT`,
-		`INSERT INTO conversations (name, status, task, ticket, seat, directory, prompts, custom, roster)
+		`INSERT INTO chats (name, status, task, ticket, seat, directory, prompts, custom, roster)
 			VALUES ('job', 'open', '', '', '', '', '[]', '', '[]')`,
 	}
 	stmts = append(stmts, messages...)
 	stmts = append(stmts,
-		`INSERT INTO messages (conversation, time, sender, recipients, body, txid, kind)
+		`INSERT INTO messages (chat, time, sender, recipients, body, txid, kind)
 			VALUES ('job', 't', 'alice', '[]', 'keep', 'k', 'say')`,
 		schemaStmt(t, "members"),
 	)
@@ -254,26 +254,26 @@ func TestOpenRejectsVersion1WithoutReOrBothMessageKeys(t *testing.T) {
 	}{
 		{"previous binary", []string{
 			previousMessages,
-			`CREATE INDEX messages_conversation_seq ON messages (conversation, seq)`,
+			`CREATE INDEX messages_chat_seq ON messages (chat, seq)`,
 		}},
-		{"no conversation seq key", []string{
-			replyMessagesHead + `, UNIQUE (conversation, seq, kind)) STRICT`,
+		{"no chat seq key", []string{
+			replyMessagesHead + `, UNIQUE (chat, seq, kind)) STRICT`,
 		}},
-		{"no conversation seq kind key", []string{
-			replyMessagesHead + `, UNIQUE (conversation, seq)) STRICT`,
+		{"no chat seq kind key", []string{
+			replyMessagesHead + `, UNIQUE (chat, seq)) STRICT`,
 		}},
 		{"keys in another column order", []string{
-			replyMessagesHead + `, UNIQUE (seq, conversation), UNIQUE (conversation, kind, seq)) STRICT`,
+			replyMessagesHead + `, UNIQUE (seq, chat), UNIQUE (chat, kind, seq)) STRICT`,
 		}},
 		{"unique indexes that are partial", []string{
 			replyMessagesHead + `) STRICT`,
-			`CREATE UNIQUE INDEX messages_cs ON messages (conversation, seq) WHERE kind = 'say'`,
-			`CREATE UNIQUE INDEX messages_csk ON messages (conversation, seq, kind) WHERE kind = 'say'`,
+			`CREATE UNIQUE INDEX messages_cs ON messages (chat, seq) WHERE kind = 'say'`,
+			`CREATE UNIQUE INDEX messages_csk ON messages (chat, seq, kind) WHERE kind = 'say'`,
 		}},
 		{"indexes that are not unique", []string{
 			replyMessagesHead + `) STRICT`,
-			`CREATE INDEX messages_cs ON messages (conversation, seq)`,
-			`CREATE INDEX messages_csk ON messages (conversation, seq, kind)`,
+			`CREATE INDEX messages_cs ON messages (chat, seq)`,
+			`CREATE INDEX messages_csk ON messages (chat, seq, kind)`,
 		}},
 	}
 	for _, tc := range cases {
@@ -301,8 +301,8 @@ func TestOpenRejectsVersion1WithoutReOrBothMessageKeys(t *testing.T) {
 func TestOpenMatchesMessageKeysByColumnsNotName(t *testing.T) {
 	dir := writeVersion1(t,
 		replyMessagesHead+`) STRICT`,
-		`CREATE UNIQUE INDEX messages_cs ON messages (conversation, seq)`,
-		`CREATE UNIQUE INDEX messages_csk ON messages (conversation, seq, kind)`,
+		`CREATE UNIQUE INDEX messages_cs ON messages (chat, seq)`,
+		`CREATE UNIQUE INDEX messages_csk ON messages (chat, seq, kind)`,
 	)
 	st, err := Open(dir)
 	if err != nil {
@@ -328,9 +328,9 @@ func TestNewDatabaseHasReplyColumnAndMessageKeys(t *testing.T) {
 	}
 	for _, want := range []string{
 		"re INTEGER CHECK (re < seq)",
-		"UNIQUE (conversation, seq)",
-		"UNIQUE (conversation, seq, kind)",
-		"FOREIGN KEY (conversation, re) REFERENCES messages (conversation, seq)",
+		"UNIQUE (chat, seq)",
+		"UNIQUE (chat, seq, kind)",
+		"FOREIGN KEY (chat, re) REFERENCES messages (chat, seq)",
 	} {
 		if !strings.Contains(tableSQL, want) {
 			t.Fatalf("messages sql lacks %q: %s", want, tableSQL)
@@ -343,11 +343,11 @@ func TestNewDatabaseHasReplyColumnAndMessageKeys(t *testing.T) {
 		}
 	}()
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_conversation_seq'`).Scan(&n); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_chat_seq'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
-		t.Fatal("messages_conversation_seq still exists")
+		t.Fatal("messages_chat_seq still exists")
 	}
 }
 

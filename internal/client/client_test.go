@@ -52,15 +52,15 @@ func TestDroppedCallRetriesTheSameBody(t *testing.T) {
 			_ = conn.Close()
 			return
 		}
-		_, _ = io.WriteString(w, `{"outcome":"refused","reason":"conversation not found"}`)
+		_, _ = io.WriteString(w, `{"outcome":"refused","reason":"chat not found"}`)
 	}))
 	defer srv.Close()
 
 	name := "bob"
 	res, err := Do(context.Background(), srv.Listener.Addr().String(), "wait", "", WaitRequest{
-		Conversation: "job",
-		Cursor:       3,
-		Name:         &name,
+		Chat:   "job",
+		Cursor: 3,
+		Name:   &name,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -108,17 +108,17 @@ func TestDroppedLaunchReturnsTheStoredRow(t *testing.T) {
 			_, _ = io.WriteString(w, `{"outcome":"refused","reason":"`+bus.ReasonAlreadyLaunched+`"}`)
 			return
 		}
-		_, _ = io.WriteString(w, `{"outcome":"ok","member":{"name":"alpha","status":"launched","launched":"2026-10-10T01:00:00Z","registered":"","pid":424242}}`)
+		_, _ = io.WriteString(w, `{"outcome":"ok","member":{"name":"alpha","status":"launched","launched":"2026-10-10T01:00:00Z","joined":"","pid":424242}}`)
 	}))
 	defer srv.Close()
 
 	status := "launched"
 	pid := int64(424242)
 	res, err := Do(context.Background(), srv.Listener.Addr().String(), "member", "", MemberRequest{
-		Conversation: "job",
-		Name:         "alpha",
-		Status:       &status,
-		PID:          &pid,
+		Chat:   "job",
+		Name:   "alpha",
+		Status: &status,
+		PID:    &pid,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -149,9 +149,9 @@ func TestSecondLaunchIsStillRefused(t *testing.T) {
 
 	status := "launched"
 	res, err := Do(context.Background(), srv.Listener.Addr().String(), "member", "", MemberRequest{
-		Conversation: "job",
-		Name:         "alpha",
-		Status:       &status,
+		Chat:   "job",
+		Name:   "alpha",
+		Status: &status,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -193,9 +193,9 @@ func TestDroppedMemberRefusalIsReturned(t *testing.T) {
 
 	status := "running"
 	res, err := Do(context.Background(), srv.Listener.Addr().String(), "member", "", MemberRequest{
-		Conversation: "job",
-		Name:         "alpha",
-		Status:       &status,
+		Chat:   "job",
+		Name:   "alpha",
+		Status: &status,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -278,9 +278,9 @@ func TestClosedConnectionIsNotTimeout(t *testing.T) {
 	}()
 
 	res, err := Do(context.Background(), ln.Addr().String(), "wait", "", WaitRequest{
-		Conversation: "job",
-		Cursor:       1,
-		Name:         strPtr("bob"),
+		Chat:   "job",
+		Cursor: 1,
+		Name:   strPtr("bob"),
 	})
 	_ = ln.Close()
 	<-done
@@ -339,7 +339,7 @@ func TestCompletedOutcomesAreNotRetried(t *testing.T) {
 	for _, body := range []string{
 		`{"outcome":"timeout"}`,
 		`{"outcome":"unavailable","reason":"could not make the change durable"}`,
-		`{"outcome":"refused","reason":"conversation not found"}`,
+		`{"outcome":"refused","reason":"chat not found"}`,
 		`{"outcome":"ok","messages":[]}`,
 	} {
 		t.Run(body, func(t *testing.T) {
@@ -350,9 +350,9 @@ func TestCompletedOutcomesAreNotRetried(t *testing.T) {
 			}))
 			defer srv.Close()
 			res, err := Do(context.Background(), srv.Listener.Addr().String(), "read", "", ReadRequest{
-				Conversation: "job",
-				Cursor:       0,
-				Limit:        1,
+				Chat:   "job",
+				Cursor: 0,
+				Limit:  1,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -365,7 +365,7 @@ func TestCompletedOutcomesAreNotRetried(t *testing.T) {
 					t.Fatalf("result %+v", res)
 				}
 			}
-			if body == `{"outcome":"refused","reason":"conversation not found"}` {
+			if body == `{"outcome":"refused","reason":"chat not found"}` {
 				if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonNotFound {
 					t.Fatalf("result %+v", res)
 				}
@@ -390,7 +390,7 @@ func TestBadAddressDoesNotDial(t *testing.T) {
 	}
 }
 
-func TestPublishSendsEmptyToAndTheCallerKey(t *testing.T) {
+func TestSendSendsEmptyToAndTheCallerKey(t *testing.T) {
 	var got []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var err error
@@ -402,11 +402,11 @@ func TestPublishSendsEmptyToAndTheCallerKey(t *testing.T) {
 		_, _ = io.WriteString(w, `{"outcome":"ok","already_stored":false,"message":{"seq":1,"time":"t","from":"alice","to":[],"body":"<b>","txid":"k"}}`)
 	}))
 	defer srv.Close()
-	res, err := Do(context.Background(), srv.Listener.Addr().String(), "publish", "", PublishRequest{
-		Conversation: "job",
-		From:         "alice",
-		Body:         "<b>",
-		TxID:         "k",
+	res, err := Do(context.Background(), srv.Listener.Addr().String(), "send", "", SendRequest{
+		Chat: "job",
+		From: "alice",
+		Body: "<b>",
+		TxID: "k",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -419,7 +419,7 @@ func TestPublishSendsEmptyToAndTheCallerKey(t *testing.T) {
 	}
 }
 
-func TestInvalidUTF8PublishBodyDoesNotPost(t *testing.T) {
+func TestInvalidUTF8SendBodyDoesNotPost(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -427,11 +427,11 @@ func TestInvalidUTF8PublishBodyDoesNotPost(t *testing.T) {
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
-	res, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation: "job",
-		From:         "alice",
-		Body:         string([]byte{0xff}),
-		TxID:         "k",
+	res, err := Do(context.Background(), addr, "send", "", SendRequest{
+		Chat: "job",
+		From: "alice",
+		Body: string([]byte{0xff}),
+		TxID: "k",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -442,11 +442,11 @@ func TestInvalidUTF8PublishBodyDoesNotPost(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("calls = %d", calls)
 	}
-	okRes, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation: "job",
-		From:         "alice",
-		Body:         "café",
-		TxID:         "ok",
+	okRes, err := Do(context.Background(), addr, "send", "", SendRequest{
+		Chat: "job",
+		From: "alice",
+		Body: "café",
+		TxID: "ok",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -456,7 +456,7 @@ func TestInvalidUTF8PublishBodyDoesNotPost(t *testing.T) {
 	}
 }
 
-func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
+func TestInvalidUTF8SendKeyDoesNotPost(t *testing.T) {
 	calls := 0
 	var got []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -471,11 +471,11 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
-	res, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation: "job",
-		From:         "alice",
-		Body:         "hi",
-		TxID:         string([]byte{0xff}),
+	res, err := Do(context.Background(), addr, "send", "", SendRequest{
+		Chat: "job",
+		From: "alice",
+		Body: "hi",
+		TxID: string([]byte{0xff}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -483,11 +483,11 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonKeyUTF8 {
 		t.Fatalf("result %+v", res)
 	}
-	both, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation: "job",
-		From:         "alice",
-		Body:         string([]byte{0xfe}),
-		TxID:         string([]byte{0xff}),
+	both, err := Do(context.Background(), addr, "send", "", SendRequest{
+		Chat: "job",
+		From: "alice",
+		Body: string([]byte{0xfe}),
+		TxID: string([]byte{0xff}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -498,11 +498,11 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("calls = %d", calls)
 	}
-	okRes, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation: "job",
-		From:         "alice",
-		Body:         "hi",
-		TxID:         "\uFFFD",
+	okRes, err := Do(context.Background(), addr, "send", "", SendRequest{
+		Chat: "job",
+		From: "alice",
+		Body: "hi",
+		TxID: "\uFFFD",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -510,10 +510,10 @@ func TestInvalidUTF8PublishKeyDoesNotPost(t *testing.T) {
 	if okRes.Outcome != bus.OutcomeOK || calls != 1 || !bytes.Contains(got, []byte(`"txid":"`+"\uFFFD"+`"`)) {
 		t.Fatalf("outcome %s calls %d body %s", okRes.Outcome, calls, got)
 	}
-	if _, err := Do(context.Background(), addr, "publish", "", PublishRequest{
-		Conversation: "job",
-		From:         "alice",
-		Body:         "hi",
+	if _, err := Do(context.Background(), addr, "send", "", SendRequest{
+		Chat: "job",
+		From: "alice",
+		Body: "hi",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -535,14 +535,14 @@ func TestReadOmitsANilName(t *testing.T) {
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
-	if _, err := Do(context.Background(), addr, "read", "", ReadRequest{Conversation: "job", Cursor: 0, Limit: 2}); err != nil {
+	if _, err := Do(context.Background(), addr, "read", "", ReadRequest{Chat: "job", Cursor: 0, Limit: 2}); err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(got, []byte(`"name"`)) {
 		t.Fatalf("name was sent: %s", got)
 	}
 	empty := ""
-	if _, err := Do(context.Background(), addr, "read", "", ReadRequest{Conversation: "job", Cursor: 0, Limit: 2, Name: &empty}); err != nil {
+	if _, err := Do(context.Background(), addr, "read", "", ReadRequest{Chat: "job", Cursor: 0, Limit: 2, Name: &empty}); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Contains(got, []byte(`"name":""`)) {
@@ -579,7 +579,7 @@ func TestTokenHeaderIsRetriedWithTheSameValue(t *testing.T) {
 			_ = conn.Close()
 			return
 		}
-		_, _ = io.WriteString(w, `{"outcome":"ok","conversations":[]}`)
+		_, _ = io.WriteString(w, `{"outcome":"ok","chats":[]}`)
 	}))
 	defer srv.Close()
 
@@ -614,7 +614,7 @@ func TestUnusableTokenDoesNotDial(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = io.WriteString(w, `{"outcome":"ok","conversations":[]}`)
+		_, _ = io.WriteString(w, `{"outcome":"ok","chats":[]}`)
 	}))
 	defer srv.Close()
 	_, err := Do(context.Background(), srv.Listener.Addr().String(), "list", secret, struct{}{})
@@ -690,7 +690,7 @@ func TestWatchSendsOnlySetFieldsAndDecodesMoreAndRev(t *testing.T) {
 		mu.Lock()
 		path, got = r.URL.Path, body
 		mu.Unlock()
-		_, _ = io.WriteString(w, `{"outcome":"ok","messages":[{"seq":7,"time":"t","from":"a","to":[],"body":"b","txid":"k","kind":"say","conversation":"job"}],"more":true,"rev":0}`)
+		_, _ = io.WriteString(w, `{"outcome":"ok","messages":[{"seq":7,"time":"t","from":"a","to":[],"body":"b","txid":"k","kind":"say","chat":"job"}],"more":true,"rev":0}`)
 	}))
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
@@ -707,11 +707,11 @@ func TestWatchSendsOnlySetFieldsAndDecodesMoreAndRev(t *testing.T) {
 		t.Fatalf("rev-only watch posted %s %s", p, body)
 	}
 	cursor, limit := int64(0), int64(5)
-	res, err := Do(context.Background(), addr, "watch", "", WatchRequest{Conversation: "job", Cursor: &cursor, Limit: &limit})
+	res, err := Do(context.Background(), addr, "watch", "", WatchRequest{Chat: "job", Cursor: &cursor, Limit: &limit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, body := posted(); body != `{"conversation":"job","cursor":0,"limit":5}` {
+	if _, body := posted(); body != `{"chat":"job","cursor":0,"limit":5}` {
 		t.Fatalf("cursor watch posted %s", body)
 	}
 	if res.More == nil || !*res.More || res.Rev == nil || *res.Rev != 0 {
@@ -724,7 +724,7 @@ func TestWatchSendsOnlySetFieldsAndDecodesMoreAndRev(t *testing.T) {
 	if _, body := posted(); body != `{"cursor":0,"limit":0}` {
 		t.Fatalf("zero limit posted %s", body)
 	}
-	if res.Messages == nil || len(*res.Messages) != 1 || (*res.Messages)[0].Conversation != "job" {
+	if res.Messages == nil || len(*res.Messages) != 1 || (*res.Messages)[0].Chat != "job" {
 		t.Fatalf("messages = %+v", res.Messages)
 	}
 }

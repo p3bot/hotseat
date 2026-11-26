@@ -29,17 +29,17 @@ func TestNewestOrdersBySeqNotTime(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	publishAt := func(conv, body, when string) {
+	sendAt := func(chat, body, when string) {
 		t.Helper()
-		if _, _, _, err := st.Publish(ctx, Publish{
-			Conversation: conv, From: "alice", Body: body, TxID: body, Kind: "say", Time: when,
+		if _, _, _, err := st.Send(ctx, Send{
+			Chat: chat, From: "alice", Body: body, TxID: body, Kind: "say", Time: when,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	publishAt("beta", "first", "2020-01-02T00:00:05Z")
-	publishAt("alpha", "second", "2020-01-02T00:00:05Z")
-	publishAt("beta", "third", "2020-01-02T00:00:01Z")
+	sendAt("beta", "first", "2020-01-02T00:00:05Z")
+	sendAt("alpha", "second", "2020-01-02T00:00:05Z")
+	sendAt("beta", "third", "2020-01-02T00:00:01Z")
 	got, err := st.Newest(ctx, 3, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -48,17 +48,17 @@ func TestNewestOrdersBySeqNotTime(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 	want := []struct {
-		conv, body string
+		chat, body string
 		seq        int64
 	}{{"beta", "third", 3}, {"alpha", "second", 2}, {"beta", "first", 1}}
 	for i, w := range want {
-		if got[i].Conversation != w.conv || got[i].Body != w.body || got[i].Seq != w.seq {
+		if got[i].Chat != w.chat || got[i].Body != w.body || got[i].Seq != w.seq {
 			t.Fatalf("newest[%d] = %+v, want %+v", i, got[i], w)
 		}
 	}
 }
 
-func TestSeqIncreasesAcrossConversations(t *testing.T) {
+func TestSeqIncreasesAcrossChats(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	for _, name := range []string{"a", "b"} {
@@ -66,28 +66,28 @@ func TestSeqIncreasesAcrossConversations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i, conv := range []string{"a", "b", "a", "b"} {
-		m, _, _, err := st.Publish(ctx, Publish{
-			Conversation: conv, From: "alice", Body: fmt.Sprintf("m%d", i), TxID: fmt.Sprintf("k%d", i), Kind: "say", Time: "t",
+	for i, chat := range []string{"a", "b", "a", "b"} {
+		m, _, _, err := st.Send(ctx, Send{
+			Chat: chat, From: "alice", Body: fmt.Sprintf("m%d", i), TxID: fmt.Sprintf("k%d", i), Kind: "say", Time: "t",
 		})
 		if err != nil || m.Seq != int64(i+1) {
-			t.Fatalf("publish %d to %s = %+v err=%v", i, conv, m, err)
+			t.Fatalf("send %d to %s = %+v err=%v", i, chat, m, err)
 		}
 	}
-	for conv, want := range map[string][]int64{"a": {1, 3}, "b": {2, 4}} {
-		_, msgs, err := st.Transcript(ctx, conv, 0)
+	for chat, want := range map[string][]int64{"a": {1, 3}, "b": {2, 4}} {
+		_, msgs, err := st.Transcript(ctx, chat, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(msgs) != 2 || msgs[0].Seq != want[0] || msgs[1].Seq != want[1] {
-			t.Fatalf("%s transcript = %+v", conv, msgs)
+			t.Fatalf("%s transcript = %+v", chat, msgs)
 		}
-		_, after, err := st.Transcript(ctx, conv, want[0])
+		_, after, err := st.Transcript(ctx, chat, want[0])
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(after) != 1 || after[0].Seq != want[1] {
-			t.Fatalf("%s after %d = %+v", conv, want[0], after)
+			t.Fatalf("%s after %d = %+v", chat, want[0], after)
 		}
 	}
 }
@@ -112,8 +112,8 @@ func TestOpenRelativeDirectory(t *testing.T) {
 	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"bob"},
+	if _, _, _, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"bob"},
 		Body: "hello", TxID: "k", Time: "t",
 	}); err != nil {
 		t.Fatal(err)
@@ -323,7 +323,7 @@ func TestOpenTightensDirectoryAndRefusesSymlinks(t *testing.T) {
 	}
 }
 
-func TestPublishRestartAndRetry(t *testing.T) {
+func TestSendRestartAndRetry(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 	st, err := Open(dir)
@@ -336,57 +336,57 @@ func TestPublishRestartAndRetry(t *testing.T) {
 	if _, _, err := st.Create(ctx, "other", Binding{}); err != nil {
 		t.Fatal(err)
 	}
-	againConv, already, err := st.Create(ctx, "job", Binding{})
-	if err != nil || !already || againConv.Name != "job" || againConv.Status != StatusOpen {
-		t.Fatalf("duplicate create = %+v already=%v err=%v", againConv, already, err)
+	againChat, already, err := st.Create(ctx, "job", Binding{})
+	if err != nil || !already || againChat.Name != "job" || againChat.Status != StatusOpen {
+		t.Fatalf("duplicate create = %+v already=%v err=%v", againChat, already, err)
 	}
-	first, _, already, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
+	first, _, already, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"bob", "carol"},
 		Body: "one", TxID: "k", Time: "2026-10-03T07:00:00Z",
 	})
 	if err != nil || already || first.Seq != 1 {
 		t.Fatalf("first = %+v already=%v err=%v", first, already, err)
 	}
-	other, _, _, err := st.Publish(ctx, Publish{
-		Conversation: "other", From: "alice", To: []string{"bob"},
+	other, _, _, err := st.Send(ctx, Send{
+		Chat: "other", From: "alice", To: []string{"bob"},
 		Body: "o", TxID: "k", Time: "2026-10-03T07:00:01Z",
 	})
 	if err != nil || other.Seq != 2 {
-		t.Fatalf("other conversation seq = %+v err=%v", other, err)
+		t.Fatalf("other chat seq = %+v err=%v", other, err)
 	}
-	again, _, already, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
+	again, _, already, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"bob", "carol"},
 		Body: "one", TxID: "k", Time: "later",
 	})
 	if err != nil || !already || again.Seq != 1 || again.Time != first.Time {
 		t.Fatalf("retry = %+v already=%v err=%v", again, already, err)
 	}
-	if _, _, _, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"carol", "bob"},
+	if _, _, _, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"carol", "bob"},
 		Body: "one", TxID: "k", Time: "later",
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("reordered to: %v", err)
 	}
-	if _, _, err := st.CloseConversation(ctx, "job"); err != nil {
+	if _, _, err := st.CloseChat(ctx, "job"); err != nil {
 		t.Fatal(err)
 	}
-	closedRetry, closedConv, already, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"bob", "carol"},
+	closedRetry, closedChat, already, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"bob", "carol"},
 		Body: "one", TxID: "k", Time: "later",
 	})
-	if err != nil || !already || closedRetry.Seq != 1 || closedConv.Status != StatusClosed {
-		t.Fatalf("closed retry = %+v status=%s already=%v err=%v", closedRetry, closedConv.Status, already, err)
+	if err != nil || !already || closedRetry.Seq != 1 || closedChat.Status != StatusClosed {
+		t.Fatalf("closed retry = %+v status=%s already=%v err=%v", closedRetry, closedChat.Status, already, err)
 	}
-	late, lateConv, already, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"bob"},
+	late, lateChat, already, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"bob"},
 		Body: "new", TxID: "new", Time: "later",
 	})
-	if err != nil || already || late.Seq != 3 || lateConv.Status != StatusClosed || late.Body != "new" {
-		t.Fatalf("publish after close = %+v status=%s already=%v err=%v", late, lateConv.Status, already, err)
+	if err != nil || already || late.Seq != 3 || lateChat.Status != StatusClosed || late.Body != "new" {
+		t.Fatalf("send after close = %+v status=%s already=%v err=%v", late, lateChat.Status, already, err)
 	}
-	closedConv, already, err = st.Create(ctx, "job", Binding{})
-	if err != nil || !already || closedConv.Status != StatusClosed {
-		t.Fatalf("create after close = %+v already=%v err=%v", closedConv, already, err)
+	closedChat, already, err = st.Create(ctx, "job", Binding{})
+	if err != nil || !already || closedChat.Status != StatusClosed {
+		t.Fatalf("create after close = %+v already=%v err=%v", closedChat, already, err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
@@ -420,8 +420,8 @@ func TestScanStopsBeforeLaterMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 1; i <= 3; i++ {
-		if _, _, _, err := st.Publish(ctx, Publish{
-			Conversation: "job", From: "alice", To: []string{"bob"},
+		if _, _, _, err := st.Send(ctx, Send{
+			Chat: "job", From: "alice", To: []string{"bob"},
 			Body: fmt.Sprintf("m%d", i), TxID: fmt.Sprintf("k%d", i), Time: "t",
 		}); err != nil {
 			t.Fatal(err)
@@ -449,14 +449,14 @@ func TestScanStopsBeforeLaterMessages(t *testing.T) {
 		t.Fatalf("rest = %v", all)
 	}
 	if _, err := st.Scan(ctx, "missing", 0, func(Message) bool {
-		t.Fatal("scanned a missing conversation")
+		t.Fatal("scanned a missing chat")
 		return false
 	}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing = %v", err)
 	}
 }
 
-func TestConcurrentPublish(t *testing.T) {
+func TestConcurrentSend(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
@@ -469,8 +469,8 @@ func TestConcurrentPublish(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _, _, err := st.Publish(ctx, Publish{
-				Conversation: "job", From: "alice", To: []string{"bob"},
+			_, _, _, err := st.Send(ctx, Send{
+				Chat: "job", From: "alice", To: []string{"bob"},
 				Body: fmt.Sprintf("m%d", i), TxID: fmt.Sprintf("k%d", i), Time: "t",
 			})
 			errs <- err
@@ -517,7 +517,7 @@ func TestNewDatabaseSchema(t *testing.T) {
 	if version != SchemaVersion || !containsCol(cols, "txid") || !containsCol(cols, "kind") {
 		t.Fatalf("version=%s cols=%v", version, cols)
 	}
-	if !strings.Contains(tableSQL, "UNIQUE (conversation, sender, txid)") || !strings.Contains(tableSQL, "seq INTEGER PRIMARY KEY AUTOINCREMENT") {
+	if !strings.Contains(tableSQL, "UNIQUE (chat, sender, txid)") || !strings.Contains(tableSQL, "seq INTEGER PRIMARY KEY AUTOINCREMENT") {
 		t.Fatalf("sql=%s", tableSQL)
 	}
 	db, err := sql.Open("sqlite", filepath.Join(dir, FileName))
@@ -538,41 +538,41 @@ func TestNewDatabaseSchema(t *testing.T) {
 	}
 }
 
-func TestPublishAttemptIsPerSender(t *testing.T) {
+func TestSendAttemptIsPerSender(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
-	alice, _, already, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"bob"},
+	alice, _, already, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"bob"},
 		Body: "one", TxID: "1", Time: "t",
 	})
 	if err != nil || already || alice.Seq != 1 {
 		t.Fatalf("alice = %+v already=%v err=%v", alice, already, err)
 	}
-	bob, _, already, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "bob", To: []string{"bob"},
+	bob, _, already, err := st.Send(ctx, Send{
+		Chat: "job", From: "bob", To: []string{"bob"},
 		Body: "one", TxID: "1", Time: "t2",
 	})
 	if err != nil || already || bob.Seq != 2 || bob.From != "bob" {
 		t.Fatalf("bob = %+v already=%v err=%v", bob, already, err)
 	}
-	again, _, already, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"bob"},
+	again, _, already, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"bob"},
 		Body: "one", TxID: "1", Time: "later",
 	})
 	if err != nil || !already || again.Seq != 1 || again.Time != alice.Time {
 		t.Fatalf("retry = %+v already=%v err=%v", again, already, err)
 	}
-	if _, _, _, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"carol"},
+	if _, _, _, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"carol"},
 		Body: "one", TxID: "1", Time: "later",
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("different to: %v", err)
 	}
-	fresh, _, already, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{"bob"},
+	fresh, _, already, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{"bob"},
 		Body: "one", TxID: "2", Time: "t3",
 	})
 	if err != nil || already || fresh.Seq != 3 {
@@ -659,6 +659,50 @@ func TestOpenRejectsVersion1WithoutKindOrMembers(t *testing.T) {
 	})
 }
 
+func TestOpenRefusesTheConversationShapeAndLeavesTheFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The previous binary's shape: the same tables under the conversation and registered names.
+	old := strings.NewReplacer("chats", "conversations", "chat", "conversation", "joined", "registered")
+	stmts := []string{}
+	for _, stmt := range schemaStmts {
+		stmts = append(stmts, old.Replace(stmt))
+	}
+	stmts = append(stmts,
+		`INSERT INTO meta (key, value) VALUES ('schema', '1')`,
+		`INSERT INTO conversations (`+old.Replace(chatColumns)+`) VALUES ('job', 'open', '', '', '', '', '[]', '', '[]')`,
+	)
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); !errors.Is(err, ErrSchema) {
+		t.Fatalf("open = %v", err)
+	}
+	raw := openRaw(t, dir)
+	defer func() {
+		if err := raw.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	var name string
+	if err := raw.QueryRow(`SELECT name FROM conversations`).Scan(&name); err != nil || name != "job" {
+		t.Fatalf("old row = %q %v", name, err)
+	}
+	var n int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chats'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("chats table count = %d %v", n, err)
+	}
+}
+
 func writeOldDB(t *testing.T, withKind bool) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -673,7 +717,7 @@ func writeOldDB(t *testing.T, withKind bool) string {
 	stmts := []string{
 		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`,
 		`INSERT INTO meta (key, value) VALUES ('schema', '1')`,
-		`CREATE TABLE conversations (
+		`CREATE TABLE chats (
 			name TEXT PRIMARY KEY,
 			status TEXT NOT NULL,
 			task TEXT NOT NULL,
@@ -684,22 +728,22 @@ func writeOldDB(t *testing.T, withKind bool) string {
 			custom TEXT NOT NULL,
 			roster TEXT NOT NULL
 		) STRICT`,
-		`INSERT INTO conversations (name, status, task, ticket, seat, directory, prompts, custom, roster)
+		`INSERT INTO chats (name, status, task, ticket, seat, directory, prompts, custom, roster)
 			VALUES ('job', 'open', '', '', '', '', '[]', '', '[]')`,
 		`CREATE TABLE messages (
-			conversation TEXT NOT NULL,
+			chat TEXT NOT NULL,
 			seq INTEGER NOT NULL,
 			time TEXT NOT NULL,
 			sender TEXT NOT NULL,
 			recipients TEXT NOT NULL,
 			body TEXT NOT NULL,
 			txid TEXT NOT NULL` + kindCol + `,
-			PRIMARY KEY (conversation, seq)
+			PRIMARY KEY (chat, seq)
 		) STRICT`,
 	}
-	insert := `INSERT INTO messages (conversation, seq, time, sender, recipients, body, txid) VALUES ('job', 1, 't', 'alice', '[]', 'keep', 'k')`
+	insert := `INSERT INTO messages (chat, seq, time, sender, recipients, body, txid) VALUES ('job', 1, 't', 'alice', '[]', 'keep', 'k')`
 	if withKind {
-		insert = `INSERT INTO messages (conversation, seq, time, sender, recipients, body, txid, kind) VALUES ('job', 1, 't', 'alice', '[]', 'keep', 'k', 'say')`
+		insert = `INSERT INTO messages (chat, seq, time, sender, recipients, body, txid, kind) VALUES ('job', 1, 't', 'alice', '[]', 'keep', 'k', 'say')`
 	}
 	stmts = append(stmts, insert)
 	for _, stmt := range stmts {
@@ -793,8 +837,8 @@ func TestSchemaMismatchKeepsMessages(t *testing.T) {
 	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := st.Publish(ctx, Publish{
-		Conversation: "job", From: "alice", To: []string{}, Body: "keep", TxID: "k", Time: "t",
+	if _, _, _, err := st.Send(ctx, Send{
+		Chat: "job", From: "alice", To: []string{}, Body: "keep", TxID: "k", Time: "t",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -906,10 +950,10 @@ func TestNewestBeforeReturnsTheNewestBelowThatSeq(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i, conv := range []string{"alpha", "beta", "alpha", "beta", "alpha"} {
+	for i, chat := range []string{"alpha", "beta", "alpha", "beta", "alpha"} {
 		body := fmt.Sprintf("m%d", i+1)
-		if _, _, _, err := st.Publish(ctx, Publish{
-			Conversation: conv, From: "alice", Body: body, TxID: body, Kind: "say",
+		if _, _, _, err := st.Send(ctx, Send{
+			Chat: chat, From: "alice", Body: body, TxID: body, Kind: "say",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -917,7 +961,7 @@ func TestNewestBeforeReturnsTheNewestBelowThatSeq(t *testing.T) {
 	seqs := func(msgs []Message) string {
 		var out []string
 		for _, m := range msgs {
-			out = append(out, fmt.Sprintf("%s:%d", m.Conversation, m.Seq))
+			out = append(out, fmt.Sprintf("%s:%d", m.Chat, m.Seq))
 		}
 		return strings.Join(out, ",")
 	}
@@ -962,17 +1006,17 @@ func TestListOrdersByNewestMessageSeq(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	publish := func(conv, txid, when string) {
+	send := func(chat, txid, when string) {
 		t.Helper()
-		if _, _, _, err := st.Publish(ctx, Publish{
-			Conversation: conv, From: "alice", To: []string{}, Body: txid, TxID: txid, Kind: "say", Time: when,
+		if _, _, _, err := st.Send(ctx, Send{
+			Chat: chat, From: "alice", To: []string{}, Body: txid, TxID: txid, Kind: "say", Time: when,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	publish("alpha", "a1", "2020-01-01T00:00:09Z")
-	publish("beta", "b1", "2020-01-01T00:00:05Z")
-	publish("alpha", "a2", "2020-01-01T00:00:01Z")
+	send("alpha", "a1", "2020-01-01T00:00:09Z")
+	send("beta", "b1", "2020-01-01T00:00:05Z")
+	send("alpha", "a2", "2020-01-01T00:00:01Z")
 	listed, err := st.List(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -993,14 +1037,14 @@ func TestOpenRejectsVersion1WithCompositeMessageKey(t *testing.T) {
 	for _, stmt := range []string{
 		`PRAGMA journal_mode=WAL`,
 		`CREATE TABLE members (
-			conversation TEXT NOT NULL,
+			chat TEXT NOT NULL,
 			name TEXT NOT NULL,
 			launched TEXT NOT NULL,
-			registered TEXT NOT NULL,
+			joined TEXT NOT NULL,
 			status TEXT NOT NULL,
 			session TEXT NOT NULL,
 			pid INTEGER,
-			PRIMARY KEY (conversation, name)
+			PRIMARY KEY (chat, name)
 		) STRICT`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1026,7 +1070,7 @@ func TestOpenRejectsVersion1WithCompositeMessageKey(t *testing.T) {
 	}
 }
 
-func TestAfterReadsStoreWideOrOneConversationOldestFirst(t *testing.T) {
+func TestAfterReadsStoreWideOrOneChatOldestFirst(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	for _, name := range []string{"alpha", "beta"} {
@@ -1034,10 +1078,10 @@ func TestAfterReadsStoreWideOrOneConversationOldestFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i, conv := range []string{"alpha", "beta", "alpha", "beta"} {
+	for i, chat := range []string{"alpha", "beta", "alpha", "beta"} {
 		key := fmt.Sprintf("k%d", i)
-		if _, _, _, err := st.Publish(ctx, Publish{
-			Conversation: conv, From: "alice", Body: key, TxID: key, Kind: "say", Time: "t",
+		if _, _, _, err := st.Send(ctx, Send{
+			Chat: chat, From: "alice", Body: key, TxID: key, Kind: "say", Time: "t",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1046,14 +1090,14 @@ func TestAfterReadsStoreWideOrOneConversationOldestFirst(t *testing.T) {
 	if err != nil || more {
 		t.Fatalf("store-wide more=%v err=%v", more, err)
 	}
-	if len(all) != 3 || all[0].Seq != 2 || all[0].Conversation != "beta" || all[2].Seq != 4 {
+	if len(all) != 3 || all[0].Seq != 2 || all[0].Chat != "beta" || all[2].Seq != 4 {
 		t.Fatalf("store-wide = %+v", all)
 	}
 	one, more, err := st.After(ctx, "alpha", 0, 10)
 	if err != nil || more {
 		t.Fatalf("alpha more=%v err=%v", more, err)
 	}
-	if len(one) != 2 || one[0].Seq != 1 || one[1].Seq != 3 || one[1].Conversation != "alpha" {
+	if len(one) != 2 || one[0].Seq != 1 || one[1].Seq != 3 || one[1].Chat != "alpha" {
 		t.Fatalf("alpha = %+v", one)
 	}
 }
@@ -1065,8 +1109,8 @@ func TestAfterReportsMorePastTheLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"a", "b", "c"} {
-		if _, _, _, err := st.Publish(ctx, Publish{
-			Conversation: "job", From: "alice", Body: key, TxID: key, Kind: "say", Time: "t",
+		if _, _, _, err := st.Send(ctx, Send{
+			Chat: "job", From: "alice", Body: key, TxID: key, Kind: "say", Time: "t",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1085,7 +1129,7 @@ func TestAfterReportsMorePastTheLimit(t *testing.T) {
 	}
 }
 
-func TestAfterMissingConversationYieldsNothing(t *testing.T) {
+func TestAfterMissingChatYieldsNothing(t *testing.T) {
 	st := openStore(t)
 	got, more, err := st.After(context.Background(), "ghost", 0, 10)
 	if err != nil || more || len(got) != 0 {
@@ -1099,30 +1143,30 @@ func TestCloseReportsAlreadyClosed(t *testing.T) {
 	if _, _, err := st.Create(ctx, "job", Binding{}); err != nil {
 		t.Fatal(err)
 	}
-	conv, already, err := st.CloseConversation(ctx, "job")
-	if err != nil || already || conv.Status != StatusClosed {
-		t.Fatalf("first close = %+v already=%v err=%v", conv, already, err)
+	chat, already, err := st.CloseChat(ctx, "job")
+	if err != nil || already || chat.Status != StatusClosed {
+		t.Fatalf("first close = %+v already=%v err=%v", chat, already, err)
 	}
-	conv, already, err = st.CloseConversation(ctx, "job")
-	if err != nil || !already || conv.Status != StatusClosed {
-		t.Fatalf("second close = %+v already=%v err=%v", conv, already, err)
+	chat, already, err = st.CloseChat(ctx, "job")
+	if err != nil || !already || chat.Status != StatusClosed {
+		t.Fatalf("second close = %+v already=%v err=%v", chat, already, err)
 	}
 }
 
-func TestConversationReturnsTheStoredBindingOrNotFound(t *testing.T) {
+func TestChatReturnsTheStoredBindingOrNotFound(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	if _, _, err := st.Create(ctx, "job", Binding{Task: "t", Seat: "alpha", Roster: []string{"alpha"}}); err != nil {
 		t.Fatal(err)
 	}
-	conv, err := st.Conversation(ctx, "job")
+	chat, err := st.Chat(ctx, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conv.Name != "job" || conv.Status != StatusOpen || conv.Task != "t" || conv.Seat != "alpha" {
-		t.Fatalf("%+v", conv)
+	if chat.Name != "job" || chat.Status != StatusOpen || chat.Task != "t" || chat.Seat != "alpha" {
+		t.Fatalf("%+v", chat)
 	}
-	if _, err := st.Conversation(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := st.Chat(ctx, "missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing: %v", err)
 	}
 }

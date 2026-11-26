@@ -33,13 +33,13 @@ func writeResult(w io.Writer, res client.Result) error {
 	if res.MatchSeq != nil {
 		lw.integer("match_seq", *res.MatchSeq)
 	}
-	if res.Conversation != nil {
+	if res.Chat != nil {
 		lw.header("conversation")
-		lw.conversation(*res.Conversation)
+		lw.conversation(*res.Chat)
 	}
-	if res.Conversations != nil {
+	if res.Chats != nil {
 		lw.header("conversations")
-		for _, conv := range *res.Conversations {
+		for _, conv := range *res.Chats {
 			lw.conversation(conv)
 		}
 	}
@@ -132,7 +132,7 @@ func (lw *lineWriter) stopLines(s *run.StopResult) {
 	}
 }
 
-func (lw *lineWriter) conversation(conv client.Conversation) {
+func (lw *lineWriter) conversation(conv client.Chat) {
 	lw.plain("name", conv.Name)
 	// A caller that only has the name must not print a blank status.
 	if conv.Status != "" {
@@ -183,5 +183,5 @@ func (lw *lineWriter) member(m client.Member) {
 	lw.plain("name", m.Name)
 	lw.plain("status", m.Status)
 	lw.plain("launched", m.Launched)
-	lw.plain("registered", m.Registered)
+	lw.plain("registered", m.Joined)
 }

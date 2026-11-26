@@ -384,7 +384,7 @@ func TestClosedNamedWaitReturnsTail(t *testing.T) {
 	publish(t, ctx, addr, "tail", "alice", []string{"carol"}, "rest", "k2")
 	before := readAll(t, ctx, addr, "tail", 0)
 	closed, _ := runClient(t, ctx, "close", "--address", addr, "--conversation", "tail")
-	if closed.Outcome != bus.OutcomeOK || closed.Conversation == nil || closed.Conversation.Status != "closed" {
+	if closed.Outcome != bus.OutcomeOK || closed.Chat == nil || closed.Chat.Status != "closed" {
 		t.Fatalf("close %+v", closed)
 	}
 	if closed.Message != nil {
@@ -399,7 +399,7 @@ func TestClosedNamedWaitReturnsTail(t *testing.T) {
 		t.Fatalf("wait %s", raw)
 	}
 	pub, raw := runClient(t, ctx, "publish", "--address", addr, "--conversation", "tail", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "later", "--txid", "k3")
-	if pub.Outcome != bus.OutcomeOK || pub.Conversation == nil || pub.Conversation.Status != "closed" || pub.Message == nil || pub.Message.Body != "later" {
+	if pub.Outcome != bus.OutcomeOK || pub.Chat == nil || pub.Chat.Status != "closed" || pub.Message == nil || pub.Message.Body != "later" {
 		t.Fatalf("publish %s", raw)
 	}
 	afterPub := readAll(t, ctx, addr, "tail", 0)
@@ -414,13 +414,13 @@ func TestRefusedNamesTheRule(t *testing.T) {
 	ctx := context.Background()
 	create(t, ctx, addr, "once")
 	again, _ := runClient(t, ctx, "create", "--address", addr, "--name", "once")
-	if again.Outcome != bus.OutcomeOK || again.AlreadyExisted == nil || !*again.AlreadyExisted || again.Conversation == nil || again.Conversation.Status != "open" {
+	if again.Outcome != bus.OutcomeOK || again.AlreadyExisted == nil || !*again.AlreadyExisted || again.Chat == nil || again.Chat.Status != "open" {
 		t.Fatalf("create %+v", again)
 	}
 	create(t, ctx, addr, "shut")
 	runClient(t, ctx, "close", "--address", addr, "--conversation", "shut")
 	pub, _ := runClient(t, ctx, "publish", "--address", addr, "--conversation", "shut", "--from", "alice", "--kind", "say", "--body", "nope", "--txid", "k")
-	if pub.Outcome != bus.OutcomeOK || pub.Conversation == nil || pub.Conversation.Status != "closed" || pub.Message == nil || pub.Message.Body != "nope" {
+	if pub.Outcome != bus.OutcomeOK || pub.Chat == nil || pub.Chat.Status != "closed" || pub.Message == nil || pub.Message.Body != "nope" {
 		t.Fatalf("publish %+v", pub)
 	}
 	empty, _ := runClient(t, ctx, "read", "--address", addr, "--conversation", "shut", "--cursor", "0", "--limit", "5", "--name", "")
@@ -530,7 +530,7 @@ func TestDefaultAddressIsTheLocalBus(t *testing.T) {
 	stop := startBusOn(t, bus.DefaultListen)
 	defer stop()
 	res, raw := runClient(t, context.Background(), "create", "--name", "job")
-	if res.Outcome != bus.OutcomeOK || res.Conversation == nil || res.Conversation.Name != "job" || res.Conversation.Status != "open" {
+	if res.Outcome != bus.OutcomeOK || res.Chat == nil || res.Chat.Name != "job" || res.Chat.Status != "open" {
 		t.Fatalf("create %s", raw)
 	}
 	cmd := newCreateCmd()
@@ -806,7 +806,7 @@ func TestCommandTextRoundTripsBodies(t *testing.T) {
 		if id != tc.txid || res.Outcome != bus.OutcomeOK || res.AlreadyStored == nil || *res.AlreadyStored {
 			t.Fatalf("publish %q id %q %+v\n%s", tc.body, id, res, raw)
 		}
-		if res.Conversation == nil || res.Conversation.Name != "frame" || res.Conversation.Status != "open" || res.Message == nil {
+		if res.Chat == nil || res.Chat.Name != "frame" || res.Chat.Status != "open" || res.Message == nil {
 			t.Fatalf("publish shape %+v", res)
 		}
 		msg := res.Message
@@ -866,17 +866,17 @@ func TestListShowsStatusAndNamesQuietConversations(t *testing.T) {
 	defer stop()
 	ctx := context.Background()
 	empty, _ := runClient(t, ctx, "list", "--address", addr)
-	if empty.Outcome != bus.OutcomeOK || empty.Conversations == nil || len(*empty.Conversations) != 0 {
+	if empty.Outcome != bus.OutcomeOK || empty.Chats == nil || len(*empty.Chats) != 0 {
 		t.Fatalf("empty %+v", empty)
 	}
 	create(t, ctx, addr, "b")
 	create(t, ctx, addr, "a")
 	runClient(t, ctx, "close", "--address", addr, "--conversation", "a")
 	listed, _ := runClient(t, ctx, "list", "--address", addr)
-	if listed.Conversations == nil || len(*listed.Conversations) != 2 {
+	if listed.Chats == nil || len(*listed.Chats) != 2 {
 		t.Fatalf("list %+v", listed)
 	}
-	cs := *listed.Conversations
+	cs := *listed.Chats
 	if cs[0].Name != "a" || cs[0].Status != "closed" || cs[1].Name != "b" || cs[1].Status != "open" {
 		t.Fatalf("list %+v", cs)
 	}
@@ -895,11 +895,11 @@ func TestListOrdersByNewestMessage(t *testing.T) {
 		}
 	}
 	listed, raw := runClient(t, ctx, "list", "--address", addr)
-	if listed.Conversations == nil {
+	if listed.Chats == nil {
 		t.Fatalf("list %s", raw)
 	}
 	var names []string
-	for _, c := range *listed.Conversations {
+	for _, c := range *listed.Chats {
 		names = append(names, c.Name)
 	}
 	if strings.Join(names, ",") != "old,new,quiet" {

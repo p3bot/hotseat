@@ -27,7 +27,7 @@ const (
 )
 
 type recordRequest struct {
-	Conversation *string         `json:"conversation"`
+	Chat         *string         `json:"chat"`
 	Record       *string         `json:"record"`
 	Turn         json.RawMessage `json:"turn"`
 	Findings     json.RawMessage `json:"findings"`
@@ -47,20 +47,20 @@ func (s *server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.svc.Record(r.Context(), req)
-	s.finish(w, "record", deref(req.Conversation), start, res, err)
+	s.finish(w, "record", deref(req.Chat), start, res, err)
 }
 
 func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string `json:"conversation"`
+		Chat *string `json:"chat"`
 	}
 	if !s.decode(w, r, "records", "", start, &req) {
 		return
 	}
-	conv := deref(req.Conversation)
-	res, err := s.svc.Records(r.Context(), conv)
-	s.finish(w, "records", conv, start, res, err)
+	chat := deref(req.Chat)
+	res, err := s.svc.Records(r.Context(), chat)
+	s.finish(w, "records", chat, start, res, err)
 }
 
 // requireSeq reads a required seq field. Absent and null are missing.
@@ -149,15 +149,15 @@ func rawList(raw json.RawMessage, missing, shape string) ([]json.RawMessage, err
 }
 
 // Record checks a /record body and writes the one decision record it selects:
-// the conversation, the record selector, that record's fields, then the
-// holder, which must hold the conversation lease. Fields of other records
+// the chat, the record selector, that record's fields, then the
+// holder, which must hold the chat lease. Fields of other records
 // are ignored. A replay of a stored record is fenced like any other write.
 // Repeated findings and repeated dropped findings are refused here, so the
 // store compares sets that hold no repeat.
 // It changes no rev and wakes no wait or watch.
 func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error) {
-	conv := deref(req.Conversation)
-	if err := requireConversation(conv); err != nil {
+	chat := deref(req.Chat)
+	if err := requireChat(chat); err != nil {
 		return asRefused(err)
 	}
 	if req.Record == nil {
@@ -173,9 +173,9 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if err != nil {
 			return asRefused(err)
 		}
-		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
+		return s.writeRecord(ctx, chat, req.Holder, func(res *Result) (err error) {
 			var set store.Set
-			set, res.Grouping, res.AlreadyStored, err = s.store.WriteSet(ctx, conv, turn, findings)
+			set, res.Grouping, res.AlreadyStored, err = s.store.WriteSet(ctx, chat, turn, findings)
 			res.Set = &set
 			return err
 		})
@@ -188,9 +188,9 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if err != nil {
 			return asRefused(err)
 		}
-		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
+		return s.writeRecord(ctx, chat, req.Holder, func(res *Result) (err error) {
 			var g store.Grouping
-			g, res.AlreadyStored, err = s.store.WriteGrouping(ctx, conv, turn, drops)
+			g, res.AlreadyStored, err = s.store.WriteGrouping(ctx, chat, turn, drops)
 			res.Grouping = &g
 			return err
 		})
@@ -210,9 +210,9 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if !validName(kind) {
 			return refused(ReasonProposalKindBad), nil
 		}
-		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
+		return s.writeRecord(ctx, chat, req.Holder, func(res *Result) (err error) {
 			var settle store.Settle
-			settle, res.AlreadyStored, err = s.store.WriteSettle(ctx, conv, finding, proposal, kind)
+			settle, res.AlreadyStored, err = s.store.WriteSettle(ctx, chat, finding, proposal, kind)
 			res.Settle = &settle
 			return err
 		})
@@ -225,9 +225,9 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if err != nil {
 			return asRefused(err)
 		}
-		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
+		return s.writeRecord(ctx, chat, req.Holder, func(res *Result) (err error) {
 			var fix store.Fix
-			fix, res.AlreadyStored, err = s.store.WriteFix(ctx, conv, finding, fixed)
+			fix, res.AlreadyStored, err = s.store.WriteFix(ctx, chat, finding, fixed)
 			res.Fix = &fix
 			return err
 		})
@@ -236,9 +236,9 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if err != nil {
 			return asRefused(err)
 		}
-		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
+		return s.writeRecord(ctx, chat, req.Holder, func(res *Result) (err error) {
 			var halt store.Halt
-			halt, res.AlreadyStored, err = s.store.WriteHalt(ctx, conv, finding)
+			halt, res.AlreadyStored, err = s.store.WriteHalt(ctx, chat, finding)
 			res.Halt = &halt
 			return err
 		})
@@ -247,9 +247,9 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 		if err != nil {
 			return asRefused(err)
 		}
-		return s.writeRecord(ctx, conv, req.Holder, func(res *Result) (err error) {
+		return s.writeRecord(ctx, chat, req.Holder, func(res *Result) (err error) {
 			var stop store.Stop
-			stop, res.AlreadyStored, err = s.store.WriteStop(ctx, conv, done)
+			stop, res.AlreadyStored, err = s.store.WriteStop(ctx, chat, done)
 			res.Stop = &stop
 			return err
 		})
@@ -258,8 +258,8 @@ func (s *Service) Record(ctx context.Context, req recordRequest) (Result, error)
 	}
 }
 
-// writeRecord runs one validated store write under the service lock and the conversation lease, and maps its error.
-func (s *Service) writeRecord(ctx context.Context, conv string, holder *string, write func(*Result) error) (Result, error) {
+// writeRecord runs one validated store write under the service lock and the chat lease, and maps its error.
+func (s *Service) writeRecord(ctx context.Context, chat string, holder *string, write func(*Result) error) (Result, error) {
 	by, err := requireHolder(holder)
 	if err != nil {
 		return asRefused(err)
@@ -269,7 +269,7 @@ func (s *Service) writeRecord(ctx context.Context, conv string, holder *string, 
 	if err := ctx.Err(); err != nil {
 		return Result{}, ErrDropped
 	}
-	if err := s.fence(ctx, conv, by); err != nil {
+	if err := s.fence(ctx, chat, by); err != nil {
 		return s.fail(err, "record")
 	}
 	res := Result{Outcome: OutcomeOK}
@@ -279,14 +279,14 @@ func (s *Service) writeRecord(ctx context.Context, conv string, holder *string, 
 	return res, nil
 }
 
-// Records returns every decision record of one conversation as six lists.
-func (s *Service) Records(ctx context.Context, conv string) (Result, error) {
-	if err := requireConversation(conv); err != nil {
+// Records returns every decision record of one chat as six lists.
+func (s *Service) Records(ctx context.Context, chat string) (Result, error) {
+	if err := requireChat(chat); err != nil {
 		return asRefused(err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	recs, err := s.store.Records(ctx, conv)
+	recs, err := s.store.Records(ctx, chat)
 	if err != nil {
 		return s.fail(err, "records")
 	}

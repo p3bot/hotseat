@@ -23,7 +23,7 @@ const (
 	LeaseGet     = "get"
 )
 
-// lease is one conductor's hold on a conversation. Times are bus clock readings,
+// lease is one conductor's hold on a chat. Times are bus clock readings,
 // so a reading from time.Now compares on its monotonic clock.
 type lease struct {
 	holder  string
@@ -45,9 +45,9 @@ type LeaseState struct {
 }
 
 type leaseRequest struct {
-	Conversation *string `json:"conversation"`
-	Lease        *string `json:"lease"`
-	Holder       *string `json:"holder"`
+	Chat   *string `json:"chat"`
+	Lease  *string `json:"lease"`
+	Holder *string `json:"holder"`
 }
 
 func (s *server) handleLease(w http.ResponseWriter, r *http.Request) {
@@ -57,16 +57,16 @@ func (s *server) handleLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.svc.Lease(r.Context(), req)
-	s.finish(w, "lease", deref(req.Conversation), start, res, err)
+	s.finish(w, "lease", deref(req.Chat), start, res, err)
 }
 
-// Lease applies one lease operation: the conversation, the selector, then the
+// Lease applies one lease operation: the chat, the selector, then the
 // holder for every selector but get, which ignores one sent. Leases live in
 // process memory under the service lock and never touch the store, change
 // rev, or wake a wait or watch. Expiry is checked here, on each call.
 func (s *Service) Lease(ctx context.Context, req leaseRequest) (Result, error) {
-	conv := deref(req.Conversation)
-	if err := requireConversation(conv); err != nil {
+	chat := deref(req.Chat)
+	if err := requireChat(chat); err != nil {
 		return asRefused(err)
 	}
 	if req.Lease == nil {
@@ -90,11 +90,11 @@ func (s *Service) Lease(ctx context.Context, req leaseRequest) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, ErrDropped
 	}
-	if _, err := s.store.Conversation(ctx, conv); err != nil {
+	if _, err := s.store.Chat(ctx, chat); err != nil {
 		return s.fail(err, "lease")
 	}
 	now := s.clock()
-	cur, live := s.liveLease(conv, now)
+	cur, live := s.liveLease(chat, now)
 	state := &LeaseState{Op: op}
 	res := Result{Outcome: OutcomeOK, Lease: state}
 	switch op {
@@ -109,7 +109,7 @@ func (s *Service) Lease(ctx context.Context, req leaseRequest) (Result, error) {
 		if live {
 			since = cur.since
 		}
-		s.leases[conv] = lease{holder: holder, since: since, expires: now.Add(LeaseTTL)}
+		s.leases[chat] = lease{holder: holder, since: since, expires: now.Add(LeaseTTL)}
 		state.TTL = LeaseTTL
 	case LeaseRenew:
 		// A renew never creates a lease, so a holder that lost one cannot write again.
@@ -119,11 +119,11 @@ func (s *Service) Lease(ctx context.Context, req leaseRequest) (Result, error) {
 			return res, nil
 		}
 		cur.expires = now.Add(LeaseTTL)
-		s.leases[conv] = cur
+		s.leases[chat] = cur
 		state.TTL = LeaseTTL
 	case LeaseRelease:
 		if live && cur.holder == holder {
-			delete(s.leases, conv)
+			delete(s.leases, chat)
 		}
 	case LeaseGet:
 		state.Held = live
@@ -135,28 +135,28 @@ func (s *Service) Lease(ctx context.Context, req leaseRequest) (Result, error) {
 	return res, nil
 }
 
-// liveLease returns conv's lease when it has not expired at now, and forgets one that has.
+// liveLease returns chat's lease when it has not expired at now, and forgets one that has.
 // The caller holds s.mu.
-func (s *Service) liveLease(conv string, now time.Time) (lease, bool) {
-	cur, ok := s.leases[conv]
+func (s *Service) liveLease(chat string, now time.Time) (lease, bool) {
+	cur, ok := s.leases[chat]
 	if !ok {
 		return lease{}, false
 	}
 	if !now.Before(cur.expires) {
-		delete(s.leases, conv)
+		delete(s.leases, chat)
 		return lease{}, false
 	}
 	return cur, true
 }
 
-// fence refuses a conductor write whose holder does not hold conv's live lease.
+// fence refuses a conductor write whose holder does not hold chat's live lease.
 // The caller holds s.mu from this check through the write, so no lease change falls between them.
-// A conversation that does not exist is not found, since it cannot be leased.
-func (s *Service) fence(ctx context.Context, conv, holder string) error {
-	if cur, live := s.liveLease(conv, s.clock()); live && cur.holder == holder {
+// A chat that does not exist is not found, since it cannot be leased.
+func (s *Service) fence(ctx context.Context, chat, holder string) error {
+	if cur, live := s.liveLease(chat, s.clock()); live && cur.holder == holder {
 		return nil
 	}
-	if _, err := s.store.Conversation(ctx, conv); err != nil {
+	if _, err := s.store.Chat(ctx, chat); err != nil {
 		return err
 	}
 	return rule(ReasonLeaseWrite)

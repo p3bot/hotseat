@@ -124,11 +124,11 @@ func TestTokenGateRefusesBeforeWrite(t *testing.T) {
 		t.Fatalf("missing %+v", missing)
 	}
 	listed, _ := authPost(t, base, PathList, "Bearer "+token, []byte(`{}`), secrets)
-	if listed.Outcome != OutcomeOK || listed.Conversations == nil || len(*listed.Conversations) != 0 {
-		t.Fatalf("list after refused create %+v", listed.Conversations)
+	if listed.Outcome != OutcomeOK || listed.Chats == nil || len(*listed.Chats) != 0 {
+		t.Fatalf("list after refused create %+v", listed.Chats)
 	}
 
-	garbage, _ := authPost(t, base, PathPublish, "Bearer "+wrong, []byte("not-json"), secrets)
+	garbage, _ := authPost(t, base, PathSend, "Bearer "+wrong, []byte("not-json"), secrets)
 	if garbage.Outcome != OutcomeRefused || garbage.Reason != ReasonTokenRejected {
 		t.Fatalf("garbage %+v", garbage)
 	}
@@ -142,40 +142,40 @@ func TestTokenGateRefusesBeforeWrite(t *testing.T) {
 	}
 
 	created, _ := authPost(t, base, PathCreate, "Bearer "+token, []byte(`{"name":"job"}`), secrets)
-	if created.Outcome != OutcomeOK || created.Conversation == nil || created.Conversation.Name != "job" {
-		t.Fatalf("create %+v", created.Conversation)
+	if created.Outcome != OutcomeOK || created.Chat == nil || created.Chat.Name != "job" {
+		t.Fatalf("create %+v", created.Chat)
 	}
-	badKey, _ := authPost(t, base, PathPublish, "Bearer "+wrong, []byte(`{"conversation":"job","from":"alice","to":["bob"],"body":"one","txid":"k1"}`), secrets)
+	badKey, _ := authPost(t, base, PathSend, "Bearer "+wrong, []byte(`{"chat":"job","from":"alice","to":["bob"],"body":"one","txid":"k1"}`), secrets)
 	if badKey.Outcome != OutcomeRefused || badKey.Reason != ReasonTokenRejected {
-		t.Fatalf("bad publish %+v", badKey)
+		t.Fatalf("bad send %+v", badKey)
 	}
-	empty, _ := authPost(t, base, PathRead, "Bearer "+token, []byte(`{"conversation":"job","cursor":0,"limit":10}`), secrets)
+	empty, _ := authPost(t, base, PathRead, "Bearer "+token, []byte(`{"chat":"job","cursor":0,"limit":10}`), secrets)
 	if empty.Outcome != OutcomeOK || empty.Messages == nil || len(*empty.Messages) != 0 {
-		t.Fatalf("read after refused publish %+v", empty.Messages)
+		t.Fatalf("read after refused send %+v", empty.Messages)
 	}
 
-	alice := publishAuth(t, base, token, "alice", "k1", "one", secrets)
+	alice := sendAuth(t, base, token, "alice", "k1", "one", secrets)
 	if alice.From != "alice" || alice.Body != "one" {
 		t.Fatalf("alice %+v", alice)
 	}
-	replay, _ := authPost(t, base, PathPublish, "Bearer "+wrong, []byte(`{"conversation":"job","from":"alice","to":["bob"],"body":"one","txid":"k1"}`), secrets)
+	replay, _ := authPost(t, base, PathSend, "Bearer "+wrong, []byte(`{"chat":"job","from":"alice","to":["bob"],"body":"one","txid":"k1"}`), secrets)
 	if replay.Outcome != OutcomeRefused || replay.Reason != ReasonTokenRejected || replay.AlreadyStored != nil {
 		t.Fatalf("replay without token %+v", replay)
 	}
-	again := publishAuth(t, base, token, "alice", "k1", "one", secrets)
+	again := sendAuth(t, base, token, "alice", "k1", "one", secrets)
 	if again.Seq != alice.Seq {
 		t.Fatalf("seq %d then %d", alice.Seq, again.Seq)
 	}
-	carol := publishAuth(t, base, token, "carol", "k2", "two", secrets)
+	carol := sendAuth(t, base, token, "carol", "k2", "two", secrets)
 	if carol.From != "carol" {
 		t.Fatalf("carol %+v", carol)
 	}
-	read, _ := authPost(t, base, PathRead, "Bearer "+token, []byte(`{"conversation":"job","cursor":0,"limit":10}`), secrets)
+	read, _ := authPost(t, base, PathRead, "Bearer "+token, []byte(`{"chat":"job","cursor":0,"limit":10}`), secrets)
 	if read.Messages == nil || len(*read.Messages) != 2 || (*read.Messages)[0].From != "alice" || (*read.Messages)[1].From != "carol" {
 		t.Fatalf("messages %+v", read.Messages)
 	}
 
-	waited, _ := authPost(t, base, PathWait, "", []byte(`{"conversation":"job","cursor":0,"name":"bob","deadline":"30s"}`), secrets)
+	waited, _ := authPost(t, base, PathWait, "", []byte(`{"chat":"job","cursor":0,"name":"bob","deadline":"30s"}`), secrets)
 	if waited.Outcome != OutcomeRefused || waited.Reason != ReasonTokenRequired {
 		t.Fatalf("wait %+v", waited)
 	}
@@ -191,17 +191,17 @@ func TestTokenGateRefusesBeforeWrite(t *testing.T) {
 	if tokenWatch.Outcome != OutcomeOK || tokenWatch.Rev == nil {
 		t.Fatalf("watch with token %+v", tokenWatch)
 	}
-	closed, _ := authPost(t, base, PathClose, "", []byte(`{"conversation":"job"}`), secrets)
+	closed, _ := authPost(t, base, PathClose, "", []byte(`{"chat":"job"}`), secrets)
 	if closed.Outcome != OutcomeRefused || closed.Reason != ReasonTokenRequired {
 		t.Fatalf("close %+v", closed)
 	}
 	still, _ := authPost(t, base, PathList, "Bearer "+token, []byte(`{}`), secrets)
-	if still.Conversations == nil || len(*still.Conversations) != 1 || (*still.Conversations)[0].Status != "open" {
-		t.Fatalf("still %+v", still.Conversations)
+	if still.Chats == nil || len(*still.Chats) != 1 || (*still.Chats)[0].Status != "open" {
+		t.Fatalf("still %+v", still.Chats)
 	}
-	shut, _ := authPost(t, base, PathClose, "Bearer "+token, []byte(`{"conversation":"job"}`), secrets)
-	if shut.Outcome != OutcomeOK || shut.Conversation == nil || shut.Conversation.Status != "closed" {
-		t.Fatalf("shut %+v", shut.Conversation)
+	shut, _ := authPost(t, base, PathClose, "Bearer "+token, []byte(`{"chat":"job"}`), secrets)
+	if shut.Outcome != OutcomeOK || shut.Chat == nil || shut.Chat.Status != "closed" {
+		t.Fatalf("shut %+v", shut.Chat)
 	}
 
 	if bytes.Contains(logs.Bytes(), []byte(token)) || bytes.Contains(logs.Bytes(), []byte(wrong)) {
@@ -218,22 +218,22 @@ func TestLoopbackListenerIgnoresPresentedToken(t *testing.T) {
 	}
 }
 
-func publishAuth(t *testing.T, base, token, from, key, body string, secrets []string) wireMessage {
+func sendAuth(t *testing.T, base, token, from, key, body string, secrets []string) wireMessage {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
-		"conversation": "job",
-		"from":         from,
-		"to":           []string{"bob"},
-		"body":         body,
-		"txid":         key,
-		"kind":         "say",
+		"chat": "job",
+		"from": from,
+		"to":   []string{"bob"},
+		"body": body,
+		"txid": key,
+		"kind": "say",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, _ := authPost(t, base, PathPublish, "Bearer "+token, payload, secrets)
+	res, _ := authPost(t, base, PathSend, "Bearer "+token, payload, secrets)
 	if res.Outcome != OutcomeOK || res.Message == nil || res.AlreadyStored == nil {
-		t.Fatalf("publish %s %+v", key, res)
+		t.Fatalf("send %s %+v", key, res)
 	}
 	return *res.Message
 }

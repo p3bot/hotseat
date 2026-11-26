@@ -342,13 +342,13 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 		t.Fatalf("wrong token %+v", bad)
 	}
 	empty := runBin(t, bin, secrets, "list", "--address", dialAddr, "--token-file", tokenPath)
-	if empty.Outcome != bus.OutcomeOK || empty.Conversations == nil || len(*empty.Conversations) != 0 {
-		t.Fatalf("list %+v", empty.Conversations)
+	if empty.Outcome != bus.OutcomeOK || empty.Chats == nil || len(*empty.Chats) != 0 {
+		t.Fatalf("list %+v", empty.Chats)
 	}
 
 	created := runBin(t, bin, secrets, "create", "--address", dialAddr, "--token-file", tokenPath, "--name", "job")
-	if created.Outcome != bus.OutcomeOK || created.Conversation == nil || created.Conversation.Name != "job" {
-		t.Fatalf("create %+v", created.Conversation)
+	if created.Outcome != bus.OutcomeOK || created.Chat == nil || created.Chat.Name != "job" {
+		t.Fatalf("create %+v", created.Chat)
 	}
 	missed := runBin(t, bin, secrets, "publish", "--address", dialAddr, "--token-file", wrongPath,
 		"--conversation", "job", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "one", "--txid", "k1")
@@ -433,12 +433,12 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 	}
 
 	shut := runBin(t, bin, secrets, "close", "--address", dialAddr, "--token-file", tokenPath, "--conversation", "job")
-	if shut.Outcome != bus.OutcomeOK || shut.Conversation == nil || shut.Conversation.Status != "closed" {
-		t.Fatalf("close %+v", shut.Conversation)
+	if shut.Outcome != bus.OutcomeOK || shut.Chat == nil || shut.Chat.Status != "closed" {
+		t.Fatalf("close %+v", shut.Chat)
 	}
 	final := runBin(t, bin, secrets, "list", "--address", dialAddr, "--token-file", tokenPath)
-	if final.Conversations == nil || len(*final.Conversations) != 1 || (*final.Conversations)[0].Status != "closed" {
-		t.Fatalf("final %+v", final.Conversations)
+	if final.Chats == nil || len(*final.Chats) != 1 || (*final.Chats)[0].Status != "closed" {
+		t.Fatalf("final %+v", final.Chats)
 	}
 
 	stopped := runBinCmd(t, bin, "bus", "stop", "--store", storeDir)

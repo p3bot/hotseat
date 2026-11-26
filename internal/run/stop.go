@@ -156,20 +156,20 @@ func (e *engine) sayStop(class string, re int64) {
 		_ = e.show(fmt.Errorf("publish %s: %w", class, err))
 		return
 	}
-	req := client.PublishRequest{
-		Conversation: e.name,
-		From:         fromRun,
-		To:           []string{fromOwner},
-		Body:         class,
-		TxID:         tx,
-		Kind:         kindError,
+	req := client.SendRequest{
+		Chat: e.name,
+		From: fromRun,
+		To:   []string{fromOwner},
+		Body: class,
+		TxID: tx,
+		Kind: kindError,
 	}
 	if re > 0 {
 		req.Re = &re
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(e.root), releaseLimit)
 	defer cancel()
-	res, err := client.Do(ctx, e.addr, "publish", e.token, req)
+	res, err := client.Do(ctx, e.addr, "send", e.token, req)
 	if err == nil && res.Outcome != bus.OutcomeOK {
 		err = &busError{op: "publish " + class, outcome: res.Outcome, reason: res.Reason}
 	}

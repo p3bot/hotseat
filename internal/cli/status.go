@@ -49,7 +49,7 @@ newest one prints as stop and stop_seq.
 
 A read that answers other than ok prints its outcome and reason and nothing
 else, and exits non-zero. A missing conversation is outcome refused with
-reason conversation not found, and an unreachable bus is outcome
+reason chat not found, and an unreachable bus is outcome
 connection_failure. Otherwise status exits zero whatever the state or the
 run outcome.
 

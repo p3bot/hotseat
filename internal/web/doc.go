@@ -4,45 +4,45 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Package web serves a page that shows messages, lists conversations,
-// reads a transcript, and publishes a message. It is a client of a running
+// Package web serves a page that shows messages, lists chats,
+// reads a transcript, and sends a message. It is a client of a running
 // bus. It does not open the store. hotseat bus start serves the page on
 // 127.0.0.1 at the next port. The default is DefaultListen.
-// The top bar searches every conversation by name, task, and ticket, in the
+// The top bar searches every chat by name, task, and ticket, in the
 // list order. Messages, at /, shows the newest 50 messages across
-// every conversation, newest first. A conversation can appear more than
-// once. The bottom of that group loads the next older 50. Conversations,
-// at /conversations, shows an Open section and then a Closed section. Each
+// every chat, newest first. A chat can appear more than
+// once. The bottom of that group loads the next older 50. Chats,
+// at /chats, shows an Open section and then a Closed section. Each
 // keeps that order and shows the task, ticket, and seat. An empty section
-// stays on the page. A conversation named "." or ".." is shown without a
+// stays on the page. A chat named "." or ".." is shown without a
 // link.
-// Opening /conversations/{name} shows its name, status, task, ticket, seat,
+// Opening /chats/{name} shows its name, status, task, ticket, seat,
 // and directory, then the newest 50 messages, latest first.
 // The bottom of that group loads the next older 50. Loaded groups stay on
 // the page. The page does not ask for a cursor or a limit, and the server
-// does not keep that place. Send posts to /conversations/{name}/messages.
-// A stored send redirects to the conversation. A refused send leaves the form open
+// does not keep that place. Send posts to /chats/{name}/messages.
+// A stored send redirects to the chat. A refused send leaves the form open
 // with the posted values. The page script fills an empty transaction id
 // when Send is submitted. The server forwards the posted id and does not
 // generate one.
 // A message body is rendered as Markdown. The stored text stays in the
 // message. Markdown shows that text, and Copy writes it.
 // Each message row has id msg-<seq>. A message with re shows it in the
-// message foot as a link to /conversations/{name}?before=<re+1>#msg-<re>, so
+// message foot as a link to /chats/{name}?before=<re+1>#msg-<re>, so
 // the referenced message is the top of that group, including one older than
-// the newest 50. A conversation
+// the newest 50. A chat
 // named "." or ".." shows re as text. Send does not take re. A transcript
 // served with before is a history view. Its top links to the newest group,
 // which is the live view.
 // GET /events is a Server-Sent Events stream for one view: Messages with no
-// view parameter, a transcript with conversation=<name>, Conversations
-// with view=list, and a history view with conversation=<name>&view=history.
+// view parameter, a transcript with chat=<name>, Chats
+// with view=list, and a history view with chat=<name>&view=history.
 // It starts after query after=<seq> or the Last-Event-ID header, and the
 // header wins. view=list takes neither. A history stream watches with no
-// cursor, sends conversations and meta, and never sends message or reset.
+// cursor, sends chats and meta, and never sends message or reset.
 // It ignores Last-Event-ID, and after is answered 400. Each stream is its
 // own client of the bus and calls watch, not wait. It sends message with
-// id <seq> for each message of its view, conversations with the Open and
+// id <seq> for each message of its view, chats with the Open and
 // Closed sections and the search index, and, on a transcript, meta with the
 // side panel at stream start and when it changes. A view that missed more
 // than 50 of its messages gets reset, and the stream ends. A request that can
@@ -53,7 +53,7 @@
 // Each visible tab holds one stream for its view and updates in place,
 // except that a history view shows no new message. A new
 // message appears at the top of Messages or its transcript with a brief
-// highlight, and nothing is trimmed. Conversations, the search index, and
+// highlight, and nothing is trimmed. Chats, the search index, and
 // the side panel follow the list. The open Send form, Markdown toggles, and
 // the search box are kept. A hidden tab closes its stream and catches up
 // from its last seq when it is visible again. On reset the tab reloads the

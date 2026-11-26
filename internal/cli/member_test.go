@@ -22,7 +22,7 @@ func asConductor(t *testing.T, ctx context.Context, addr, conv string, writes fu
 	const holder = "test-conductor"
 	lease := func(op string) {
 		t.Helper()
-		res, err := client.Do(ctx, addr, "lease", "", client.LeaseRequest{Conversation: conv, Lease: op, Holder: holder})
+		res, err := client.Do(ctx, addr, "lease", "", client.LeaseRequest{Chat: conv, Lease: op, Holder: holder})
 		if err != nil || res.Outcome != bus.OutcomeOK {
 			t.Fatalf("lease %s %v %+v", op, err, res)
 		}
@@ -60,10 +60,10 @@ func TestMemberRegisterAndListOmitPidStartAndSession(t *testing.T) {
 		t.Fatalf("create %v %+v", err, created)
 	}
 	listed, raw := runClient(t, ctx, "list", "--address", addr)
-	if listed.Conversations == nil || len(*listed.Conversations) != 1 {
+	if listed.Chats == nil || len(*listed.Chats) != 1 {
 		t.Fatalf("list %s", raw)
 	}
-	conv := (*listed.Conversations)[0]
+	conv := (*listed.Chats)[0]
 	if conv.Seat != "bravo" || len(conv.Roster) != 2 || conv.Roster[0] != "bravo" || conv.Roster[1] != "alpha" || len(conv.Prompts) != 2 || conv.Prompts[0] != "tasks:hotseat/review/extra" || conv.Custom != "line\nname: hidden" {
 		t.Fatalf("binding %+v\n%s", conv, raw)
 	}
@@ -71,7 +71,7 @@ func TestMemberRegisterAndListOmitPidStartAndSession(t *testing.T) {
 		t.Fatalf("custom frame\n%s", raw)
 	}
 	plain, plainRaw := runClient(t, ctx, "create", "--address", addr, "--name", "plain")
-	if plain.Conversation == nil || plain.Conversation.Name != "plain" || strings.Contains(plainRaw, "task:") || strings.Contains(plainRaw, "roster:") || strings.Contains(plainRaw, "prompts:") {
+	if plain.Chat == nil || plain.Chat.Name != "plain" || strings.Contains(plainRaw, "task:") || strings.Contains(plainRaw, "roster:") || strings.Contains(plainRaw, "prompts:") {
 		t.Fatalf("name-only\n%s", plainRaw)
 	}
 	pid := int64(424242)
@@ -80,38 +80,38 @@ func TestMemberRegisterAndListOmitPidStartAndSession(t *testing.T) {
 	const secret = "sess-secret-9f3a"
 	asConductor(t, ctx, addr, "job", func(holder string) {
 		if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
-			Conversation: "job", Name: "alpha", Status: &status, Holder: holder,
+			Chat: "job", Name: "alpha", Status: &status, Holder: holder,
 		}); err != nil || res.Outcome != bus.OutcomeOK {
 			t.Fatalf("launch alpha %v %+v", err, res)
 		}
 		if res, err := client.Do(ctx, addr, "member", "", client.MemberRequest{
-			Conversation: "job", Name: "bravo", Status: &status, PID: &pid, Start: token, Holder: holder,
+			Chat: "job", Name: "bravo", Status: &status, PID: &pid, Start: token, Holder: holder,
 		}); err != nil || res.Outcome != bus.OutcomeOK {
 			t.Fatalf("launch bravo %v %+v", err, res)
 		}
 		session := secret
 		name := "bravo"
 		if res, err := client.Do(ctx, addr, "session", "", client.SessionRequest{
-			Conversation: "job", Name: &name, Session: &session, Holder: holder,
+			Chat: "job", Name: &name, Session: &session, Holder: holder,
 		}); err != nil || res.Outcome != bus.OutcomeOK || res.Session == nil || res.Session.Session != secret {
 			t.Fatalf("session %v %+v", err, res)
 		}
 	})
 	reg, regRaw := runClient(t, ctx, "member", "register", "--address", addr, "--conversation", "job", "--name", "bravo")
-	if reg.Outcome != bus.OutcomeOK || reg.Member == nil || reg.Member.Status != "registered" || reg.Member.Registered == "" {
+	if reg.Outcome != bus.OutcomeOK || reg.Member == nil || reg.Member.Status != "joined" || reg.Member.Joined == "" {
 		t.Fatalf("register %s", regRaw)
 	}
 	if strings.Contains(regRaw, "424242") || strings.Contains(regRaw, token) || strings.Contains(regRaw, "pid:") || strings.Contains(regRaw, "start:") {
 		t.Fatalf("register leaked\n%s", regRaw)
 	}
 	rows, listRaw := runClient(t, ctx, "member", "list", "--address", addr, "--conversation", "job")
-	if rows.Members == nil || len(*rows.Members) != 2 || (*rows.Members)[0].Name != "bravo" || (*rows.Members)[0].Status != "registered" || (*rows.Members)[1].Name != "alpha" || (*rows.Members)[1].Status != "launched" {
+	if rows.Members == nil || len(*rows.Members) != 2 || (*rows.Members)[0].Name != "bravo" || (*rows.Members)[0].Status != "joined" || (*rows.Members)[1].Name != "alpha" || (*rows.Members)[1].Status != "launched" {
 		t.Fatalf("members %+v\n%s", rows.Members, listRaw)
 	}
 	if strings.Contains(listRaw, secret) || strings.Contains(listRaw, "424242") || strings.Contains(listRaw, token) || strings.Contains(listRaw, "pid:") || strings.Contains(listRaw, "start:") || strings.Contains(listRaw, "session:") {
 		t.Fatalf("list leaked\n%s", listRaw)
 	}
-	if !strings.Contains(listRaw, "launched:") || !strings.Contains(listRaw, "registered:") || !strings.Contains(listRaw, "status: registered") {
+	if !strings.Contains(listRaw, "launched:") || !strings.Contains(listRaw, "registered:") || !strings.Contains(listRaw, "status: joined") {
 		t.Fatalf("list fields\n%s", listRaw)
 	}
 	missing, missingRaw := runClient(t, ctx, "member", "register", "--address", addr, "--conversation", "job", "--name", "carol")
@@ -126,8 +126,8 @@ func TestReadOmitsKindsUntilTheFlagIsSet(t *testing.T) {
 	ctx := context.Background()
 	create(t, ctx, addr, "job")
 	publish(t, ctx, addr, "job", "alice", []string{"bob"}, "hello", "1")
-	if res, err := client.Do(ctx, addr, "publish", "", client.PublishRequest{
-		Conversation: "job", From: "alice", To: []string{"bob"}, Body: "phase", TxID: "2", Kind: "turn",
+	if res, err := client.Do(ctx, addr, "send", "", client.SendRequest{
+		Chat: "job", From: "alice", To: []string{"bob"}, Body: "phase", TxID: "2", Kind: "turn",
 	}); err != nil || res.Outcome != bus.OutcomeOK {
 		t.Fatalf("turn %v %+v", err, res)
 	}

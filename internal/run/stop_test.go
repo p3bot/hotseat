@@ -38,8 +38,8 @@ func TestBackupDoneThatStoppedTheRunStillStopsAContinuationAfterTheBackupTimesOu
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{
 		"alpha":   {Exit: 1, Sleep: "1s"},
-		"bravo":   {Register: true},
-		"charlie": {Register: true},
+		"bravo":   {Join: true},
+		"charlie": {Join: true},
 	}
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
@@ -50,8 +50,8 @@ func TestBackupDoneThatStoppedTheRunStillStopsAContinuationAfterTheBackupTimesOu
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
-	h.awaitRegistered(name, "bravo")
-	h.awaitRegistered(name, "charlie")
+	h.awaitJoined(name, "bravo")
+	h.awaitJoined(name, "charlie")
 	h.awaitStatus(name, "alpha", statusTimedOut)
 	done := h.publish(name, "bravo", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
@@ -84,7 +84,7 @@ func TestBackupDoneWhileTheSeatIsAliveIsOneBadDoneAndNeverStopsTheRun(t *testing
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{
 		"alpha": {Exit: 1, Sleep: "1s"},
-		"bravo": {Register: true},
+		"bravo": {Join: true},
 	}
 	cfg := h.base()
 	cfg.TicketSet = false
@@ -93,7 +93,7 @@ func TestBackupDoneWhileTheSeatIsAliveIsOneBadDoneAndNeverStopsTheRun(t *testing
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
-	h.awaitRegistered(name, "bravo")
+	h.awaitJoined(name, "bravo")
 	early := h.publish(name, "bravo", kindDone, "too soon", nil)
 	deadline := time.Now().Add(8 * time.Second)
 	for len(h.badDones(name)) == 0 && time.Now().Before(deadline) {
@@ -131,8 +131,8 @@ func TestContinuationSkipsADoneAStoredBadDoneNamesAndStoresNoSecondError(t *test
 	early := h.publish("kept", "bravo", kindDone, "too soon", nil)
 	re := early.Seq
 	h.conduct("kept", func(holder string) {
-		res := h.do("publish", client.PublishRequest{
-			Conversation: "kept", From: fromRun, To: []string{fromOwner}, Kind: kindError,
+		res := h.do("send", client.SendRequest{
+			Chat: "kept", From: fromRun, To: []string{fromOwner}, Kind: kindError,
 			Body: errBody("bravo", classBadDone), Re: &re, TxID: factTx(classBadDone, seqOf(early)), Holder: holder,
 		})
 		if res.Outcome != bus.OutcomeOK {
@@ -186,7 +186,7 @@ func TestRuledOutDoneStaysRuledOutWhenTheRowsWouldNowStopIt(t *testing.T) {
 		t.Fatalf("seat alive: stop %v err %v", stop, err)
 	}
 	h.setMember("kept", "bravo", statusLaunched, nil)
-	h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"})
+	h.do("join", client.JoinRequest{Chat: "kept", Name: "bravo"})
 	h.setMember("kept", "bravo", statusExited, nil)
 	e.mu.Lock()
 	e.status["alpha"] = statusTimedOut
@@ -222,7 +222,7 @@ func TestDecidedStopKeepsItsVerdictAndSilencesLaterDones(t *testing.T) {
 	h := newHarness(t)
 	e, _ := h.closingEngine()
 	h.setMember("kept", "bravo", statusLaunched, nil)
-	h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"})
+	h.do("join", client.JoinRequest{Chat: "kept", Name: "bravo"})
 	h.setMember("kept", "bravo", statusExited, nil)
 	setSeat := func(status string) {
 		e.mu.Lock()

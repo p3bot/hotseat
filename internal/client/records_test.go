@@ -70,24 +70,24 @@ func TestRecordResultsDecodeToWhatRecordsReturns(t *testing.T) {
 	mustDo(t, addr, "create", CreateRequest{Name: "job"})
 	seq := func(kind, txid string) int64 {
 		t.Helper()
-		res := mustDo(t, addr, "publish", PublishRequest{Conversation: "job", From: "alice", Body: kind, TxID: txid, Kind: kind})
+		res := mustDo(t, addr, "send", SendRequest{Chat: "job", From: "alice", Body: kind, TxID: txid, Kind: kind})
 		return res.Message.Seq
 	}
 	turn, finding := seq("turn", "1"), seq("finding", "2")
 	empty := seq("turn", "3")
-	mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseAcquire, Holder: "h1"})
+	mustDo(t, addr, "lease", LeaseRequest{Chat: "job", Lease: bus.LeaseAcquire, Holder: "h1"})
 	held := func(w RecordWrite) RecordRequest { return RecordRequest{Holder: "h1", Record: w} }
-	set := mustDo(t, addr, "record", held(SetRecord{Conversation: "job", Turn: turn, Findings: []int64{finding}}))
+	set := mustDo(t, addr, "record", held(SetRecord{Chat: "job", Turn: turn, Findings: []int64{finding}}))
 	if set.Set == nil || set.Grouping == nil || set.AlreadyStored == nil || *set.AlreadyStored {
 		t.Fatalf("set = %+v", set)
 	}
-	none := mustDo(t, addr, "record", held(SetRecord{Conversation: "job", Turn: empty}))
-	settle := mustDo(t, addr, "record", held(SettleRecord{Conversation: "job", Finding: finding, Proposal: finding, ProposalKind: "finding"}))
-	fix := mustDo(t, addr, "record", held(FixRecord{Conversation: "job", Finding: finding, Fixed: seq("fixed", "4")}))
-	halt := mustDo(t, addr, "record", held(HaltRecord{Conversation: "job", Finding: finding}))
-	stop := mustDo(t, addr, "record", held(StopRecord{Conversation: "job", Done: seq("done", "5")}))
+	none := mustDo(t, addr, "record", held(SetRecord{Chat: "job", Turn: empty}))
+	settle := mustDo(t, addr, "record", held(SettleRecord{Chat: "job", Finding: finding, Proposal: finding, ProposalKind: "finding"}))
+	fix := mustDo(t, addr, "record", held(FixRecord{Chat: "job", Finding: finding, Fixed: seq("fixed", "4")}))
+	halt := mustDo(t, addr, "record", held(HaltRecord{Chat: "job", Finding: finding}))
+	stop := mustDo(t, addr, "record", held(StopRecord{Chat: "job", Done: seq("done", "5")}))
 
-	got := mustDo(t, addr, "records", RecordsRequest{Conversation: "job"})
+	got := mustDo(t, addr, "records", RecordsRequest{Chat: "job"})
 	want := Result{
 		Outcome:   bus.OutcomeOK,
 		Sets:      &[]Set{*set.Set, *none.Set},
@@ -122,12 +122,12 @@ func TestEachRecordSendsItsSelectorAndOnlyItsFields(t *testing.T) {
 		req  RecordWrite
 		want string
 	}{
-		{SetRecord{Conversation: "job", Turn: 4}, `{"conversation":"job","record":"set","turn":4,"findings":[]}`},
-		{GroupingRecord{Conversation: "job", Turn: 4}, `{"conversation":"job","record":"grouping","turn":4,"drops":[]}`},
-		{SettleRecord{Conversation: "job", Finding: 5, Proposal: 6, ProposalKind: "propose"}, `{"conversation":"job","record":"settle","finding":5,"proposal":6,"proposal_kind":"propose"}`},
-		{FixRecord{Conversation: "job", Finding: 5, Fixed: 7}, `{"conversation":"job","record":"fix","finding":5,"fixed":7}`},
-		{HaltRecord{Conversation: "job", Finding: 5}, `{"conversation":"job","record":"halt","finding":5}`},
-		{StopRecord{Conversation: "job", Done: 8}, `{"conversation":"job","record":"stop","done":8}`},
+		{SetRecord{Chat: "job", Turn: 4}, `{"chat":"job","record":"set","turn":4,"findings":[]}`},
+		{GroupingRecord{Chat: "job", Turn: 4}, `{"chat":"job","record":"grouping","turn":4,"drops":[]}`},
+		{SettleRecord{Chat: "job", Finding: 5, Proposal: 6, ProposalKind: "propose"}, `{"chat":"job","record":"settle","finding":5,"proposal":6,"proposal_kind":"propose"}`},
+		{FixRecord{Chat: "job", Finding: 5, Fixed: 7}, `{"chat":"job","record":"fix","finding":5,"fixed":7}`},
+		{HaltRecord{Chat: "job", Finding: 5}, `{"chat":"job","record":"halt","finding":5}`},
+		{StopRecord{Chat: "job", Done: 8}, `{"chat":"job","record":"stop","done":8}`},
 	} {
 		if _, err := Do(context.Background(), addr, "record", "", RecordRequest{Record: tc.req}); err != nil {
 			t.Fatal(err)
@@ -139,29 +139,29 @@ func TestEachRecordSendsItsSelectorAndOnlyItsFields(t *testing.T) {
 			t.Fatalf("posted %s %s, want %s", p, body, tc.want)
 		}
 	}
-	if _, err := Do(context.Background(), addr, "record", "", RecordRequest{Holder: "h1", Record: HaltRecord{Conversation: "job", Finding: 5}}); err != nil {
+	if _, err := Do(context.Background(), addr, "record", "", RecordRequest{Holder: "h1", Record: HaltRecord{Chat: "job", Finding: 5}}); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
-	if got != `{"conversation":"job","record":"halt","finding":5,"holder":"h1"}` {
+	if got != `{"chat":"job","record":"halt","finding":5,"holder":"h1"}` {
 		t.Fatalf("held halt posted %s", got)
 	}
 	mu.Unlock()
-	if _, err := Do(context.Background(), addr, "record", "", RecordsRequest{Conversation: "job"}); err == nil {
+	if _, err := Do(context.Background(), addr, "record", "", RecordsRequest{Chat: "job"}); err == nil {
 		t.Fatal("record posted a body that is not a RecordRequest")
 	}
-	if _, err := Do(context.Background(), addr, "record", "", HaltRecord{Conversation: "job", Finding: 5}); err == nil {
+	if _, err := Do(context.Background(), addr, "record", "", HaltRecord{Chat: "job", Finding: 5}); err == nil {
 		t.Fatal("record posted a RecordWrite without its RecordRequest")
 	}
 	if _, err := Do(context.Background(), addr, "record", "", RecordRequest{Holder: "h1"}); err == nil {
 		t.Fatal("record posted a RecordRequest without a record")
 	}
-	if _, err := Do(context.Background(), addr, "records", "", RecordsRequest{Conversation: "job"}); err != nil {
+	if _, err := Do(context.Background(), addr, "records", "", RecordsRequest{Chat: "job"}); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if path != bus.PathRecords || got != `{"conversation":"job"}` {
+	if path != bus.PathRecords || got != `{"chat":"job"}` {
 		t.Fatalf("records posted %s %s", path, got)
 	}
 }
@@ -169,35 +169,35 @@ func TestEachRecordSendsItsSelectorAndOnlyItsFields(t *testing.T) {
 func TestLeaseResultsDecodeAndFencedWritesCarryTheHolder(t *testing.T) {
 	addr := liveBus(t)
 	mustDo(t, addr, "create", CreateRequest{Name: "job", Seat: "alpha", Roster: []string{"alpha"}})
-	acquired := mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseAcquire, Holder: "h1"})
+	acquired := mustDo(t, addr, "lease", LeaseRequest{Chat: "job", Lease: bus.LeaseAcquire, Holder: "h1"})
 	if acquired.TTL == nil || *acquired.TTL != 20 {
 		t.Fatalf("acquire = %+v", acquired)
 	}
-	refused, err := Do(context.Background(), addr, "lease", "", LeaseRequest{Conversation: "job", Lease: bus.LeaseAcquire, Holder: "h2"})
+	refused, err := Do(context.Background(), addr, "lease", "", LeaseRequest{Chat: "job", Lease: bus.LeaseAcquire, Holder: "h2"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if refused.Outcome != bus.OutcomeRefused || refused.Reason != bus.ReasonConductorHeld || refused.Remaining == nil || *refused.Remaining != 20 {
 		t.Fatalf("second acquire = %+v", refused)
 	}
-	got := mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseGet})
+	got := mustDo(t, addr, "lease", LeaseRequest{Chat: "job", Lease: bus.LeaseGet})
 	if got.Held == nil || !*got.Held || got.Since == "" || got.Expires == "" {
 		t.Fatalf("get = %+v", got)
 	}
 	launched := "launched"
-	mustDo(t, addr, "member", MemberRequest{Conversation: "job", Name: "alpha", Status: &launched, Holder: "h1"})
+	mustDo(t, addr, "member", MemberRequest{Chat: "job", Name: "alpha", Status: &launched, Holder: "h1"})
 	name, sess := "alpha", "s1"
-	mustDo(t, addr, "session", SessionRequest{Conversation: "job", Name: &name, Session: &sess, Holder: "h1"})
-	mustDo(t, addr, "publish", PublishRequest{Conversation: "job", From: "run", Body: "b", TxID: "1", Kind: "say", Holder: "h1"})
-	stale, err := Do(context.Background(), addr, "publish", "", PublishRequest{Conversation: "job", From: "run", Body: "b", TxID: "2", Kind: "say", Holder: "h2"})
+	mustDo(t, addr, "session", SessionRequest{Chat: "job", Name: &name, Session: &sess, Holder: "h1"})
+	mustDo(t, addr, "send", SendRequest{Chat: "job", From: "run", Body: "b", TxID: "1", Kind: "say", Holder: "h1"})
+	stale, err := Do(context.Background(), addr, "send", "", SendRequest{Chat: "job", From: "run", Body: "b", TxID: "2", Kind: "say", Holder: "h2"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stale.Outcome != bus.OutcomeRefused || stale.Reason != bus.ReasonLeaseWrite {
-		t.Fatalf("stale publish = %+v", stale)
+		t.Fatalf("stale send = %+v", stale)
 	}
-	mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseRelease, Holder: "h1"})
-	if got := mustDo(t, addr, "lease", LeaseRequest{Conversation: "job", Lease: bus.LeaseGet}); got.Held == nil || *got.Held {
+	mustDo(t, addr, "lease", LeaseRequest{Chat: "job", Lease: bus.LeaseRelease, Holder: "h1"})
+	if got := mustDo(t, addr, "lease", LeaseRequest{Chat: "job", Lease: bus.LeaseGet}); got.Held == nil || *got.Held {
 		t.Fatalf("get after release = %+v", got)
 	}
 }

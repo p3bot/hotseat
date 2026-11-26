@@ -31,10 +31,10 @@ func TestEventsCatchesUpThenListsThenStaysLive(t *testing.T) {
 	const token = "hstk-events-token"
 	addr := newBus(t, token, false)
 	page, logs := newPage(t, addr, token)
-	createConv(t, addr, token, "job")
-	first := publishSeq(t, addr, token, "job", "m1")
-	second := publishSeq(t, addr, token, "job", "m2")
-	third := publishSeq(t, addr, token, "job", "m3")
+	createChat(t, addr, token, "job")
+	first := sendSeq(t, addr, token, "job", "m1")
+	second := sendSeq(t, addr, token, "job", "m2")
+	third := sendSeq(t, addr, token, "job", "m3")
 
 	s := openEvents(t, page.URL+"/events?after="+strconv.FormatInt(first, 10), nil)
 	if ev := s.nextRecord(t); ev.Retry != strconv.Itoa(streamRetry) || ev.Name != "" {
@@ -42,8 +42,8 @@ func TestEventsCatchesUpThenListsThenStaysLive(t *testing.T) {
 	}
 	expectMessage(t, s.next(t), second, "job")
 	expectMessage(t, s.next(t), third, "job")
-	expectConversations(t, s.next(t))
-	fourth := publishSeq(t, addr, token, "job", "m4")
+	expectChats(t, s.next(t))
+	fourth := sendSeq(t, addr, token, "job", "m4")
 	expectMessage(t, s.next(t), fourth, "job")
 
 	s.close()
@@ -61,32 +61,32 @@ func TestEventsHeadersAreEventStreamNoStore(t *testing.T) {
 	if got := s.header.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("x-content-type-options %q", got)
 	}
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 }
 
-func TestTranscriptStreamSendsOnlyItsConversationAndMetaOnClose(t *testing.T) {
+func TestTranscriptStreamSendsOnlyItsChatAndMetaOnClose(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
-	createConv(t, addr, "", "a")
-	createConv(t, addr, "", "b")
-	own := publishSeq(t, addr, "", "a", "a1")
-	publishSeq(t, addr, "", "b", "b1")
+	createChat(t, addr, "", "a")
+	createChat(t, addr, "", "b")
+	own := sendSeq(t, addr, "", "a", "a1")
+	sendSeq(t, addr, "", "b", "b1")
 
-	s := openEvents(t, page.URL+"/events?conversation=a", nil)
+	s := openEvents(t, page.URL+"/events?chat=a", nil)
 	expectMessage(t, s.next(t), own, "a")
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	expectMeta(t, s.next(t), "open")
 
-	publishSeq(t, addr, "", "b", "b2")
-	live := publishSeq(t, addr, "", "a", "a2")
-	ev := s.nextExcept(t, eventConversations)
+	sendSeq(t, addr, "", "b", "b2")
+	live := sendSeq(t, addr, "", "a", "a2")
+	ev := s.nextExcept(t, eventChats)
 	expectMessage(t, ev, live, "a")
 
-	if res := busCall(t, addr, "", "close", client.CloseRequest{Conversation: "a"}); res.Outcome != bus.OutcomeOK {
+	if res := busCall(t, addr, "", "close", client.CloseRequest{Chat: "a"}); res.Outcome != bus.OutcomeOK {
 		t.Fatalf("close %+v", res)
 	}
-	ev = s.nextExcept(t, eventConversations)
-	if ev.Name != eventMeta || !strings.HasPrefix(ev.Data, `<aside id="conversation-meta">`) || !strings.Contains(ev.Data, `data-status="closed"`) {
+	ev = s.nextExcept(t, eventChats)
+	if ev.Name != eventMeta || !strings.HasPrefix(ev.Data, `<aside id="chat-meta">`) || !strings.Contains(ev.Data, `data-status="closed"`) {
 		t.Fatalf("meta %+v", ev)
 	}
 }
@@ -94,15 +94,15 @@ func TestTranscriptStreamSendsOnlyItsConversationAndMetaOnClose(t *testing.T) {
 func TestListStreamSendsNoMessages(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
-	createConv(t, addr, "", "a")
-	publishSeq(t, addr, "", "a", "a1")
+	createChat(t, addr, "", "a")
+	sendSeq(t, addr, "", "a", "a1")
 
 	s := openEvents(t, page.URL+"/events?view=list&after=999", nil)
-	expectConversations(t, s.next(t))
-	publishSeq(t, addr, "", "a", "a2")
-	createConv(t, addr, "", "c")
+	expectChats(t, s.next(t))
+	sendSeq(t, addr, "", "a", "a2")
+	createChat(t, addr, "", "c")
 	ev := s.next(t)
-	expectConversations(t, ev)
+	expectChats(t, ev)
 	if !strings.Contains(ev.Data, `data-name="c"`) {
 		t.Fatalf("list change missing c: %s", ev.Data)
 	}
@@ -111,36 +111,36 @@ func TestListStreamSendsNoMessages(t *testing.T) {
 func TestTranscriptCatchesUpAmongManyOtherMessagesWithoutReset(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
-	createConv(t, addr, "", "a")
-	createConv(t, addr, "", "b")
+	createChat(t, addr, "", "a")
+	createChat(t, addr, "", "b")
 	var own []int64
 	for i := range 60 {
-		publishSeq(t, addr, "", "b", "b"+strconv.Itoa(i))
+		sendSeq(t, addr, "", "b", "b"+strconv.Itoa(i))
 		if i%20 == 0 {
-			own = append(own, publishSeq(t, addr, "", "a", "a"+strconv.Itoa(i)))
+			own = append(own, sendSeq(t, addr, "", "a", "a"+strconv.Itoa(i)))
 		}
 	}
 
-	s := openEvents(t, page.URL+"/events?conversation=a&after=0", nil)
+	s := openEvents(t, page.URL+"/events?chat=a&after=0", nil)
 	for _, seq := range own {
 		expectMessage(t, s.next(t), seq, "a")
 	}
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	expectMeta(t, s.next(t), "open")
 }
 
 func TestViewMissingMoreThanAGroupGetsResetAndEnds(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
-	createConv(t, addr, "", "a")
-	createConv(t, addr, "", "b")
-	publishSeq(t, addr, "", "b", "other")
+	createChat(t, addr, "", "a")
+	createChat(t, addr, "", "b")
+	sendSeq(t, addr, "", "b", "other")
 	var own []int64
 	for i := range groupLimit + 1 {
-		own = append(own, publishSeq(t, addr, "", "a", "a"+strconv.FormatInt(i, 10)))
+		own = append(own, sendSeq(t, addr, "", "a", "a"+strconv.FormatInt(i, 10)))
 	}
 
-	for _, rawURL := range []string{page.URL + "/events", page.URL + "/events?conversation=a"} {
+	for _, rawURL := range []string{page.URL + "/events", page.URL + "/events?chat=a"} {
 		s := openEvents(t, rawURL, nil)
 		ev := s.next(t)
 		if ev.Name != eventReset || ev.ID != "" {
@@ -149,11 +149,11 @@ func TestViewMissingMoreThanAGroupGetsResetAndEnds(t *testing.T) {
 		s.expectEnd(t)
 	}
 
-	s := openEvents(t, page.URL+"/events?conversation=a&after="+strconv.FormatInt(own[0], 10), nil)
+	s := openEvents(t, page.URL+"/events?chat=a&after="+strconv.FormatInt(own[0], 10), nil)
 	for _, seq := range own[1:] {
 		expectMessage(t, s.next(t), seq, "a")
 	}
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	expectMeta(t, s.next(t), "open")
 }
 
@@ -199,18 +199,18 @@ func TestLiveBurstWiderThanAGroupArrivesWithoutReset(t *testing.T) {
 	addr := newBus(t, "", false)
 	proxy := newBusProxy(t, addr)
 	page, _ := newPage(t, proxy.addr(), "")
-	createConv(t, addr, "", "job")
+	createChat(t, addr, "", "job")
 
 	s := openEvents(t, page.URL+"/events", nil)
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	proxy.waitCount(t, bus.PathWatch, 2)
 	release := make(chan struct{})
 	proxy.set(func(p *busProxy) { p.hold = release })
-	seqs := []int64{publishSeq(t, addr, "", "job", "m0")}
+	seqs := []int64{sendSeq(t, addr, "", "job", "m0")}
 	expectMessage(t, s.next(t), seqs[0], "job")
 	proxy.waitCount(t, bus.PathWatch, 3)
 	for i := 1; i <= 5; i++ {
-		seqs = append(seqs, publishSeq(t, addr, "", "job", "m"+strconv.Itoa(i)))
+		seqs = append(seqs, sendSeq(t, addr, "", "job", "m"+strconv.Itoa(i)))
 	}
 	proxy.set(func(p *busProxy) { p.hold = nil })
 	close(release)
@@ -230,31 +230,31 @@ func TestStreamLogsFailedWatchAndDisconnectWithoutBodies(t *testing.T) {
 		BusAddress: proxy.addr(),
 		Log:        slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
-	createConv(t, addr, "", "job")
+	createChat(t, addr, "", "job")
 
-	s := openEvents(t, page.URL+"/events?conversation=job", nil)
-	expectConversations(t, s.next(t))
+	s := openEvents(t, page.URL+"/events?chat=job", nil)
+	expectChats(t, s.next(t))
 	expectMeta(t, s.next(t), "open")
 	proxy.waitCount(t, bus.PathWatch, 2)
 	proxy.set(func(p *busProxy) { p.failWatch = true })
-	seq := publishSeq(t, addr, "", "job", "secret-txid")
+	seq := sendSeq(t, addr, "", "job", "secret-txid")
 	expectMessage(t, s.next(t), seq, "job")
 	s.expectEnd(t)
-	logs.waitFor(t, `level=WARN msg="stream ended" op=events view=transcript conversation=job call=watch outcome=unavailable`)
-	if !strings.Contains(logs.String(), `level=DEBUG msg="stream open" op=events view=transcript conversation=job after=0`) {
+	logs.waitFor(t, `level=WARN msg="stream ended" op=events view=transcript chat=job call=watch outcome=unavailable`)
+	if !strings.Contains(logs.String(), `level=DEBUG msg="stream open" op=events view=transcript chat=job after=0`) {
 		t.Fatalf("no open line\n%s", logs.String())
 	}
 
 	proxy.set(func(p *busProxy) { p.failWatch = false })
 	list := openEvents(t, page.URL+"/events?view=list", nil)
-	expectConversations(t, list.next(t))
+	expectChats(t, list.next(t))
 	list.close()
 	logs.waitFor(t, `level=DEBUG msg="stream closed" op=events view=list cause="request ended"`)
 	assertOmits(t, "logs", logs.String(), "body secret-txid", "line two", "secret-txid")
 
 	refusals := []string{
 		page.URL + "/events?after=x",
-		page.URL + "/events?conversation=" + url.QueryEscape("bad name"),
+		page.URL + "/events?chat=" + url.QueryEscape("bad name"),
 	}
 	for _, rawURL := range refusals {
 		if status, body, _ := doPage(t, mustGet(t, rawURL)); status != http.StatusBadRequest {
@@ -262,20 +262,20 @@ func TestStreamLogsFailedWatchAndDisconnectWithoutBodies(t *testing.T) {
 		}
 	}
 	logs.waitFor(t, `msg=call op=events outcome=refused reason="after must be an integer of at least 0"`)
-	logs.waitFor(t, `msg=call op=events view=transcript conversation="bad name" outcome=refused reason="`+bus.ReasonBadConversation+`"`)
+	logs.waitFor(t, `msg=call op=events view=transcript chat="bad name" outcome=refused reason="`+bus.ReasonBadChat+`"`)
 }
 
 func TestStreamEndsWhenAWatchFails(t *testing.T) {
 	addr := newBus(t, "", false)
 	proxy := newBusProxy(t, addr)
 	page, _ := newPage(t, proxy.addr(), "")
-	createConv(t, addr, "", "job")
+	createChat(t, addr, "", "job")
 
 	s := openEvents(t, page.URL+"/events", nil)
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	proxy.waitCount(t, bus.PathWatch, 2)
 	proxy.set(func(p *busProxy) { p.failWatch = true })
-	seq := publishSeq(t, addr, "", "job", "m1")
+	seq := sendSeq(t, addr, "", "job", "m1")
 	expectMessage(t, s.next(t), seq, "job")
 	s.expectEnd(t)
 }
@@ -284,20 +284,20 @@ func TestFailedListEndsStreamAndReconnectSendsTheChange(t *testing.T) {
 	addr := newBus(t, "", false)
 	proxy := newBusProxy(t, addr)
 	page, _ := newPage(t, proxy.addr(), "")
-	createConv(t, addr, "", "job")
-	seq := publishSeq(t, addr, "", "job", "m1")
+	createChat(t, addr, "", "job")
+	seq := sendSeq(t, addr, "", "job", "m1")
 
 	s := openEvents(t, page.URL+"/events", nil)
 	expectMessage(t, s.next(t), seq, "job")
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	proxy.set(func(p *busProxy) { p.failList = true })
-	createConv(t, addr, "", "later")
+	createChat(t, addr, "", "later")
 	s.expectEnd(t)
 
 	proxy.set(func(p *busProxy) { p.failList = false })
 	s = openEvents(t, page.URL+"/events", http.Header{"Last-Event-ID": {strconv.FormatInt(seq, 10)}})
 	ev := s.next(t)
-	expectConversations(t, ev)
+	expectChats(t, ev)
 	if !strings.Contains(ev.Data, `data-name="later"`) {
 		t.Fatalf("reconnect missed the change: %s", ev.Data)
 	}
@@ -306,69 +306,69 @@ func TestFailedListEndsStreamAndReconnectSendsTheChange(t *testing.T) {
 func TestReconnectedTranscriptSendsMetaChangedWhileAway(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
-	createConv(t, addr, "", "job")
-	seq := publishSeq(t, addr, "", "job", "m1")
+	createChat(t, addr, "", "job")
+	seq := sendSeq(t, addr, "", "job", "m1")
 
-	s := openEvents(t, page.URL+"/events?conversation=job", nil)
+	s := openEvents(t, page.URL+"/events?chat=job", nil)
 	expectMessage(t, s.next(t), seq, "job")
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	expectMeta(t, s.next(t), "open")
 	s.close()
 
-	if res := busCall(t, addr, "", "close", client.CloseRequest{Conversation: "job"}); res.Outcome != bus.OutcomeOK {
+	if res := busCall(t, addr, "", "close", client.CloseRequest{Chat: "job"}); res.Outcome != bus.OutcomeOK {
 		t.Fatalf("close %+v", res)
 	}
-	s = openEvents(t, page.URL+"/events?conversation=job", http.Header{"Last-Event-ID": {strconv.FormatInt(seq, 10)}})
-	expectConversations(t, s.next(t))
+	s = openEvents(t, page.URL+"/events?chat=job", http.Header{"Last-Event-ID": {strconv.FormatInt(seq, 10)}})
+	expectChats(t, s.next(t))
 	expectMeta(t, s.next(t), "closed")
 }
 
 func TestReconnectResumesFromLastEventIDOverStaleAfter(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
-	createConv(t, addr, "", "job")
-	one := publishSeq(t, addr, "", "job", "m1")
-	two := publishSeq(t, addr, "", "job", "m2")
+	createChat(t, addr, "", "job")
+	one := sendSeq(t, addr, "", "job", "m1")
+	two := sendSeq(t, addr, "", "job", "m2")
 
 	s := openEvents(t, page.URL+"/events?after=0", nil)
 	expectMessage(t, s.next(t), one, "job")
 	expectMessage(t, s.next(t), two, "job")
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	s.close()
 
-	three := publishSeq(t, addr, "", "job", "m3")
-	four := publishSeq(t, addr, "", "job", "m4")
+	three := sendSeq(t, addr, "", "job", "m3")
+	four := sendSeq(t, addr, "", "job", "m4")
 	s = openEvents(t, page.URL+"/events?after=0", http.Header{"Last-Event-ID": {strconv.FormatInt(two, 10)}})
 	expectMessage(t, s.next(t), three, "job")
 	expectMessage(t, s.next(t), four, "job")
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 }
 
-func TestReorderingPublishSendsConversationsOnEveryView(t *testing.T) {
+func TestReorderingSendSendsChatsOnEveryView(t *testing.T) {
 	addr := newBus(t, "", false)
 	proxy := newBusProxy(t, addr)
 	page, _ := newPage(t, proxy.addr(), "")
-	createConv(t, addr, "", "a")
-	createConv(t, addr, "", "b")
-	last := strconv.FormatInt(publishSeq(t, addr, "", "a", "a0"), 10)
+	createChat(t, addr, "", "a")
+	createChat(t, addr, "", "b")
+	last := strconv.FormatInt(sendSeq(t, addr, "", "a", "a0"), 10)
 
 	all := openEvents(t, page.URL+"/events?after="+last, nil)
-	tr := openEvents(t, page.URL+"/events?conversation=a&after="+last, nil)
+	tr := openEvents(t, page.URL+"/events?chat=a&after="+last, nil)
 	list := openEvents(t, page.URL+"/events?view=list", nil)
 	for _, s := range []*sseStream{all, tr, list} {
-		expectConversations(t, s.next(t))
+		expectChats(t, s.next(t))
 	}
 	expectMeta(t, tr.next(t), "open")
 
 	before := proxy.count(bus.PathList)
-	same := publishSeq(t, addr, "", "a", "a1")
+	same := sendSeq(t, addr, "", "a", "a1")
 	expectMessage(t, all.next(t), same, "a")
 	expectMessage(t, tr.next(t), same, "a")
-	moved := publishSeq(t, addr, "", "b", "b1")
+	moved := sendSeq(t, addr, "", "b", "b1")
 	expectMessage(t, all.next(t), moved, "b")
 	for _, s := range []*sseStream{all, tr, list} {
 		ev := s.next(t)
-		expectConversations(t, ev)
+		expectChats(t, ev)
 		if strings.Index(ev.Data, `data-name="b"`) > strings.Index(ev.Data, `data-name="a"`) {
 			t.Fatalf("b is not first: %s", ev.Data)
 		}
@@ -385,7 +385,7 @@ func TestQuietStreamSendsAKeepAliveComment(t *testing.T) {
 	addr := newBus(t, "", false)
 	page, _ := newPage(t, addr, "")
 	s := openEvents(t, page.URL+"/events?view=list", nil)
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	ev := s.nextRecord(t)
 	if ev.Comment != "keep-alive" {
 		t.Fatalf("want keep-alive comment, got %+v", ev)
@@ -405,7 +405,7 @@ func TestServeEndsStreamsWithoutWaitingForShutdownLimit(t *testing.T) {
 	waitListen(t, ln.Addr().String(), errCh)
 
 	s := openEvents(t, "http://"+ln.Addr().String()+"/events?view=list", nil)
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 	start := time.Now()
 	cancel()
 	select {
@@ -451,13 +451,13 @@ func TestStreamThatCanNeverSucceedIs400BeforeBusCall(t *testing.T) {
 		{query: "after=-1"},
 		{query: "after=x"},
 		{query: "after="},
-		{query: "conversation=a&after=1.5"},
+		{query: "chat=a&after=1.5"},
 		{header: "abc"},
 		{query: "after=3", header: "-2"},
 		{query: "view=all"},
 		{query: "view="},
-		{query: "view=list&conversation=a"},
-		{query: "conversation="},
+		{query: "view=list&chat=a"},
+		{query: "chat="},
 	}
 	for _, c := range cases {
 		req, err := http.NewRequest(http.MethodGet, page.URL+"/events?"+c.query, nil)
@@ -476,15 +476,15 @@ func TestStreamThatCanNeverSucceedIs400BeforeBusCall(t *testing.T) {
 		t.Fatalf("bus calls %d", n)
 	}
 
-	status, body, hdr := doPage(t, mustGet(t, page.URL+"/events?conversation="+url.QueryEscape("bad name")))
-	if status != http.StatusBadRequest || hdr.Get("Content-Type") == "text/event-stream" || strings.TrimSpace(body) != bus.ReasonBadConversation {
+	status, body, hdr := doPage(t, mustGet(t, page.URL+"/events?chat="+url.QueryEscape("bad name")))
+	if status != http.StatusBadRequest || hdr.Get("Content-Type") == "text/event-stream" || strings.TrimSpace(body) != bus.ReasonBadChat {
 		t.Fatalf("bus-refused name: %d %q %q", status, hdr.Get("Content-Type"), body)
 	}
 
 	req := mustGet(t, page.URL+"/events?view=list&after=x")
 	req.Header.Set("Last-Event-ID", "y")
 	s := openRequest(t, req)
-	expectConversations(t, s.next(t))
+	expectChats(t, s.next(t))
 }
 
 // sseEvent is one dispatched record. Comment and Retry records have no Name.
@@ -646,41 +646,41 @@ func (s *sseStream) expectEnd(t *testing.T) {
 	}
 }
 
-func expectMessage(t *testing.T, ev sseEvent, seq int64, conv string) {
+func expectMessage(t *testing.T, ev sseEvent, seq int64, chat string) {
 	t.Helper()
 	n := strconv.FormatInt(seq, 10)
-	want := `<li class="message" id="msg-` + n + `" data-seq="` + n + `" data-conversation="` + conv + `">`
+	want := `<li class="message" id="msg-` + n + `" data-seq="` + n + `" data-chat="` + chat + `">`
 	if ev.Name != eventMessage || ev.ID != n || !strings.HasPrefix(ev.Data, want) || !strings.HasSuffix(ev.Data, "</li>") {
-		t.Fatalf("want message %s in %s, got %+v", n, conv, ev)
+		t.Fatalf("want message %s in %s, got %+v", n, chat, ev)
 	}
 }
 
-func expectConversations(t *testing.T, ev sseEvent) {
+func expectChats(t *testing.T, ev sseEvent) {
 	t.Helper()
-	if ev.Name != eventConversations || ev.ID != "" {
-		t.Fatalf("want conversations, got %+v", ev)
+	if ev.Name != eventChats || ev.ID != "" {
+		t.Fatalf("want chats, got %+v", ev)
 	}
-	for _, id := range []string{`id="open-section"`, `id="closed-section"`, `id="conversation-index"`} {
+	for _, id := range []string{`id="open-section"`, `id="closed-section"`, `id="chat-index"`} {
 		if strings.Count(ev.Data, id) != 1 {
-			t.Fatalf("conversations without %s: %s", id, ev.Data)
+			t.Fatalf("chats without %s: %s", id, ev.Data)
 		}
 	}
 }
 
 func expectMeta(t *testing.T, ev sseEvent, status string) {
 	t.Helper()
-	if ev.Name != eventMeta || ev.ID != "" || !strings.HasPrefix(ev.Data, `<aside id="conversation-meta">`) || !strings.Contains(ev.Data, `data-status="`+status+`"`) {
+	if ev.Name != eventMeta || ev.ID != "" || !strings.HasPrefix(ev.Data, `<aside id="chat-meta">`) || !strings.Contains(ev.Data, `data-status="`+status+`"`) {
 		t.Fatalf("want meta with status %s, got %+v", status, ev)
 	}
 }
 
-func publishSeq(t *testing.T, addr, token, conv, txid string) int64 {
+func sendSeq(t *testing.T, addr, token, chat, txid string) int64 {
 	t.Helper()
-	res := busCall(t, addr, token, "publish", client.PublishRequest{
-		Conversation: conv, From: "alice", To: []string{}, Body: "body " + txid + "\nline two", TxID: txid, Kind: "say",
+	res := busCall(t, addr, token, "send", client.SendRequest{
+		Chat: chat, From: "alice", To: []string{}, Body: "body " + txid + "\nline two", TxID: txid, Kind: "say",
 	})
 	if res.Outcome != bus.OutcomeOK || res.Message == nil {
-		t.Fatalf("publish %s: %+v", txid, res)
+		t.Fatalf("send %s: %+v", txid, res)
 	}
 	return res.Message.Seq
 }

@@ -17,20 +17,20 @@ import (
 // watchQuery is one watch after the JSON object has been decoded.
 // Each has field is false when the caller omitted that field.
 type watchQuery struct {
-	conversation    string
-	hasConversation bool
-	cursor          int64
-	hasCursor       bool
-	limit           int64
-	hasLimit        bool
-	rev             uint64
-	hasRev          bool
-	deadline        waitLimit
+	chat      string
+	hasChat   bool
+	cursor    int64
+	hasCursor bool
+	limit     int64
+	hasLimit  bool
+	rev       uint64
+	hasRev    bool
+	deadline  waitLimit
 }
 
 func (q watchQuery) validate() error {
-	if q.hasConversation {
-		if err := requireConversation(q.conversation); err != nil {
+	if q.hasChat {
+		if err := requireChat(q.chat); err != nil {
 			return err
 		}
 	}
@@ -49,7 +49,7 @@ func (q watchQuery) validate() error {
 // Watch returns messages after the cursor and the current rev.
 // It returns at once when a matching message exists, when rev is omitted, or
 // when rev differs from the current counter. Otherwise it blocks until one of
-// those holds, the deadline passes, ctx ends, or the bus stops. The waiter is registered
+// those holds, the deadline passes, ctx ends, or the bus stops. The waiter is added
 // before the store is read, under the same lock as every commit.
 func (s *Service) Watch(ctx context.Context, q watchQuery) (Result, error) {
 	if err := q.validate(); err != nil {
@@ -81,9 +81,9 @@ func (s *Service) Watch(ctx context.Context, q watchQuery) (Result, error) {
 		}
 		s.mu.Unlock()
 		held = false
-		s.log.Debug("watch blocking", "conversation", q.conversation)
+		s.log.Debug("watch blocking", "chat", q.chat)
 		if s.onBlock != nil {
-			s.onBlock(q.conversation, "")
+			s.onBlock(q.chat, "")
 		}
 		action := actWake
 		select {
@@ -114,7 +114,7 @@ func (s *Service) Watch(ctx context.Context, q watchQuery) (Result, error) {
 func (s *Service) evalWatch(ctx context.Context, q watchQuery) (Result, bool, error) {
 	res := Result{Outcome: OutcomeOK, Messages: []store.Message{}, Rev: s.rev}
 	if q.hasCursor {
-		msgs, more, err := s.store.After(ctx, q.conversation, q.cursor, int(q.limit))
+		msgs, more, err := s.store.After(ctx, q.chat, q.cursor, int(q.limit))
 		if err != nil {
 			fres, ferr := s.fail(err, "watch")
 			return fres, false, ferr

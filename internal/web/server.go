@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	routeMessages      = "/"
-	routeConversations = "/conversations"
+	routeMessages = "/"
+	routeChats    = "/chats"
 
 	// DefaultListen is the loopback address of the page when the operator does not set one.
 	DefaultListen = "127.0.0.1:4728"
@@ -35,9 +35,9 @@ func URL(hostport string) string {
 	return "http://" + hostport
 }
 
-// ConversationURL is the address a browser opens for the named conversation's view on a page bound at hostport.
-func ConversationURL(hostport, name string) string {
-	return URL(hostport) + conversationPath(name)
+// ChatURL is the address a browser opens for the named chat's view on a page bound at hostport.
+func ChatURL(hostport, name string) string {
+	return URL(hostport) + chatPath(name)
 }
 
 // Server calls one bus.
@@ -53,9 +53,9 @@ type Server struct {
 	ListenHost string
 }
 
-// Handler serves the messages page, the conversation list, a transcript,
-// publish, and the GET /events stream.
-// It calls only list, messages, read, publish, and watch.
+// Handler serves the messages page, the chat list, a transcript,
+// send, and the GET /events stream.
+// It calls only list, messages, read, send, and watch.
 // A request whose host is not ListenHost is refused before any of those calls.
 // A stream ends when its request ends. Serve also ends every stream on shutdown.
 func (s Server) Handler() http.Handler {
@@ -66,9 +66,9 @@ func (s Server) Handler() http.Handler {
 func (s Server) handler(stop context.Context) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+routeMessages+"{$}", s.handleMessages)
-	mux.HandleFunc("GET "+routeConversations, s.handleList)
-	mux.HandleFunc("GET "+routeConversations+"/{name}", s.handleConversation)
-	mux.HandleFunc("POST "+routeConversations+"/{name}/messages", s.handlePublish)
+	mux.HandleFunc("GET "+routeChats, s.handleList)
+	mux.HandleFunc("GET "+routeChats+"/{name}", s.handleChat)
+	mux.HandleFunc("POST "+routeChats+"/{name}/messages", s.handleSend)
 	mux.HandleFunc("GET "+routeEvents, func(w http.ResponseWriter, r *http.Request) {
 		s.handleEvents(stop, w, r)
 	})
@@ -180,7 +180,7 @@ func (s Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		s.render(w, p)
 		return
 	}
-	applyList(&p, res.Conversations)
+	applyList(&p, res.Chats)
 	before, newest, ok := queryBefore(r.URL.Query())
 	if !ok {
 		p.Notice = bus.ReasonBeforeRange
@@ -212,14 +212,14 @@ func (s Server) handleList(w http.ResponseWriter, r *http.Request) {
 		s.render(w, p)
 		return
 	}
-	applyList(&p, res.Conversations)
+	applyList(&p, res.Chats)
 	s.render(w, p)
 }
 
-func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
+func (s Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	name := r.PathValue("name")
-	p := conversationPage(name)
+	p := chatPage(name)
 	if err := s.fillStatus(r.Context(), &p); err != nil {
 		if r.Context().Err() != nil {
 			return
@@ -236,7 +236,7 @@ func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 	}
 	if !newest {
 		p.History = true
-		p.NewestHref = conversationPath(name)
+		p.NewestHref = chatPath(name)
 	}
 	if err := s.fillRecent(r.Context(), &p, before, newest); err != nil {
 		if r.Context().Err() != nil {
@@ -247,57 +247,57 @@ func (s Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 	s.render(w, p)
 }
 
-func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
-	if foreignPublish(r) {
-		s.logger().Info("call", "op", "publish", "outcome", bus.OutcomeRefused, "reason", "cross-site request")
+func (s Server) handleSend(w http.ResponseWriter, r *http.Request) {
+	if foreignSend(r) {
+		s.logger().Info("call", "op", "send", "outcome", bus.OutcomeRefused, "reason", "cross-site request")
 		s.render(w, page{
-			Notice:     "this publish did not come from this page",
+			Notice:     "this send did not come from this page",
 			HTTPStatus: http.StatusForbidden,
 		})
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		s.logger().Error("publish form", "err", err)
+		s.logger().Error("send form", "err", err)
 		s.render(w, page{Notice: err.Error()})
 		return
 	}
 	name := r.PathValue("name")
-	p := conversationPage(name)
+	p := chatPage(name)
 	fillPosted(&p, r)
 	if err := s.fillStatus(r.Context(), &p); err != nil {
 		if r.Context().Err() != nil {
 			return
 		}
 		p.Notice = err.Error()
-		renderPublish(s, w, p)
+		renderSend(s, w, p)
 		return
 	}
 	start := time.Now()
-	res, err := client.Do(r.Context(), s.BusAddress, "publish", s.Token, client.PublishRequest{
-		Conversation: name,
-		From:         p.From,
-		To:           namesFromLines(p.ToText),
-		Body:         p.Body,
-		TxID:         p.TxID,
-		Kind:         p.MessageKind,
+	res, err := client.Do(r.Context(), s.BusAddress, "send", s.Token, client.SendRequest{
+		Chat: name,
+		From: p.From,
+		To:   namesFromLines(p.ToText),
+		Body: p.Body,
+		TxID: p.TxID,
+		Kind: p.MessageKind,
 	})
 	if err != nil {
 		if r.Context().Err() != nil {
 			return
 		}
 		p.Notice = err.Error()
-		renderPublish(s, w, p)
+		renderSend(s, w, p)
 		return
 	}
-	s.logCall("publish", name, res, start)
+	s.logCall("send", name, res, start)
 	if res.Outcome == bus.OutcomeOK {
 		setPageHeaders(w)
-		http.Redirect(w, r, conversationPath(name), http.StatusSeeOther)
+		http.Redirect(w, r, chatPath(name), http.StatusSeeOther)
 		return
 	}
-	p.Publish = &publishView{Outcome: res.Outcome, Reason: res.Reason}
-	if res.Conversation != nil {
-		p.Status = res.Conversation.Status
+	p.Send = &sendView{Outcome: res.Outcome, Reason: res.Reason}
+	if res.Chat != nil {
+		p.Status = res.Chat.Status
 		p.StatusKnown = true
 	}
 	if err := s.fillRecent(r.Context(), &p, 0, true); err != nil {
@@ -308,22 +308,22 @@ func (s Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			p.Notice = err.Error()
 		}
 	}
-	renderPublish(s, w, p)
+	renderSend(s, w, p)
 }
 
-// renderPublish opens Send when the attempt did not store.
-func renderPublish(s Server, w http.ResponseWriter, p page) {
-	if p.Publish == nil || p.Publish.Outcome != bus.OutcomeOK {
+// renderSend opens Send when the attempt did not store.
+func renderSend(s Server, w http.ResponseWriter, p page) {
+	if p.Send == nil || p.Send.Outcome != bus.OutcomeOK {
 		p.SendOpen = true
 	}
 	s.render(w, p)
 }
 
-func conversationPage(name string) page {
+func chatPage(name string) page {
 	return page{
-		Kind:          kindConversation,
-		Name:          name,
-		PublishAction: messagesPath(name),
+		Kind:       kindChat,
+		Name:       name,
+		SendAction: messagesPath(name),
 	}
 }
 
@@ -370,11 +370,11 @@ func (s Server) fillStatus(ctx context.Context, p *page) error {
 		p.ListReason = res.Reason
 		return nil
 	}
-	applyList(p, res.Conversations)
+	applyList(p, res.Chats)
 	return nil
 }
 
-// fillMessages shows one group across every conversation, newest message first.
+// fillMessages shows one group across every chat, newest message first.
 // A full group may have older messages below it, so it links the next group.
 func (s Server) fillMessages(ctx context.Context, p *page, before int64, newest bool) error {
 	req := client.MessagesRequest{Limit: groupLimit}
@@ -394,7 +394,7 @@ func (s Server) fillMessages(ctx context.Context, p *page, before int64, newest 
 	}
 	msgs := *res.Messages
 	for _, m := range msgs {
-		view.Messages = append(view.Messages, newMessageItem(m.Conversation, m))
+		view.Messages = append(view.Messages, newMessageItem(m.Chat, m))
 	}
 	if int64(len(msgs)) == groupLimit {
 		view.Full = true
@@ -424,9 +424,9 @@ func (s Server) recent(ctx context.Context, name string, before int64, newest bo
 		}
 		start := time.Now()
 		res, err := client.Do(ctx, s.BusAddress, "read", s.Token, client.ReadRequest{
-			Conversation: name,
-			Cursor:       cursor,
-			Limit:        groupLimit,
+			Chat:   name,
+			Cursor: cursor,
+			Limit:  groupLimit,
 		})
 		if err != nil {
 			return nil, err
@@ -460,7 +460,7 @@ func (s Server) recent(ctx context.Context, name string, before int64, newest bo
 }
 
 // transcriptGroup turns an oldest-first window into items, newest first.
-// A read message carries no conversation, so each item takes name.
+// A read message carries no chat, so each item takes name.
 func transcriptGroup(name string, window []client.Message, more bool) *messageGroup {
 	view := &messageGroup{Outcome: bus.OutcomeOK}
 	for i := len(window) - 1; i >= 0; i-- {
@@ -468,24 +468,24 @@ func transcriptGroup(name string, window []client.Message, more bool) *messageGr
 	}
 	if more && len(window) > 0 {
 		view.Full = true
-		view.NextPage = olderHref(conversationHref(name), window[0].Seq)
+		view.NextPage = olderHref(chatHref(name), window[0].Seq)
 	}
 	return view
 }
 
-func newMessageItem(conversation string, m client.Message) messageItem {
-	return messageItem{Conversation: conversation, Href: conversationHref(conversation), Message: m}
+func newMessageItem(chat string, m client.Message) messageItem {
+	return messageItem{Chat: chat, Href: chatHref(chat), Message: m}
 }
 
-func (s Server) logCall(op, conv string, res client.Result, start time.Time) {
+func (s Server) logCall(op, chat string, res client.Result, start time.Time) {
 	attrs := []any{"op", op, "outcome", res.Outcome, "duration", time.Since(start)}
-	if conv != "" {
-		attrs = append(attrs, "conversation", conv)
+	if chat != "" {
+		attrs = append(attrs, "chat", chat)
 	}
 	if res.Reason != "" {
 		attrs = append(attrs, "reason", res.Reason)
 	}
-	if op == "publish" && res.AlreadyStored != nil {
+	if op == "send" && res.AlreadyStored != nil {
 		attrs = append(attrs, "already_stored", *res.AlreadyStored)
 	}
 	s.logger().Info("call", attrs...)
@@ -493,17 +493,17 @@ func (s Server) logCall(op, conv string, res client.Result, start time.Time) {
 
 // applyList fills the index, then splits the rows into Open and Closed.
 // Each section keeps the bus order, newest activity first.
-func applyList(p *page, cs *[]client.Conversation) {
+func applyList(p *page, cs *[]client.Chat) {
 	if cs == nil {
 		return
 	}
 	p.Index = make([]indexEntry, 0, len(*cs))
 	for _, c := range *cs {
-		href := conversationHref(c.Name)
+		href := chatHref(c.Name)
 		p.Index = append(p.Index, indexEntry{
 			Name: c.Name, Status: c.Status, Task: c.Task, Ticket: c.Ticket, Href: href,
 		})
-		row := conversationRow{Name: c.Name, Href: href, Task: c.Task, Ticket: c.Ticket, Seat: c.Seat}
+		row := chatRow{Name: c.Name, Href: href, Task: c.Task, Ticket: c.Ticket, Seat: c.Seat}
 		if c.Status == "open" {
 			p.Open = append(p.Open, row)
 		} else {
@@ -520,23 +520,23 @@ func applyList(p *page, cs *[]client.Conversation) {
 	}
 }
 
-// conversationPath is the transcript URL. The name is one path segment.
-func conversationPath(name string) string {
-	return routeConversations + "/" + url.PathEscape(name)
+// chatPath is the transcript URL. The name is one path segment.
+func chatPath(name string) string {
+	return routeChats + "/" + url.PathEscape(name)
 }
 
-// messagesPath is the publish target for one conversation.
+// messagesPath is the send target for one chat.
 func messagesPath(name string) string {
-	return conversationPath(name) + "/messages"
+	return chatPath(name) + "/messages"
 }
 
-// conversationHref is the link for a conversation.
+// chatHref is the link for a chat.
 // A name of "." or ".." has no link. The router cleans those segments before a handler runs.
-func conversationHref(name string) string {
+func chatHref(name string) string {
 	if name == "." || name == ".." {
 		return ""
 	}
-	return conversationPath(name)
+	return chatPath(name)
 }
 
 // olderHref is the group below before on the page at href. An empty href has no link.
@@ -570,10 +570,10 @@ func loopbackLocalhost(bound, host, scheme string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// foreignPublish reports a browser post from another site.
+// foreignSend reports a browser post from another site.
 // No Origin and no Sec-Fetch-Site means a non-browser client.
 // The host gate has already required this page's address.
-func foreignPublish(r *http.Request) bool {
+func foreignSend(r *http.Request) bool {
 	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 		return true
 	}

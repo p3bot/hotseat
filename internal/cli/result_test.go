@@ -24,7 +24,7 @@ func TestWriteResultLayout(t *testing.T) {
 	res := client.Result{
 		Outcome:       "ok",
 		AlreadyStored: &stored,
-		Conversation:  &client.Conversation{Name: "job", Status: "open"},
+		Chat:          &client.Chat{Name: "job", Status: "open"},
 		Message: &client.Message{
 			Seq:  1,
 			Time: "2026-10-08T07:00:00Z",
@@ -62,11 +62,11 @@ hello
 		t.Fatal("layout is JSON")
 	}
 	got := parseStdout(t, buf.Bytes())
-	if got.Outcome != res.Outcome || got.AlreadyStored == nil || *got.AlreadyStored || got.Conversation == nil || got.Message == nil {
+	if got.Outcome != res.Outcome || got.AlreadyStored == nil || *got.AlreadyStored || got.Chat == nil || got.Message == nil {
 		t.Fatalf("parsed %+v", got)
 	}
-	if got.Conversation.Name != "job" || got.Conversation.Status != "open" {
-		t.Fatalf("conversation %+v", got.Conversation)
+	if got.Chat.Name != "job" || got.Chat.Status != "open" {
+		t.Fatalf("conversation %+v", got.Chat)
 	}
 	if got.Message.Seq != 1 || got.Message.From != "alice" || got.Message.Body != "hello" || got.Message.TxID != "1" {
 		t.Fatalf("message %+v", got.Message)
@@ -85,14 +85,14 @@ func TestWriteResultFramesAwkwardText(t *testing.T) {
 		{Seq: 3, Time: "t", From: "alice", To: []string{}, Body: "outcome: ok", TxID: "field"},
 		{Seq: 4, Time: "t\n2", From: "alice", To: []string{"bob"}, Body: "one\noutcome: ok\n", TxID: "a\nb"},
 	}
-	convs := []client.Conversation{}
+	convs := []client.Chat{}
 	res := client.Result{
 		Outcome:        "ok",
 		Reason:         "line\nkey: value",
 		AlreadyExisted: &existed,
 		MatchSeq:       &seq,
 		Messages:       &msgs,
-		Conversations:  &convs,
+		Chats:          &convs,
 	}
 	var buf bytes.Buffer
 	if err := writeResult(&buf, res); err != nil {
@@ -106,7 +106,7 @@ func TestWriteResultFramesAwkwardText(t *testing.T) {
 	if got.Reason != res.Reason || got.AlreadyExisted == nil || !*got.AlreadyExisted || got.MatchSeq == nil || *got.MatchSeq != 4 {
 		t.Fatalf("scalars %+v", got)
 	}
-	if got.Conversations == nil || len(*got.Conversations) != 0 || got.Messages == nil || len(*got.Messages) != len(msgs) {
+	if got.Chats == nil || len(*got.Chats) != 0 || got.Messages == nil || len(*got.Messages) != len(msgs) {
 		t.Fatalf("lists %+v", got)
 	}
 	for i, msg := range msgs {
@@ -150,9 +150,9 @@ func TestWriteResultOmitsAbsentFields(t *testing.T) {
 func TestWriteResultOmitsEmptyStatus(t *testing.T) {
 	seq := int64(2)
 	res := client.Result{
-		Outcome:      "ok",
-		MatchSeq:     &seq,
-		Conversation: &client.Conversation{Name: "job"},
+		Outcome:  "ok",
+		MatchSeq: &seq,
+		Chat:     &client.Chat{Name: "job"},
 		Message: &client.Message{
 			Seq: 2, Time: "t", From: "alpha", Kind: "ask", To: []string{"owner"}, Body: "help", TxID: "1",
 		},
@@ -165,7 +165,7 @@ func TestWriteResultOmitsEmptyStatus(t *testing.T) {
 		t.Fatalf("blank status\n%s", buf.String())
 	}
 	got := parseStdout(t, buf.Bytes())
-	if got.Conversation == nil || got.Conversation.Name != "job" || got.Conversation.Status != "" || got.MatchSeq == nil || *got.MatchSeq != 2 {
+	if got.Chat == nil || got.Chat.Name != "job" || got.Chat.Status != "" || got.MatchSeq == nil || *got.MatchSeq != 2 {
 		t.Fatalf("parsed %+v", got)
 	}
 	if got.Message == nil || got.Message.Kind != "ask" || got.Message.Body != "help" || len(got.Message.To) != 1 || got.Message.To[0] != "owner" {
@@ -247,12 +247,12 @@ func parseResult(raw []byte) (client.Result, error) {
 		if err != nil {
 			return res, err
 		}
-		res.Conversation = &conv
+		res.Chat = &conv
 	}
 	if ok, err := c.ifHeader("conversations"); err != nil {
 		return res, err
 	} else if ok {
-		list := []client.Conversation{}
+		list := []client.Chat{}
 		for {
 			if c.i >= len(c.raw) {
 				break
@@ -270,7 +270,7 @@ func parseResult(raw []byte) (client.Result, error) {
 			}
 			list = append(list, conv)
 		}
-		res.Conversations = &list
+		res.Chats = &list
 	}
 	if ok, err := c.ifHeader("message"); err != nil {
 		return res, err
@@ -356,12 +356,12 @@ type textField struct {
 	framed bool
 }
 
-func (c *textCursor) conversation() (client.Conversation, error) {
+func (c *textCursor) conversation() (client.Chat, error) {
 	name, err := c.value("name")
 	if err != nil {
-		return client.Conversation{}, err
+		return client.Chat{}, err
 	}
-	conv := client.Conversation{Name: name}
+	conv := client.Chat{Name: name}
 	if c.i < len(c.raw) {
 		f, err := c.peek()
 		if err != nil {
@@ -423,7 +423,7 @@ func (c *textCursor) memberFields() (client.Member, error) {
 	if err != nil {
 		return m, err
 	}
-	m.Registered, err = c.value("registered")
+	m.Joined, err = c.value("registered")
 	if err != nil {
 		return m, err
 	}

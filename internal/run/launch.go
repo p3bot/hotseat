@@ -575,19 +575,19 @@ func (e *engine) send(p post) (int64, bool, error) {
 			return 0, false, err
 		}
 	}
-	req := client.PublishRequest{
-		Conversation: e.name,
-		From:         p.from,
-		To:           p.to,
-		Body:         p.body,
-		TxID:         tx,
-		Kind:         p.kind,
-		Holder:       e.holder,
+	req := client.SendRequest{
+		Chat:   e.name,
+		From:   p.from,
+		To:     p.to,
+		Body:   p.body,
+		TxID:   tx,
+		Kind:   p.kind,
+		Holder: e.holder,
 	}
 	if p.re > 0 {
 		req.Re = &p.re
 	}
-	res, err := e.call(e.root, "publish", req)
+	res, err := e.call(e.root, "send", req)
 	if err != nil {
 		return 0, false, err
 	}

@@ -61,19 +61,19 @@ func TestStartTokenWithoutAPidIsNotStored(t *testing.T) {
 }
 
 func TestOpenRejectsVersion1WhoseMembersLackStart(t *testing.T) {
-	dir := writeVersion1(t, replyMessagesHead+`, UNIQUE (conversation, seq), UNIQUE (conversation, seq, kind)) STRICT`)
+	dir := writeVersion1(t, replyMessagesHead+`, UNIQUE (chat, seq), UNIQUE (chat, seq, kind)) STRICT`)
 	db := openRaw(t, dir)
 	for _, stmt := range []string{
 		`DROP TABLE members`,
 		`CREATE TABLE members (
-			conversation TEXT NOT NULL REFERENCES conversations(name),
+			chat TEXT NOT NULL REFERENCES chats(name),
 			name TEXT NOT NULL,
 			launched TEXT NOT NULL,
-			registered TEXT NOT NULL,
+			joined TEXT NOT NULL,
 			status TEXT NOT NULL,
 			session TEXT NOT NULL,
 			pid INTEGER,
-			PRIMARY KEY (conversation, name)
+			PRIMARY KEY (chat, name)
 		) STRICT`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {

@@ -75,14 +75,14 @@ func newPublishCmd() *cobra.Command {
 		if err := writeTxID(cmd.ErrOrStderr(), key); err != nil {
 			return err
 		}
-		return call(cmd, address, "publish", client.PublishRequest{
-			Conversation: conv,
-			From:         from,
-			To:           to,
-			Body:         text,
-			TxID:         key,
-			Kind:         kind,
-			Re:           changedRe(cmd, re),
+		return call(cmd, address, "send", client.SendRequest{
+			Chat: conv,
+			From: from,
+			To:   to,
+			Body: text,
+			TxID: key,
+			Kind: kind,
+			Re:   changedRe(cmd, re),
 		})
 	})
 	addAddress(cmd, &address)
@@ -105,11 +105,11 @@ func newReadCmd() *cobra.Command {
 	cmd := newClientCmd("read", "Read messages after a cursor", `  hotseat read --conversation job --cursor 0 --limit 50
   hotseat read --conversation job --cursor 0 --limit 50 --name bob --kind say`, func(cmd *cobra.Command) error {
 		return call(cmd, address, "read", client.ReadRequest{
-			Conversation: conv,
-			Cursor:       cursor,
-			Limit:        limit,
-			Name:         changedString(cmd, "name", name),
-			Kinds:        changedKinds(cmd, kinds),
+			Chat:   conv,
+			Cursor: cursor,
+			Limit:  limit,
+			Name:   changedString(cmd, "name", name),
+			Kinds:  changedKinds(cmd, kinds),
 		})
 	})
 	addAddress(cmd, &address)
@@ -128,11 +128,11 @@ func newWaitCmd() *cobra.Command {
 	var cursor int64
 	cmd := newClientCmd("wait", "Wait for a matching message", `  hotseat wait --conversation job --cursor 0 --name bob --kind turn --deadline 30s`, func(cmd *cobra.Command) error {
 		return call(cmd, address, "wait", client.WaitRequest{
-			Conversation: conv,
-			Cursor:       cursor,
-			Name:         changedString(cmd, "name", name),
-			Deadline:     changedString(cmd, "deadline", deadline),
-			Kinds:        changedKinds(cmd, kinds),
+			Chat:     conv,
+			Cursor:   cursor,
+			Name:     changedString(cmd, "name", name),
+			Deadline: changedString(cmd, "deadline", deadline),
+			Kinds:    changedKinds(cmd, kinds),
 		})
 	})
 	addAddress(cmd, &address)
@@ -148,7 +148,7 @@ func newWaitCmd() *cobra.Command {
 func newCloseCmd() *cobra.Command {
 	var address, conv string
 	cmd := newClientCmd("close", "Close a conversation", `  hotseat close --conversation job`, func(cmd *cobra.Command) error {
-		return call(cmd, address, "close", client.CloseRequest{Conversation: conv})
+		return call(cmd, address, "close", client.CloseRequest{Chat: conv})
 	})
 	addAddress(cmd, &address)
 	cmd.Flags().StringVar(&conv, "conversation", "", "conversation name")
@@ -174,7 +174,7 @@ func newMemberCmd() *cobra.Command {
 func newMemberRegisterCmd() *cobra.Command {
 	var address, conv, name string
 	cmd := newClientCmd("register", "Register a member", `  hotseat member register --conversation job --name alpha`, func(cmd *cobra.Command) error {
-		return call(cmd, address, "register", client.RegisterRequest{Conversation: conv, Name: name})
+		return call(cmd, address, "join", client.JoinRequest{Chat: conv, Name: name})
 	})
 	addAddress(cmd, &address)
 	cmd.Flags().StringVar(&conv, "conversation", "", "conversation name")
@@ -186,7 +186,7 @@ func newMemberRegisterCmd() *cobra.Command {
 func newMemberListCmd() *cobra.Command {
 	var address, conv string
 	cmd := newClientCmd("list", "List member rows", `  hotseat member list --conversation job`, func(cmd *cobra.Command) error {
-		return call(cmd, address, "members", client.MembersRequest{Conversation: conv})
+		return call(cmd, address, "members", client.MembersRequest{Chat: conv})
 	})
 	addAddress(cmd, &address)
 	cmd.Flags().StringVar(&conv, "conversation", "", "conversation name")

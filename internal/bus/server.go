@@ -35,8 +35,8 @@ type Options struct {
 	// Clock supplies the bus time stored on an accepted message. Nil uses time.Now.
 	Clock func() time.Time
 	// OnBlock is called, without the service lock, when a wait starts blocking.
-	// Tests use it to publish only after the waiter is parked.
-	OnBlock func(conversation, name string)
+	// Tests use it to send only after the waiter is parked.
+	OnBlock func(chat, name string)
 	// Token is the shared capability secret for this listener.
 	// Empty means the listener does not require one. A non-empty token is
 	// required on every operation and is not logged or stored.
@@ -101,14 +101,14 @@ type server struct {
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+PathCreate, s.handleCreate)
-	mux.HandleFunc("POST "+PathPublish, s.handlePublish)
+	mux.HandleFunc("POST "+PathSend, s.handleSend)
 	mux.HandleFunc("POST "+PathRead, s.handleRead)
 	mux.HandleFunc("POST "+PathWait, s.handleWait)
 	mux.HandleFunc("POST "+PathWatch, s.handleWatch)
 	mux.HandleFunc("POST "+PathClose, s.handleClose)
 	mux.HandleFunc("POST "+PathList, s.handleList)
 	mux.HandleFunc("POST "+PathMessages, s.handleMessages)
-	mux.HandleFunc("POST "+PathRegister, s.handleRegister)
+	mux.HandleFunc("POST "+PathJoin, s.handleJoin)
 	mux.HandleFunc("POST "+PathMember, s.handleMember)
 	mux.HandleFunc("POST "+PathSession, s.handleSession)
 	mux.HandleFunc("POST "+PathMembers, s.handleMembers)
@@ -201,8 +201,8 @@ func opName(path string) string {
 	switch path {
 	case PathCreate:
 		return "create"
-	case PathPublish:
-		return "publish"
+	case PathSend:
+		return "send"
 	case PathRead:
 		return "read"
 	case PathWait:
@@ -215,8 +215,8 @@ func opName(path string) string {
 		return "list"
 	case PathMessages:
 		return "messages"
-	case PathRegister:
-		return "register"
+	case PathJoin:
+		return "join"
 	case PathMember:
 		return "member"
 	case PathSession:
@@ -277,24 +277,24 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	s.finish(w, "create", *req.Name, start, res, err)
 }
 
-func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleSend(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string         `json:"conversation"`
-		From         *string         `json:"from"`
-		To           json.RawMessage `json:"to"`
-		Body         *string         `json:"body"`
-		TxID         *string         `json:"txid"`
-		Kind         *string         `json:"kind"`
-		Re           json.RawMessage `json:"re"`
-		Holder       *string         `json:"holder"`
+		Chat   *string         `json:"chat"`
+		From   *string         `json:"from"`
+		To     json.RawMessage `json:"to"`
+		Body   *string         `json:"body"`
+		TxID   *string         `json:"txid"`
+		Kind   *string         `json:"kind"`
+		Re     json.RawMessage `json:"re"`
+		Holder *string         `json:"holder"`
 	}
-	if !s.decode(w, r, "publish", "", start, &req) {
+	if !s.decode(w, r, "send", "", start, &req) {
 		return
 	}
-	in := PublishInput{BodyMissing: req.Body == nil, Holder: req.Holder}
-	if req.Conversation != nil {
-		in.Conversation = *req.Conversation
+	in := SendInput{BodyMissing: req.Body == nil, Holder: req.Holder}
+	if req.Chat != nil {
+		in.Chat = *req.Chat
 	}
 	if req.From != nil {
 		in.From = *req.From
@@ -311,21 +311,21 @@ func (s *server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	names, err := parseTo(req.To)
 	if err != nil {
 		res, rerr := asRefused(err)
-		s.finish(w, "publish", in.Conversation, start, res, rerr)
+		s.finish(w, "send", in.Chat, start, res, rerr)
 		return
 	}
 	in.To = names
 	re, hasRe, err := parsePositive(req.Re, ReasonReRange)
 	if err != nil {
 		res, rerr := asRefused(err)
-		s.finish(w, "publish", in.Conversation, start, res, rerr)
+		s.finish(w, "send", in.Chat, start, res, rerr)
 		return
 	}
 	if hasRe {
 		in.Re = &re
 	}
-	res, err := s.svc.Publish(r.Context(), in)
-	s.finish(w, "publish", in.Conversation, start, res, err)
+	res, err := s.svc.Send(r.Context(), in)
+	s.finish(w, "send", in.Chat, start, res, err)
 }
 
 func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -352,93 +352,93 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleRead(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string         `json:"conversation"`
-		Cursor       *int64          `json:"cursor"`
-		Limit        *int64          `json:"limit"`
-		Name         *string         `json:"name"`
-		Kinds        json.RawMessage `json:"kinds"`
+		Chat   *string         `json:"chat"`
+		Cursor *int64          `json:"cursor"`
+		Limit  *int64          `json:"limit"`
+		Name   *string         `json:"name"`
+		Kinds  json.RawMessage `json:"kinds"`
 	}
 	if !s.decode(w, r, "read", "", start, &req) {
 		return
 	}
-	conv := deref(req.Conversation)
+	chat := deref(req.Chat)
 	if req.Cursor == nil {
-		s.finish(w, "read", conv, start, refused(ReasonCursorRequired), nil)
+		s.finish(w, "read", chat, start, refused(ReasonCursorRequired), nil)
 		return
 	}
 	if req.Limit == nil {
-		s.finish(w, "read", conv, start, refused(ReasonLimitRequired), nil)
+		s.finish(w, "read", chat, start, refused(ReasonLimitRequired), nil)
 		return
 	}
-	if *req.Limit > math.MaxInt {
-		s.finish(w, "read", conv, start, refused(ReasonLimitRange), nil)
+	if *req.Limit > MaxReadLimit {
+		s.finish(w, "read", chat, start, refused(ReasonLimitCap), nil)
 		return
 	}
 	name, hasName := optionalName(req.Name)
 	kinds, hasKinds, err := parseKinds(req.Kinds)
 	if err != nil {
 		res, rerr := asRefused(err)
-		s.finish(w, "read", conv, start, res, rerr)
+		s.finish(w, "read", chat, start, res, rerr)
 		return
 	}
-	res, err := s.svc.Read(r.Context(), conv, *req.Cursor, int(*req.Limit), name, hasName, kinds, hasKinds)
-	s.finish(w, "read", conv, start, res, err)
+	res, err := s.svc.Read(r.Context(), chat, *req.Cursor, int(*req.Limit), name, hasName, kinds, hasKinds)
+	s.finish(w, "read", chat, start, res, err)
 }
 
 func (s *server) handleWait(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string         `json:"conversation"`
-		Cursor       *int64          `json:"cursor"`
-		Name         *string         `json:"name"`
-		Deadline     json.RawMessage `json:"deadline"`
-		Kinds        json.RawMessage `json:"kinds"`
+		Chat     *string         `json:"chat"`
+		Cursor   *int64          `json:"cursor"`
+		Name     *string         `json:"name"`
+		Deadline json.RawMessage `json:"deadline"`
+		Kinds    json.RawMessage `json:"kinds"`
 	}
 	if !s.decode(w, r, "wait", "", start, &req) {
 		return
 	}
-	conv := deref(req.Conversation)
+	chat := deref(req.Chat)
 	if req.Cursor == nil {
-		s.finish(w, "wait", conv, start, refused(ReasonCursorRequired), nil)
+		s.finish(w, "wait", chat, start, refused(ReasonCursorRequired), nil)
 		return
 	}
 	limit, err := parseDeadline(req.Deadline)
 	if err != nil {
 		res, rerr := asRefused(err)
-		s.finish(w, "wait", conv, start, res, rerr)
+		s.finish(w, "wait", chat, start, res, rerr)
 		return
 	}
 	name, hasName := optionalName(req.Name)
 	kinds, hasKinds, err := parseKinds(req.Kinds)
 	if err != nil {
 		res, rerr := asRefused(err)
-		s.finish(w, "wait", conv, start, res, rerr)
+		s.finish(w, "wait", chat, start, res, rerr)
 		return
 	}
-	res, err := s.svc.Wait(r.Context(), conv, *req.Cursor, name, hasName, kinds, hasKinds, limit)
-	s.finish(w, "wait", conv, start, res, err)
+	res, err := s.svc.Wait(r.Context(), chat, *req.Cursor, name, hasName, kinds, hasKinds, limit)
+	s.finish(w, "wait", chat, start, res, err)
 }
 
 func (s *server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string         `json:"conversation"`
-		Cursor       *int64          `json:"cursor"`
-		Rev          *uint64         `json:"rev"`
-		Limit        *int64          `json:"limit"`
-		Deadline     json.RawMessage `json:"deadline"`
+		Chat     *string         `json:"chat"`
+		Cursor   *int64          `json:"cursor"`
+		Rev      *uint64         `json:"rev"`
+		Limit    *int64          `json:"limit"`
+		Deadline json.RawMessage `json:"deadline"`
 	}
 	if !s.decode(w, r, "watch", "", start, &req) {
 		return
 	}
 	q := watchQuery{
-		conversation:    deref(req.Conversation),
-		hasConversation: req.Conversation != nil,
-		cursor:          derefInt(req.Cursor),
-		hasCursor:       req.Cursor != nil,
-		limit:           derefInt(req.Limit),
-		hasLimit:        req.Limit != nil,
-		hasRev:          req.Rev != nil,
+		chat:      deref(req.Chat),
+		hasChat:   req.Chat != nil,
+		cursor:    derefInt(req.Cursor),
+		hasCursor: req.Cursor != nil,
+		limit:     derefInt(req.Limit),
+		hasLimit:  req.Limit != nil,
+		hasRev:    req.Rev != nil,
 	}
 	if req.Rev != nil {
 		q.rev = *req.Rev
@@ -446,25 +446,25 @@ func (s *server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	deadline, err := parseDeadline(req.Deadline)
 	if err != nil {
 		res, rerr := asRefused(err)
-		s.finish(w, "watch", q.conversation, start, res, rerr)
+		s.finish(w, "watch", q.chat, start, res, rerr)
 		return
 	}
 	q.deadline = deadline
 	res, err := s.svc.Watch(r.Context(), q)
-	s.finish(w, "watch", q.conversation, start, res, err)
+	s.finish(w, "watch", q.chat, start, res, err)
 }
 
 func (s *server) handleClose(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string `json:"conversation"`
+		Chat *string `json:"chat"`
 	}
 	if !s.decode(w, r, "close", "", start, &req) {
 		return
 	}
-	conv := deref(req.Conversation)
-	res, err := s.svc.CloseConversation(r.Context(), conv)
-	s.finish(w, "close", conv, start, res, err)
+	chat := deref(req.Chat)
+	res, err := s.svc.CloseChat(r.Context(), chat)
+	s.finish(w, "close", chat, start, res, err)
 }
 
 func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -477,105 +477,105 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 	s.finish(w, "list", "", start, res, err)
 }
 
-func (s *server) handleRegister(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string `json:"conversation"`
-		Name         *string `json:"name"`
+		Chat *string `json:"chat"`
+		Name *string `json:"name"`
 	}
-	if !s.decode(w, r, "register", "", start, &req) {
+	if !s.decode(w, r, "join", "", start, &req) {
 		return
 	}
-	conv := deref(req.Conversation)
+	chat := deref(req.Chat)
 	if req.Name == nil {
-		s.finish(w, "register", conv, start, refused(ReasonNameRequired), nil)
+		s.finish(w, "join", chat, start, refused(ReasonNameRequired), nil)
 		return
 	}
-	res, err := s.svc.Register(r.Context(), conv, *req.Name)
-	s.finish(w, "register", conv, start, res, err)
+	res, err := s.svc.Join(r.Context(), chat, *req.Name)
+	s.finish(w, "join", chat, start, res, err)
 }
 
 func (s *server) handleMember(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string         `json:"conversation"`
-		Name         *string         `json:"name"`
-		Status       *string         `json:"status"`
-		PID          json.RawMessage `json:"pid"`
-		Start        *string         `json:"start"`
-		Holder       *string         `json:"holder"`
+		Chat   *string         `json:"chat"`
+		Name   *string         `json:"name"`
+		Status *string         `json:"status"`
+		PID    json.RawMessage `json:"pid"`
+		Start  *string         `json:"start"`
+		Holder *string         `json:"holder"`
 	}
 	if !s.decode(w, r, "member", "", start, &req) {
 		return
 	}
-	conv := deref(req.Conversation)
+	chat := deref(req.Chat)
 	if req.Name == nil {
-		s.finish(w, "member", conv, start, refused(ReasonNameRequired), nil)
+		s.finish(w, "member", chat, start, refused(ReasonNameRequired), nil)
 		return
 	}
 	pid, hasPID, err := parsePositive(req.PID, ReasonPID)
 	if err != nil {
 		res, rerr := asRefused(err)
-		s.finish(w, "member", conv, start, res, rerr)
+		s.finish(w, "member", chat, start, res, rerr)
 		return
 	}
-	res, err := s.svc.Member(r.Context(), conv, *req.Name, req.Status, pid, hasPID, req.Start, req.Holder)
-	s.finish(w, "member", conv, start, res, err)
+	res, err := s.svc.Member(r.Context(), chat, *req.Name, req.Status, pid, hasPID, req.Start, req.Holder)
+	s.finish(w, "member", chat, start, res, err)
 }
 
 func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string `json:"conversation"`
-		Name         *string `json:"name"`
-		Session      *string `json:"session"`
-		Holder       *string `json:"holder"`
+		Chat    *string `json:"chat"`
+		Name    *string `json:"name"`
+		Session *string `json:"session"`
+		Holder  *string `json:"holder"`
 	}
 	if !s.decode(w, r, "session", "", start, &req) {
 		return
 	}
-	conv := deref(req.Conversation)
+	chat := deref(req.Chat)
 	name, hasName := optionalName(req.Name)
 	session, hasSession := optionalName(req.Session)
-	res, err := s.svc.Session(r.Context(), conv, name, hasName, session, hasSession, req.Holder)
-	s.finish(w, "session", conv, start, res, err)
+	res, err := s.svc.Session(r.Context(), chat, name, hasName, session, hasSession, req.Holder)
+	s.finish(w, "session", chat, start, res, err)
 }
 
 func (s *server) handleMembers(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Conversation *string `json:"conversation"`
+		Chat *string `json:"chat"`
 	}
 	if !s.decode(w, r, "members", "", start, &req) {
 		return
 	}
-	conv := deref(req.Conversation)
-	res, err := s.svc.Members(r.Context(), conv)
-	s.finish(w, "members", conv, start, res, err)
+	chat := deref(req.Chat)
+	res, err := s.svc.Members(r.Context(), chat)
+	s.finish(w, "members", chat, start, res, err)
 }
 
 func (s *server) handleUnknown(w http.ResponseWriter, r *http.Request) {
 	s.finish(w, r.URL.Path, "", time.Now(), refused(ReasonUnknownOp), nil)
 }
 
-func (s *server) decode(w http.ResponseWriter, r *http.Request, op, conv string, start time.Time, dst any) bool {
+func (s *server) decode(w http.ResponseWriter, r *http.Request, op, chat string, start time.Time, dst any) bool {
 	raw, err := readPayload(w, r, s.svc.maxBody)
 	if err != nil {
 		if errors.Is(err, ErrDropped) {
-			s.finish(w, op, conv, start, Result{}, err)
+			s.finish(w, op, chat, start, Result{}, err)
 			return false
 		}
 		res, rerr := asRefused(err)
 		if rerr != nil {
-			s.finish(w, op, conv, start, Result{}, rerr)
+			s.finish(w, op, chat, start, Result{}, rerr)
 			return false
 		}
-		s.finish(w, op, conv, start, res, nil)
+		s.finish(w, op, chat, start, res, nil)
 		return false
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(dst); err != nil || dec.More() {
-		s.finish(w, op, conv, start, refused(ReasonBadJSON), nil)
+		s.finish(w, op, chat, start, refused(ReasonBadJSON), nil)
 		return false
 	}
 	return true
@@ -642,17 +642,17 @@ func deref(s *string) string {
 	return *s
 }
 
-func (s *server) finish(w http.ResponseWriter, op, conv string, start time.Time, res Result, err error) {
+func (s *server) finish(w http.ResponseWriter, op, chat string, start time.Time, res Result, err error) {
 	if errors.Is(err, ErrDropped) {
-		s.svc.log.Info("call", "op", op, "conversation", conv, "outcome", "dropped", "duration", time.Since(start))
+		s.svc.log.Info("call", "op", op, "chat", chat, "outcome", "dropped", "duration", time.Since(start))
 		abort(w)
 		return
 	}
 	if err != nil {
-		s.svc.log.Error("call", "op", op, "conversation", conv, "err", err, "duration", time.Since(start))
+		s.svc.log.Error("call", "op", op, "chat", chat, "err", err, "duration", time.Since(start))
 		res = Result{Outcome: OutcomeUnavailable, Reason: ReasonUnavailable}
 	}
-	attrs := []any{"op", op, "conversation", conv, "outcome", res.Outcome, "duration", time.Since(start)}
+	attrs := []any{"op", op, "chat", chat, "outcome", res.Outcome, "duration", time.Since(start)}
 	if res.Reason != "" {
 		attrs = append(attrs, "reason", res.Reason)
 	}
@@ -708,8 +708,8 @@ type wire struct {
 	MatchSeq       *int64              `json:"match_seq,omitempty"`
 	Message        *wireMessage        `json:"message,omitempty"`
 	Messages       *[]wireMessage      `json:"messages,omitempty"`
-	Conversation   *wireConversation   `json:"conversation,omitempty"`
-	Conversations  *[]wireConversation `json:"conversations,omitempty"`
+	Chat           *wireChat           `json:"chat,omitempty"`
+	Chats          *[]wireChat         `json:"chats,omitempty"`
 	Member         *wireMember         `json:"member,omitempty"`
 	Members        *[]wireMemberPublic `json:"members,omitempty"`
 	Session        *wireSession        `json:"session,omitempty"`
@@ -732,18 +732,18 @@ type wire struct {
 }
 
 type wireMessage struct {
-	Seq          int64    `json:"seq"`
-	Time         string   `json:"time"`
-	From         string   `json:"from"`
-	To           []string `json:"to"`
-	Body         string   `json:"body"`
-	TxID         string   `json:"txid"`
-	Kind         string   `json:"kind"`
-	Re           *int64   `json:"re"`
-	Conversation string   `json:"conversation,omitempty"`
+	Seq  int64    `json:"seq"`
+	Time string   `json:"time"`
+	From string   `json:"from"`
+	To   []string `json:"to"`
+	Body string   `json:"body"`
+	TxID string   `json:"txid"`
+	Kind string   `json:"kind"`
+	Re   *int64   `json:"re"`
+	Chat string   `json:"chat,omitempty"`
 }
 
-type wireConversation struct {
+type wireChat struct {
 	Name      string   `json:"name"`
 	Status    string   `json:"status"`
 	Task      string   `json:"task"`
@@ -756,10 +756,10 @@ type wireConversation struct {
 }
 
 type wireMemberPublic struct {
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	Launched   string `json:"launched"`
-	Registered string `json:"registered"`
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	Launched string `json:"launched"`
+	Joined   string `json:"joined"`
 }
 
 // wireMember is a member row. PID and Start are set only on a one-row member read or write.
@@ -779,21 +779,25 @@ func toWire(op string, res Result) wire {
 	switch res.Outcome {
 	case OutcomeOK:
 		switch op {
-		case "publish":
+		case "send":
 			out.Message = wirePtr(res.Message, toWireMessage)
 			already := res.AlreadyStored
 			out.AlreadyStored = &already
-			out.Conversation = wirePtr(res.Conversation, toWireConversation)
+			out.Chat = wirePtr(res.Chat, toWireChat)
 		case "create":
-			out.Conversation = wirePtr(res.Conversation, toWireConversation)
+			out.Chat = wirePtr(res.Chat, toWireChat)
 			existed := res.AlreadyExisted
 			out.AlreadyExisted = &existed
 		case "close":
-			out.Conversation = wirePtr(res.Conversation, toWireConversation)
+			out.Chat = wirePtr(res.Chat, toWireChat)
 		case "list":
-			out.Conversations = wireList(res.Conversations, toWireConversation)
+			out.Chats = wireList(res.Chats, toWireChat)
 		case "messages", "read", "wait":
 			out.Messages = wireList(res.Messages, toWireMessage)
+			if op == "read" {
+				more := res.More
+				out.More = &more
+			}
 			if op == "wait" && res.MatchSeq != 0 {
 				seq := res.MatchSeq
 				out.MatchSeq = &seq
@@ -803,7 +807,7 @@ func toWire(op string, res Result) wire {
 			more, rev := res.More, res.Rev
 			out.More = &more
 			out.Rev = &rev
-		case "register":
+		case "join":
 			out.Member = wirePtr(res.Member, func(m store.Member) wireMember {
 				return wireMember{wireMemberPublic: publicMember(m)}
 			})
@@ -832,19 +836,19 @@ func toWireMessage(m store.Message) wireMessage {
 		to = []string{}
 	}
 	return wireMessage{
-		Seq:          m.Seq,
-		Time:         m.Time,
-		From:         m.From,
-		To:           to,
-		Body:         m.Body,
-		TxID:         m.TxID,
-		Kind:         m.Kind,
-		Re:           m.Re,
-		Conversation: m.Conversation,
+		Seq:  m.Seq,
+		Time: m.Time,
+		From: m.From,
+		To:   to,
+		Body: m.Body,
+		TxID: m.TxID,
+		Kind: m.Kind,
+		Re:   m.Re,
+		Chat: m.Chat,
 	}
 }
 
-func toWireConversation(c store.Conversation) wireConversation {
+func toWireChat(c store.Chat) wireChat {
 	prompts := c.Prompts
 	if prompts == nil {
 		prompts = []string{}
@@ -853,7 +857,7 @@ func toWireConversation(c store.Conversation) wireConversation {
 	if roster == nil {
 		roster = []string{}
 	}
-	return wireConversation{
+	return wireChat{
 		Name:      c.Name,
 		Status:    c.Status,
 		Task:      c.Task,
@@ -881,10 +885,10 @@ func toWireMember(m store.Member) wireMember {
 
 func publicMember(m store.Member) wireMemberPublic {
 	return wireMemberPublic{
-		Name:       m.Name,
-		Status:     m.Status,
-		Launched:   m.Launched,
-		Registered: m.Registered,
+		Name:     m.Name,
+		Status:   m.Status,
+		Launched: m.Launched,
+		Joined:   m.Joined,
 	}
 }
 
@@ -893,19 +897,19 @@ func toWireSession(item store.MemberSession) wireSession {
 }
 
 // wireList converts every element. The result is empty rather than nil, so JSON carries [].
-func wireList[T, W any](in []T, conv func(T) W) *[]W {
+func wireList[T, W any](in []T, chat func(T) W) *[]W {
 	out := make([]W, 0, len(in))
 	for _, v := range in {
-		out = append(out, conv(v))
+		out = append(out, chat(v))
 	}
 	return &out
 }
 
-func wirePtr[T, W any](in *T, conv func(T) W) *W {
+func wirePtr[T, W any](in *T, chat func(T) W) *W {
 	if in == nil {
 		return nil
 	}
-	out := conv(*in)
+	out := chat(*in)
 	return &out
 }
 

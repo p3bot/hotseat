@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -163,18 +165,18 @@ func create(t *testing.T, base, name string) wire {
 	return res
 }
 
-func publish(t *testing.T, base, conv, from string, to []string, body, key string) wire {
+func send(t *testing.T, base, chat, from string, to []string, body, key string) wire {
 	t.Helper()
 	if to == nil {
 		to = []string{}
 	}
-	res := mustPost(t, base, PathPublish, map[string]any{
-		"conversation": conv,
-		"from":         from,
-		"to":           to,
-		"body":         body,
-		"txid":         key,
-		"kind":         "say",
+	res := mustPost(t, base, PathSend, map[string]any{
+		"chat": chat,
+		"from": from,
+		"to":   to,
+		"body": body,
+		"txid": key,
+		"kind": "say",
 	})
 	return res
 }
@@ -182,15 +184,15 @@ func publish(t *testing.T, base, conv, from string, to []string, body, key strin
 func TestCreateFreshAndTaken(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	res := create(t, base, "job")
-	if res.Outcome != OutcomeOK || res.AlreadyExisted == nil || *res.AlreadyExisted || res.Conversation == nil || res.Conversation.Status != "open" || res.Conversation.Name != "job" {
-		t.Fatalf("conversation = %+v existed %v", res.Conversation, res.AlreadyExisted)
+	if res.Outcome != OutcomeOK || res.AlreadyExisted == nil || *res.AlreadyExisted || res.Chat == nil || res.Chat.Status != "open" || res.Chat.Name != "job" {
+		t.Fatalf("chat = %+v existed %v", res.Chat, res.AlreadyExisted)
 	}
-	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	read := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if read.Outcome != OutcomeOK || read.Messages == nil || len(*read.Messages) != 0 {
 		t.Fatalf("empty transcript = %+v", read)
 	}
 	taken := mustPost(t, base, PathCreate, map[string]any{"name": "job"})
-	if taken.Outcome != OutcomeOK || taken.AlreadyExisted == nil || !*taken.AlreadyExisted || taken.Conversation == nil || taken.Conversation.Status != "open" {
+	if taken.Outcome != OutcomeOK || taken.AlreadyExisted == nil || !*taken.AlreadyExisted || taken.Chat == nil || taken.Chat.Status != "open" {
 		t.Fatalf("duplicate = %+v", taken)
 	}
 	bad := mustPost(t, base, PathCreate, map[string]any{"name": "has space"})
@@ -206,11 +208,11 @@ func TestCreateFreshAndTaken(t *testing.T) {
 		t.Fatalf("65-char name = %+v", tooLong)
 	}
 	list := mustPost(t, base, PathList, map[string]any{})
-	if list.Conversations == nil || len(*list.Conversations) != 2 {
-		t.Fatalf("list = %+v", list.Conversations)
+	if list.Chats == nil || len(*list.Chats) != 2 {
+		t.Fatalf("list = %+v", list.Chats)
 	}
-	if (*list.Conversations)[0].Name != longName || (*list.Conversations)[1].Name != "job" {
-		t.Fatalf("list order = %+v", *list.Conversations)
+	if (*list.Chats)[0].Name != longName || (*list.Chats)[1].Name != "job" {
+		t.Fatalf("list order = %+v", *list.Chats)
 	}
 }
 
@@ -218,9 +220,9 @@ func TestMessagesReturnsTheNewestLimit(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "beta")
 	create(t, base, "alpha")
-	publish(t, base, "beta", "alice", nil, "b1", "b1")
-	publish(t, base, "alpha", "alice", nil, "a1", "a1")
-	publish(t, base, "alpha", "alice", nil, "a2", "a2")
+	send(t, base, "beta", "alice", nil, "b1", "b1")
+	send(t, base, "alpha", "alice", nil, "a1", "a1")
+	send(t, base, "alpha", "alice", nil, "a2", "a2")
 
 	missing := mustPost(t, base, PathMessages, map[string]any{})
 	if missing.Outcome != OutcomeRefused || missing.Reason != ReasonLimitRequired {
@@ -231,7 +233,7 @@ func TestMessagesReturnsTheNewestLimit(t *testing.T) {
 		t.Fatalf("zero %+v", zero)
 	}
 	one := mustPost(t, base, PathMessages, map[string]any{"limit": 1})
-	if one.Messages == nil || len(*one.Messages) != 1 || (*one.Messages)[0].Body != "a2" || (*one.Messages)[0].Conversation != "alpha" {
+	if one.Messages == nil || len(*one.Messages) != 1 || (*one.Messages)[0].Body != "a2" || (*one.Messages)[0].Chat != "alpha" {
 		t.Fatalf("one %+v", one.Messages)
 	}
 	all := mustPost(t, base, PathMessages, map[string]any{"limit": 10})
@@ -239,12 +241,12 @@ func TestMessagesReturnsTheNewestLimit(t *testing.T) {
 		t.Fatalf("count %+v", all.Messages)
 	}
 	got := *all.Messages
-	if got[0].Body != "a2" || got[1].Body != "a1" || got[2].Body != "b1" || got[2].Conversation != "beta" {
+	if got[0].Body != "a2" || got[1].Body != "a1" || got[2].Body != "b1" || got[2].Chat != "beta" {
 		t.Fatalf("order %+v", got)
 	}
-	_, raw := mustRaw(t, base, PathRead, map[string]any{"conversation": "alpha", "cursor": 0, "limit": 1})
-	if bytes.Contains(raw, []byte(`"conversation"`)) {
-		t.Fatalf("read carries a conversation %s", raw)
+	_, raw := mustRaw(t, base, PathRead, map[string]any{"chat": "alpha", "cursor": 0, "limit": 1})
+	if bytes.Contains(raw, []byte(`"chat"`)) {
+		t.Fatalf("read carries a chat %s", raw)
 	}
 }
 
@@ -252,10 +254,10 @@ func TestMessagesBeforeReturnsTheNewestBelowThatSeq(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "beta")
 	create(t, base, "alpha")
-	publish(t, base, "beta", "alice", nil, "b1", "b1")
-	publish(t, base, "alpha", "alice", nil, "a1", "a1")
-	publish(t, base, "alpha", "alice", nil, "a2", "a2")
-	publish(t, base, "beta", "alice", nil, "b2", "b2")
+	send(t, base, "beta", "alice", nil, "b1", "b1")
+	send(t, base, "alpha", "alice", nil, "a1", "a1")
+	send(t, base, "alpha", "alice", nil, "a2", "a2")
+	send(t, base, "beta", "alice", nil, "b2", "b2")
 
 	all := mustPost(t, base, PathMessages, map[string]any{"limit": 10})
 	if all.Messages == nil || len(*all.Messages) != 4 {
@@ -267,7 +269,7 @@ func TestMessagesBeforeReturnsTheNewestBelowThatSeq(t *testing.T) {
 		t.Fatalf("page %+v", page)
 	}
 	got := *page.Messages
-	if got[0].Body != "a1" || got[0].Conversation != "alpha" || got[1].Body != "b1" || got[1].Conversation != "beta" {
+	if got[0].Body != "a1" || got[0].Chat != "alpha" || got[1].Body != "b1" || got[1].Chat != "beta" {
 		t.Fatalf("order %+v", got)
 	}
 	oldest := mustPost(t, base, PathMessages, map[string]any{"limit": 2, "before": got[1].Seq})
@@ -279,7 +281,7 @@ func TestMessagesBeforeReturnsTheNewestBelowThatSeq(t *testing.T) {
 func TestMessagesRefusesBeforeBelowOne(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
-	publish(t, base, "job", "alice", nil, "one", "k1")
+	send(t, base, "job", "alice", nil, "one", "k1")
 	for _, before := range []int64{0, -1} {
 		res := mustPost(t, base, PathMessages, map[string]any{"limit": 1, "before": before})
 		if res.Outcome != OutcomeRefused || res.Reason != ReasonBeforeRange || res.Messages != nil {
@@ -297,17 +299,17 @@ func TestListOrdersByNewestSeqNotClock(t *testing.T) {
 	for _, name := range []string{"alpha", "beta", "quiet"} {
 		create(t, base, name)
 	}
-	for _, conv := range []string{"alpha", "beta"} {
-		if res := publish(t, base, conv, "alice", nil, conv, conv); res.Outcome != OutcomeOK {
-			t.Fatalf("publish %s %+v", conv, res)
+	for _, chat := range []string{"alpha", "beta"} {
+		if res := send(t, base, chat, "alice", nil, chat, chat); res.Outcome != OutcomeOK {
+			t.Fatalf("send %s %+v", chat, res)
 		}
 	}
 	list := mustPost(t, base, PathList, map[string]any{})
-	if list.Conversations == nil {
+	if list.Chats == nil {
 		t.Fatalf("list %+v", list)
 	}
 	var names []string
-	for _, c := range *list.Conversations {
+	for _, c := range *list.Chats {
 		names = append(names, c.Name)
 	}
 	if got := strings.Join(names, ","); got != "beta,alpha,quiet" {
@@ -315,13 +317,13 @@ func TestListOrdersByNewestSeqNotClock(t *testing.T) {
 	}
 }
 
-func TestPublishDurableRetryAndConflict(t *testing.T) {
+func TestSendDurableRetryAndConflict(t *testing.T) {
 	fixed := time.Date(2026, 10, 3, 7, 0, 0, 123, time.UTC)
 	base, _, _, _ := startServer(t, Options{Clock: func() time.Time { return fixed }})
 	create(t, base, "job")
 	create(t, base, "other")
-	first := publish(t, base, "job", "alice", []string{"bob", "carol"}, "hello", "k")
-	if first.Outcome != OutcomeOK || first.Message == nil || first.Message.Seq != 1 || first.Conversation == nil || first.Conversation.Status != "open" {
+	first := send(t, base, "job", "alice", []string{"bob", "carol"}, "hello", "k")
+	if first.Outcome != OutcomeOK || first.Message == nil || first.Message.Seq != 1 || first.Chat == nil || first.Chat.Status != "open" {
 		t.Fatalf("first = %+v", first)
 	}
 	if first.AlreadyStored == nil || *first.AlreadyStored {
@@ -333,51 +335,51 @@ func TestPublishDurableRetryAndConflict(t *testing.T) {
 	if first.Message.Body != "hello" || len(first.Message.To) != 2 || first.Message.To[0] != "bob" {
 		t.Fatalf("message = %+v", first.Message)
 	}
-	other := publish(t, base, "other", "alice", []string{"bob"}, "x", "k")
+	other := send(t, base, "other", "alice", []string{"bob"}, "x", "k")
 	if other.Message == nil || other.Message.Seq != 2 {
 		t.Fatalf("store-wide seq = %+v", other.Message)
 	}
-	retry := publish(t, base, "job", "alice", []string{"bob", "carol"}, "hello", "k")
+	retry := send(t, base, "job", "alice", []string{"bob", "carol"}, "hello", "k")
 	if retry.Outcome != OutcomeOK || retry.AlreadyStored == nil || !*retry.AlreadyStored || retry.Message.Seq != 1 {
 		t.Fatalf("retry = %+v", retry)
 	}
 	if retry.Message.Time != first.Message.Time {
 		t.Fatalf("retry time changed to %s", retry.Message.Time)
 	}
-	reordered := publish(t, base, "job", "alice", []string{"carol", "bob"}, "hello", "k")
+	reordered := send(t, base, "job", "alice", []string{"carol", "bob"}, "hello", "k")
 	if reordered.Outcome != OutcomeRefused || reordered.Reason != ReasonKeyConflict {
 		t.Fatalf("reordered to = %+v", reordered)
 	}
-	changed := publish(t, base, "job", "alice", []string{"bob", "carol"}, "different", "k")
+	changed := send(t, base, "job", "alice", []string{"bob", "carol"}, "different", "k")
 	if changed.Outcome != OutcomeRefused || changed.Reason != ReasonKeyConflict {
 		t.Fatalf("different body = %+v", changed)
 	}
-	sender := publish(t, base, "job", "erin", []string{"bob", "carol"}, "hello", "k")
+	sender := send(t, base, "job", "erin", []string{"bob", "carol"}, "hello", "k")
 	if sender.Outcome != OutcomeOK || sender.AlreadyStored == nil || *sender.AlreadyStored || sender.Message == nil || sender.Message.Seq != 3 || sender.Message.From != "erin" || sender.Message.TxID != "k" {
 		t.Fatalf("different from = %+v", sender)
 	}
-	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	read := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if read.Messages == nil || len(*read.Messages) != 2 || (*read.Messages)[0].From != "alice" || (*read.Messages)[1].From != "erin" {
 		t.Fatalf("transcript = %+v", read.Messages)
 	}
-	empty := publish(t, base, "job", "alice", []string{}, "", "empty")
+	empty := send(t, base, "job", "alice", []string{}, "", "empty")
 	if empty.Outcome != OutcomeOK || empty.Message == nil || empty.Message.Body != "" || empty.Message.Seq != 4 {
 		t.Fatalf("empty body = %+v", empty)
 	}
-	tag := publish(t, base, "job", "alice", []string{"bob"}, "<tag>&", "tag")
+	tag := send(t, base, "job", "alice", []string{"bob"}, "<tag>&", "tag")
 	if tag.Message == nil || tag.Message.Body != "<tag>&" {
 		t.Fatalf("body round trip = %+v", tag.Message)
 	}
 }
 
-func TestPublishRejectsBrokenRules(t *testing.T) {
+func TestSendRejectsBrokenRules(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{MaxBody: 4})
 	create(t, base, "job")
-	publish(t, base, "job", "alice", []string{"bob"}, "ok", "seed")
+	send(t, base, "job", "alice", []string{"bob"}, "ok", "seed")
 
-	badUTF := append([]byte(`{"conversation":"job","from":"alice","to":[],"body":"`), 0xff)
+	badUTF := append([]byte(`{"chat":"job","from":"alice","to":[],"body":"`), 0xff)
 	badUTF = append(badUTF, []byte(`","txid":"bad"}`)...)
-	badFrom := append([]byte(`{"conversation":"job","from":"al`), 0xff)
+	badFrom := append([]byte(`{"chat":"job","from":"al`), 0xff)
 	badFrom = append(badFrom, []byte(`ice","to":[],"body":"ok","txid":"k"}`)...)
 	cases := []struct {
 		name   string
@@ -386,39 +388,39 @@ func TestPublishRejectsBrokenRules(t *testing.T) {
 	}{
 		{"non utf8", badUTF, ReasonRequestUTF8},
 		{"non utf8 outside body", badFrom, ReasonRequestUTF8},
-		{"oversize", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "hello", "txid": "big", "kind": "say"}, ReasonBodySize},
-		{"missing key", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x", "kind": "say"}, ReasonKeyRequired},
-		{"empty key", map[string]any{"conversation": "job", "from": "alice", "to": []string{}, "body": "x", "txid": "", "kind": "say"}, ReasonKeyRequired},
-		{"from all", map[string]any{"conversation": "job", "from": "all", "to": []string{"bob"}, "body": "x", "txid": "a", "kind": "say"}, ReasonFromAll},
-		{"all mixed", map[string]any{"conversation": "job", "from": "alice", "to": []string{"all", "bob"}, "body": "x", "txid": "b", "kind": "say"}, ReasonToAllMixed},
-		{"missing to", map[string]any{"conversation": "job", "from": "alice", "body": "x", "txid": "c", "kind": "say"}, ReasonToRequired},
-		{"string all", map[string]any{"conversation": "job", "from": "alice", "to": "all", "body": "x", "txid": "d", "kind": "say"}, ReasonToShape},
-		{"missing conversation", map[string]any{"from": "alice", "to": []string{}, "body": "x", "txid": "e", "kind": "say"}, ReasonConversationRequired},
-		{"bad conversation", map[string]any{"conversation": "bad name", "from": "alice", "to": []string{}, "body": "x", "txid": "f", "kind": "say"}, ReasonBadConversation},
-		{"bad from", map[string]any{"conversation": "job", "from": "bad from", "to": []string{}, "body": "x", "txid": "g", "kind": "say"}, ReasonFromBad},
+		{"oversize", map[string]any{"chat": "job", "from": "alice", "to": []string{}, "body": "hello", "txid": "big", "kind": "say"}, ReasonBodySize},
+		{"missing key", map[string]any{"chat": "job", "from": "alice", "to": []string{}, "body": "x", "kind": "say"}, ReasonKeyRequired},
+		{"empty key", map[string]any{"chat": "job", "from": "alice", "to": []string{}, "body": "x", "txid": "", "kind": "say"}, ReasonKeyRequired},
+		{"from all", map[string]any{"chat": "job", "from": "all", "to": []string{"bob"}, "body": "x", "txid": "a", "kind": "say"}, ReasonFromAll},
+		{"all mixed", map[string]any{"chat": "job", "from": "alice", "to": []string{"all", "bob"}, "body": "x", "txid": "b", "kind": "say"}, ReasonToAllMixed},
+		{"missing to", map[string]any{"chat": "job", "from": "alice", "body": "x", "txid": "c", "kind": "say"}, ReasonToRequired},
+		{"string all", map[string]any{"chat": "job", "from": "alice", "to": "all", "body": "x", "txid": "d", "kind": "say"}, ReasonToShape},
+		{"missing chat", map[string]any{"from": "alice", "to": []string{}, "body": "x", "txid": "e", "kind": "say"}, ReasonChatRequired},
+		{"bad chat", map[string]any{"chat": "bad name", "from": "alice", "to": []string{}, "body": "x", "txid": "f", "kind": "say"}, ReasonBadChat},
+		{"bad from", map[string]any{"chat": "job", "from": "bad from", "to": []string{}, "body": "x", "txid": "g", "kind": "say"}, ReasonFromBad},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			res := mustPost(t, base, PathPublish, tt.body)
+			res := mustPost(t, base, PathSend, tt.body)
 			if res.Outcome != OutcomeRefused || res.Reason != tt.reason {
 				t.Fatalf("got outcome=%s reason=%s", res.Outcome, res.Reason)
 			}
 		})
 	}
-	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	read := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if read.Messages == nil || len(*read.Messages) != 1 {
 		t.Fatalf("transcript changed: %+v", read.Messages)
 	}
-	if closeRes := mustPost(t, base, PathClose, map[string]any{"conversation": "job"}); closeRes.Outcome != OutcomeOK {
+	if closeRes := mustPost(t, base, PathClose, map[string]any{"chat": "job"}); closeRes.Outcome != OutcomeOK {
 		t.Fatal(closeRes)
 	}
 	again := mustPost(t, base, PathCreate, map[string]any{"name": "job"})
-	if again.Outcome != OutcomeOK || again.AlreadyExisted == nil || !*again.AlreadyExisted || again.Conversation == nil || again.Conversation.Status != "closed" {
+	if again.Outcome != OutcomeOK || again.AlreadyExisted == nil || !*again.AlreadyExisted || again.Chat == nil || again.Chat.Status != "closed" {
 		t.Fatalf("closed name reused: %+v", again)
 	}
-	fresh := publish(t, base, "job", "alice", []string{"bob"}, "nope", "after")
-	if fresh.Outcome != OutcomeOK || fresh.Conversation == nil || fresh.Conversation.Status != "closed" || fresh.Message == nil || fresh.Message.Body != "nope" {
-		t.Fatalf("publish after close = %+v", fresh)
+	fresh := send(t, base, "job", "alice", []string{"bob"}, "nope", "after")
+	if fresh.Outcome != OutcomeOK || fresh.Chat == nil || fresh.Chat.Status != "closed" || fresh.Message == nil || fresh.Message.Body != "nope" {
+		t.Fatalf("send after close = %+v", fresh)
 	}
 }
 
@@ -426,7 +428,7 @@ func TestLongTxIDAccepted(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	key := strings.Repeat("k", 1025)
-	res := publish(t, base, "job", "alice", []string{"bob"}, "hi", key)
+	res := send(t, base, "job", "alice", []string{"bob"}, "hi", key)
 	if res.Outcome != OutcomeOK || res.Message == nil || res.Message.TxID != key || res.Message.Seq != 1 {
 		t.Fatalf("long key = outcome %s", res.Outcome)
 	}
@@ -438,11 +440,11 @@ func TestDefaultMaxBody(t *testing.T) {
 	}
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
-	exact := publish(t, base, "job", "alice", []string{}, strings.Repeat("a", DefaultMaxBody), "full")
+	exact := send(t, base, "job", "alice", []string{}, strings.Repeat("a", DefaultMaxBody), "full")
 	if exact.Outcome != OutcomeOK || exact.Message == nil || len(exact.Message.Body) != DefaultMaxBody {
 		t.Fatalf("exact max = outcome %s", exact.Outcome)
 	}
-	over := publish(t, base, "job", "alice", []string{}, strings.Repeat("b", DefaultMaxBody+1), "over")
+	over := send(t, base, "job", "alice", []string{}, strings.Repeat("b", DefaultMaxBody+1), "over")
 	if over.Outcome != OutcomeRefused || over.Reason != ReasonBodySize {
 		t.Fatalf("over max = %+v", over)
 	}
@@ -454,19 +456,19 @@ func TestEscapedBodyWithinMax(t *testing.T) {
 	create(t, base, "job")
 
 	quotes := strings.Repeat("\"", 75_000)
-	quoted := publish(t, base, "job", "alice", []string{}, quotes, "quotes")
+	quoted := send(t, base, "job", "alice", []string{}, quotes, "quotes")
 	if quoted.Outcome != OutcomeOK || quoted.Message == nil || quoted.Message.Body != quotes {
 		t.Fatalf("quotes = outcome %s reason %s", quoted.Outcome, quoted.Reason)
 	}
 
 	// \x01 is encoded as \u0001, six bytes per body byte.
 	controls := strings.Repeat("\x01", 40_000)
-	controlled := publish(t, base, "job", "alice", []string{}, controls, "controls")
+	controlled := send(t, base, "job", "alice", []string{}, controls, "controls")
 	if controlled.Outcome != OutcomeOK || controlled.Message == nil || controlled.Message.Body != controls {
 		t.Fatalf("controls = outcome %s reason %s", controlled.Outcome, controlled.Reason)
 	}
 
-	over := publish(t, base, "job", "alice", []string{}, strings.Repeat("a", maxBody+1), "over")
+	over := send(t, base, "job", "alice", []string{}, strings.Repeat("a", maxBody+1), "over")
 	if over.Outcome != OutcomeRefused || over.Reason != ReasonBodySize {
 		t.Fatalf("over max = outcome %s reason %s", over.Outcome, over.Reason)
 	}
@@ -475,37 +477,37 @@ func TestEscapedBodyWithinMax(t *testing.T) {
 func TestReadFilterLimitAndNoMutation(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
-	publish(t, base, "job", "alice", []string{}, "note", "1")
-	publish(t, base, "job", "alice", []string{"carol"}, "side", "2")
-	publish(t, base, "job", "alice", []string{"bob"}, "ping", "3")
-	publish(t, base, "job", "bob", []string{"bob"}, "self", "4")
-	publish(t, base, "job", "alice", []string{"all"}, "broadcast", "5")
+	send(t, base, "job", "alice", []string{}, "note", "1")
+	send(t, base, "job", "alice", []string{"carol"}, "side", "2")
+	send(t, base, "job", "alice", []string{"bob"}, "ping", "3")
+	send(t, base, "job", "bob", []string{"bob"}, "self", "4")
+	send(t, base, "job", "alice", []string{"all"}, "broadcast", "5")
 
-	all := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 2})
+	all := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 2})
 	if all.Messages == nil || len(*all.Messages) != 2 || (*all.Messages)[0].Seq != 1 || (*all.Messages)[1].Seq != 2 {
 		t.Fatalf("limited = %+v", all.Messages)
 	}
-	rest := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 2, "limit": 10})
+	rest := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 2, "limit": 10})
 	if rest.Messages == nil || len(*rest.Messages) != 3 || (*rest.Messages)[0].Seq != 3 {
 		t.Fatalf("rest = %+v", rest.Messages)
 	}
-	named := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10, "name": "bob"})
+	named := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10, "name": "bob"})
 	if named.Messages == nil || len(*named.Messages) != 2 || (*named.Messages)[0].Seq != 3 || (*named.Messages)[1].Seq != 5 {
 		t.Fatalf("named read = %+v", named.Messages)
 	}
-	nullName := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10, "name": nil})
+	nullName := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10, "name": nil})
 	if nullName.Messages == nil || len(*nullName.Messages) != 5 || (*nullName.Messages)[0].Seq != 1 {
 		t.Fatalf("null name = %+v", nullName.Messages)
 	}
-	again := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10, "name": "bob"})
+	again := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10, "name": "bob"})
 	if len(*again.Messages) != 2 {
 		t.Fatalf("second read changed: %+v", again.Messages)
 	}
-	next := publish(t, base, "job", "alice", []string{"bob"}, "next", "6")
+	next := send(t, base, "job", "alice", []string{"bob"}, "next", "6")
 	if next.Message == nil || next.Message.Seq != 6 {
 		t.Fatalf("seq after read = %+v", next.Message)
 	}
-	missing := mustPost(t, base, PathRead, map[string]any{"conversation": "nope", "cursor": 0, "limit": 1})
+	missing := mustPost(t, base, PathRead, map[string]any{"chat": "nope", "cursor": 0, "limit": 1})
 	if missing.Outcome != OutcomeRefused || missing.Reason != ReasonNotFound {
 		t.Fatalf("missing = %+v", missing)
 	}
@@ -514,20 +516,20 @@ func TestReadFilterLimitAndNoMutation(t *testing.T) {
 func TestWaitStoredSpan(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
-	publish(t, base, "job", "alice", []string{}, "note", "1")
-	publish(t, base, "job", "alice", []string{"carol"}, "side", "2")
-	publish(t, base, "job", "alice", []string{"bob"}, "ping", "3")
+	send(t, base, "job", "alice", []string{}, "note", "1")
+	send(t, base, "job", "alice", []string{"carol"}, "side", "2")
+	send(t, base, "job", "alice", []string{"bob"}, "ping", "3")
 
-	named := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 0, "name": "bob", "deadline": "1s"})
+	named := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 0, "name": "bob", "deadline": "1s"})
 	if named.Outcome != OutcomeOK || named.MatchSeq == nil || *named.MatchSeq != 3 || named.Messages == nil || len(*named.Messages) != 3 {
 		t.Fatalf("named = outcome %s match %v len %d", named.Outcome, named.MatchSeq, messageLen(named))
 	}
-	unnamed := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 0, "deadline": "0s"})
+	unnamed := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 0, "deadline": "0s"})
 	if unnamed.Outcome != OutcomeOK || unnamed.MatchSeq == nil || *unnamed.MatchSeq != 1 || len(*unnamed.Messages) != 1 {
 		t.Fatalf("unnamed = %+v", unnamed.Messages)
 	}
 	// A zero deadline does not hide a stored match.
-	instant := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 2, "name": "bob", "deadline": "0s"})
+	instant := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 2, "name": "bob", "deadline": "0s"})
 	if instant.Outcome != OutcomeOK || instant.MatchSeq == nil || *instant.MatchSeq != 3 {
 		t.Fatalf("zero deadline stored match = %s", instant.Outcome)
 	}
@@ -539,14 +541,14 @@ func TestAbsoluteDeadlineKeepsTimeAlreadySpent(t *testing.T) {
 	create(t, base, "job")
 	past := "2026-10-06T17:59:00+10:00"
 	missed := mustPost(t, base, PathWait, map[string]any{
-		"conversation": "job", "cursor": 0, "name": "bob", "deadline": past,
+		"chat": "job", "cursor": 0, "name": "bob", "deadline": past,
 	})
 	if missed.Outcome != OutcomeTimeout || missed.Messages != nil {
 		t.Fatalf("past deadline = %s", missed.Outcome)
 	}
-	publish(t, base, "job", "alice", []string{"bob"}, "ping", "1")
+	send(t, base, "job", "alice", []string{"bob"}, "ping", "1")
 	stored := mustPost(t, base, PathWait, map[string]any{
-		"conversation": "job", "cursor": 0, "name": "bob", "deadline": past,
+		"chat": "job", "cursor": 0, "name": "bob", "deadline": past,
 	})
 	if stored.Outcome != OutcomeOK || stored.MatchSeq == nil || *stored.MatchSeq != 1 {
 		t.Fatalf("stored match under a past deadline = %s", stored.Outcome)
@@ -554,7 +556,7 @@ func TestAbsoluteDeadlineKeepsTimeAlreadySpent(t *testing.T) {
 	end := now.Add(80 * time.Millisecond).Format(time.RFC3339Nano)
 	started := time.Now()
 	retry := mustPost(t, base, PathWait, map[string]any{
-		"conversation": "job", "cursor": 1, "name": "bob", "deadline": end,
+		"chat": "job", "cursor": 1, "name": "bob", "deadline": end,
 	})
 	elapsed := time.Since(started)
 	if retry.Outcome != OutcomeTimeout {
@@ -569,20 +571,20 @@ func TestWaitSpanContents(t *testing.T) {
 	blocked := make(chan struct{}, 2)
 	base, _, _, _ := startServer(t, Options{OnBlock: func(string, string) { blocked <- struct{}{} }})
 	create(t, base, "job")
-	publish(t, base, "job", "alice", []string{"carol"}, "side", "1")
+	send(t, base, "job", "alice", []string{"carol"}, "side", "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	zeroCh := make(chan wire, 1)
 	oneCh := make(chan wire, 1)
 	go func() {
-		res, _, _, err := post(ctx, base, PathWait, map[string]any{"conversation": "job", "cursor": 0, "name": "bob"})
+		res, _, _, err := post(ctx, base, PathWait, map[string]any{"chat": "job", "cursor": 0, "name": "bob"})
 		if err != nil {
 			res.Outcome = err.Error()
 		}
 		zeroCh <- res
 	}()
 	go func() {
-		res, _, _, err := post(ctx, base, PathWait, map[string]any{"conversation": "job", "cursor": 1, "name": "bob"})
+		res, _, _, err := post(ctx, base, PathWait, map[string]any{"chat": "job", "cursor": 1, "name": "bob"})
 		if err != nil {
 			res.Outcome = err.Error()
 		}
@@ -595,7 +597,7 @@ func TestWaitSpanContents(t *testing.T) {
 			t.Fatal("did not block")
 		}
 	}
-	publish(t, base, "job", "alice", []string{"bob"}, "ping", "2")
+	send(t, base, "job", "alice", []string{"bob"}, "ping", "2")
 	zero := <-zeroCh
 	one := <-oneCh
 	if zero.Outcome != OutcomeOK || messageLen(zero) != 2 || zero.MatchSeq == nil || *zero.MatchSeq != 2 {
@@ -607,7 +609,7 @@ func TestWaitSpanContents(t *testing.T) {
 	if one.Outcome != OutcomeOK || messageLen(one) != 1 || (*one.Messages)[0].Seq != 2 {
 		t.Fatalf("cursor 1 = %+v", one.Messages)
 	}
-	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	read := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if messageLen(read) != 2 {
 		t.Fatalf("waits consumed messages: %d", messageLen(read))
 	}
@@ -617,15 +619,15 @@ func TestWaitTimeoutAndNoDeadline(t *testing.T) {
 	blocked := make(chan struct{}, 1)
 	base, _, _, _ := startServer(t, Options{OnBlock: func(string, string) { blocked <- struct{}{} }})
 	create(t, base, "job")
-	publish(t, base, "job", "alice", []string{}, "note", "1")
+	send(t, base, "job", "alice", []string{}, "note", "1")
 
 	timed, raw := mustRaw(t, base, PathWait, map[string]any{
-		"conversation": "job", "cursor": 0, "name": "bob", "deadline": "150ms",
+		"chat": "job", "cursor": 0, "name": "bob", "deadline": "150ms",
 	})
 	if timed.Outcome != OutcomeTimeout || bytes.Contains(raw, []byte(`"messages"`)) {
 		t.Fatalf("timeout body = %s", raw)
 	}
-	still := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	still := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if messageLen(still) != 1 {
 		t.Fatalf("timeout wrote or hid messages: %d", messageLen(still))
 	}
@@ -638,7 +640,7 @@ func TestWaitTimeoutAndNoDeadline(t *testing.T) {
 	defer cancel()
 	got := make(chan wire, 1)
 	go func() {
-		res, _, _, err := post(ctx, base, PathWait, map[string]any{"conversation": "job", "cursor": 1, "name": "bob"})
+		res, _, _, err := post(ctx, base, PathWait, map[string]any{"chat": "job", "cursor": 1, "name": "bob"})
 		if err != nil {
 			res.Outcome = err.Error()
 		}
@@ -651,17 +653,17 @@ func TestWaitTimeoutAndNoDeadline(t *testing.T) {
 	}
 	select {
 	case res := <-got:
-		t.Fatalf("returned before publish: %s", res.Outcome)
+		t.Fatalf("returned before send: %s", res.Outcome)
 	case <-time.After(150 * time.Millisecond):
 	}
-	publish(t, base, "job", "alice", []string{"bob"}, "go", "2")
+	send(t, base, "job", "alice", []string{"bob"}, "go", "2")
 	select {
 	case res := <-got:
 		if res.Outcome != OutcomeOK || res.MatchSeq == nil || *res.MatchSeq != 2 {
 			t.Fatalf("woke with %+v", res)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("stayed blocked after publish")
+		t.Fatal("stayed blocked after send")
 	}
 }
 
@@ -669,68 +671,68 @@ func TestCloseRetryAndTails(t *testing.T) {
 	blocked := make(chan struct{}, 1)
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
-	first := publish(t, base, "job", "alice", []string{"bob"}, "ping", "k")
-	side := publish(t, base, "job", "alice", []string{"carol"}, "side", "side")
+	first := send(t, base, "job", "alice", []string{"bob"}, "ping", "k")
+	side := send(t, base, "job", "alice", []string{"carol"}, "side", "side")
 	if first.Message == nil || side.Message == nil {
-		t.Fatal("publish failed")
+		t.Fatal("send failed")
 	}
 
 	// Match accepted before close, observed after close.
-	closed := mustPost(t, base, PathClose, map[string]any{"conversation": "job"})
-	if closed.Outcome != OutcomeOK || closed.Conversation == nil || closed.Conversation.Status != "closed" {
+	closed := mustPost(t, base, PathClose, map[string]any{"chat": "job"})
+	if closed.Outcome != OutcomeOK || closed.Chat == nil || closed.Chat.Status != "closed" {
 		t.Fatalf("close = %+v", closed)
 	}
-	again := mustPost(t, base, PathClose, map[string]any{"conversation": "job"})
+	again := mustPost(t, base, PathClose, map[string]any{"chat": "job"})
 	if again.Outcome != OutcomeOK {
 		t.Fatalf("second close = %+v", again)
 	}
-	matched := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 0, "name": "bob"})
+	matched := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 0, "name": "bob"})
 	if matched.Outcome != OutcomeOK || matched.MatchSeq == nil || *matched.MatchSeq != 1 || messageLen(matched) != 1 {
 		t.Fatalf("match before close = %s len %d", matched.Outcome, messageLen(matched))
 	}
-	tail := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 1, "name": "bob", "deadline": "0s"})
+	tail := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 1, "name": "bob", "deadline": "0s"})
 	if tail.Outcome != OutcomeTimeout || tail.Messages != nil {
 		t.Fatalf("named wait with no match = outcome %s messages nil=%v", tail.Outcome, tail.Messages == nil)
 	}
-	unnamed := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 2, "deadline": "0s"})
+	unnamed := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 2, "deadline": "0s"})
 	if unnamed.Outcome != OutcomeTimeout || unnamed.Messages != nil {
 		t.Fatalf("unnamed caught up = %s messages nil=%v", unnamed.Outcome, unnamed.Messages == nil)
 	}
-	next := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 1})
+	next := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 1})
 	if next.Outcome != OutcomeOK || messageLen(next) != 1 {
 		t.Fatalf("unnamed with a remaining message = %s", next.Outcome)
 	}
-	fresh := publish(t, base, "job", "alice", []string{"bob"}, "more", "new")
-	if fresh.Outcome != OutcomeOK || fresh.Conversation == nil || fresh.Conversation.Status != "closed" || fresh.Message == nil || fresh.Message.Seq != 3 {
+	fresh := send(t, base, "job", "alice", []string{"bob"}, "more", "new")
+	if fresh.Outcome != OutcomeOK || fresh.Chat == nil || fresh.Chat.Status != "closed" || fresh.Message == nil || fresh.Message.Seq != 3 {
 		t.Fatalf("new key = %+v", fresh)
 	}
-	retry := publish(t, base, "job", "alice", []string{"bob"}, "ping", "k")
-	if retry.Outcome != OutcomeOK || retry.AlreadyStored == nil || !*retry.AlreadyStored || retry.Message.Seq != 1 || retry.Conversation == nil || retry.Conversation.Status != "closed" {
+	retry := send(t, base, "job", "alice", []string{"bob"}, "ping", "k")
+	if retry.Outcome != OutcomeOK || retry.AlreadyStored == nil || !*retry.AlreadyStored || retry.Message.Seq != 1 || retry.Chat == nil || retry.Chat.Status != "closed" {
 		t.Fatalf("retry after close = %+v", retry)
 	}
-	different := publish(t, base, "job", "alice", []string{"bob"}, "other", "k")
+	different := send(t, base, "job", "alice", []string{"bob"}, "other", "k")
 	if different.Outcome != OutcomeRefused || different.Reason != ReasonKeyConflict {
 		t.Fatalf("conflict after close = %+v", different)
 	}
-	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	read := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if messageLen(read) != 3 || (*read.Messages)[2].Body != "more" {
 		t.Fatalf("transcript len = %d", messageLen(read))
 	}
 	list := mustPost(t, base, PathList, map[string]any{})
-	if list.Conversations == nil || (*list.Conversations)[0].Status != "closed" {
-		t.Fatalf("list = %+v", list.Conversations)
+	if list.Chats == nil || (*list.Chats)[0].Status != "closed" {
+		t.Fatalf("list = %+v", list.Chats)
 	}
 
-	// Close does not finish a blocked wait. A later matching publish does.
+	// Close does not finish a blocked wait. A later matching send does.
 	base2, _, _, _ := startServer(t, Options{OnBlock: func(string, string) { blocked <- struct{}{} }})
 	create(t, base2, "job")
-	publish(t, base2, "job", "alice", []string{"carol"}, "only", "1")
+	send(t, base2, "job", "alice", []string{"carol"}, "only", "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	got := make(chan wire, 1)
 	go func() {
 		res, _, _, err := post(ctx, base2, PathWait, map[string]any{
-			"conversation": "job", "cursor": 0, "name": "bob", "deadline": "5s",
+			"chat": "job", "cursor": 0, "name": "bob", "deadline": "5s",
 		})
 		if err != nil {
 			res.Outcome = err.Error()
@@ -742,7 +744,7 @@ func TestCloseRetryAndTails(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("did not block")
 	}
-	if res := mustPost(t, base2, PathClose, map[string]any{"conversation": "job"}); res.Outcome != OutcomeOK {
+	if res := mustPost(t, base2, PathClose, map[string]any{"chat": "job"}); res.Outcome != OutcomeOK {
 		t.Fatal(res)
 	}
 	select {
@@ -750,22 +752,22 @@ func TestCloseRetryAndTails(t *testing.T) {
 		t.Fatalf("close woke the waiter: %s", res.Outcome)
 	case <-time.After(150 * time.Millisecond):
 	}
-	publish(t, base2, "job", "alice", []string{"bob"}, "go", "2")
+	send(t, base2, "job", "alice", []string{"bob"}, "go", "2")
 	select {
 	case res := <-got:
 		if res.Outcome != OutcomeOK || res.MatchSeq == nil || *res.MatchSeq != 2 || messageLen(res) != 2 {
 			t.Fatalf("woke with %s match %v len %d", res.Outcome, res.MatchSeq, messageLen(res))
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("stayed blocked after publish")
+		t.Fatal("stayed blocked after send")
 	}
 }
 
 func TestRestartPreservesStore(t *testing.T) {
 	base, dir, st, stop := startServer(t, Options{})
 	create(t, base, "job")
-	publish(t, base, "job", "alice", []string{"bob"}, "hello", "k")
-	if res := mustPost(t, base, PathClose, map[string]any{"conversation": "job"}); res.Outcome != OutcomeOK {
+	send(t, base, "job", "alice", []string{"bob"}, "hello", "k")
+	if res := mustPost(t, base, PathClose, map[string]any{"chat": "job"}); res.Outcome != OutcomeOK {
 		t.Fatal(res)
 	}
 	stop()
@@ -782,16 +784,16 @@ func TestRestartPreservesStore(t *testing.T) {
 		}
 	})
 	base, _ = serveStore(t, st2, Options{Logger: slog.New(slog.DiscardHandler)})
-	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	read := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if messageLen(read) != 1 || (*read.Messages)[0].Body != "hello" {
 		t.Fatalf("restart read = %+v", read.Messages)
 	}
 	list := mustPost(t, base, PathList, map[string]any{})
-	if list.Conversations == nil || (*list.Conversations)[0].Status != "closed" {
-		t.Fatalf("restart status = %+v", list.Conversations)
+	if list.Chats == nil || (*list.Chats)[0].Status != "closed" {
+		t.Fatalf("restart status = %+v", list.Chats)
 	}
 	// Nothing is still blocked in the new process. The cursor is caught up, so the deadline ends the wait.
-	timed := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 1, "name": "bob", "deadline": "100ms"})
+	timed := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 1, "name": "bob", "deadline": "100ms"})
 	if timed.Outcome != OutcomeTimeout {
 		t.Fatalf("caught-up wait = %s", timed.Outcome)
 	}
@@ -804,7 +806,7 @@ func TestDropWaitLeavesStore(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, _, _, err := post(ctx, base, PathWait, map[string]any{"conversation": "job", "cursor": 0, "name": "bob"})
+		_, _, _, err := post(ctx, base, PathWait, map[string]any{"chat": "job", "cursor": 0, "name": "bob"})
 		errCh <- err
 	}()
 	select {
@@ -821,12 +823,12 @@ func TestDropWaitLeavesStore(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("dropped wait did not return")
 	}
-	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	read := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if messageLen(read) != 0 {
 		t.Fatalf("drop changed the store: %d", messageLen(read))
 	}
-	publish(t, base, "job", "alice", []string{"bob"}, "later", "k")
-	got := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 0, "name": "bob", "deadline": "1s"})
+	send(t, base, "job", "alice", []string{"bob"}, "later", "k")
+	got := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 0, "name": "bob", "deadline": "1s"})
 	if got.Outcome != OutcomeOK || messageLen(got) != 1 {
 		t.Fatalf("later wait = %s len %d", got.Outcome, messageLen(got))
 	}
@@ -835,12 +837,12 @@ func TestDropWaitLeavesStore(t *testing.T) {
 func TestUnavailableWritesNothing(t *testing.T) {
 	base, dir, st, _ := startServer(t, Options{})
 	create(t, base, "job")
-	publish(t, base, "job", "alice", []string{"bob"}, "hello", "k")
+	send(t, base, "job", "alice", []string{"bob"}, "hello", "k")
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	res := mustPost(t, base, PathPublish, map[string]any{
-		"conversation": "job", "from": "alice", "to": []string{"bob"}, "body": "next", "txid": "n", "kind": "say",
+	res := mustPost(t, base, PathSend, map[string]any{
+		"chat": "job", "from": "alice", "to": []string{"bob"}, "body": "next", "txid": "n", "kind": "say",
 	})
 	if res.Outcome != OutcomeUnavailable || res.Reason != ReasonUnavailable || res.Message != nil {
 		t.Fatalf("unavailable = %+v", res)
@@ -866,14 +868,77 @@ func TestUnavailableWritesNothing(t *testing.T) {
 func TestAllWakesOthersNotSender(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
-	publish(t, base, "job", "alice", []string{"all"}, "hey", "k")
-	bob := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 0, "name": "bob", "deadline": "1s"})
+	send(t, base, "job", "alice", []string{"all"}, "hey", "k")
+	bob := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 0, "name": "bob", "deadline": "1s"})
 	if bob.Outcome != OutcomeOK || messageLen(bob) != 1 {
 		t.Fatalf("bob = %s", bob.Outcome)
 	}
-	alice := mustPost(t, base, PathWait, map[string]any{"conversation": "job", "cursor": 0, "name": "alice", "deadline": "100ms"})
+	alice := mustPost(t, base, PathWait, map[string]any{"chat": "job", "cursor": 0, "name": "alice", "deadline": "100ms"})
 	if alice.Outcome != OutcomeTimeout {
 		t.Fatalf("sender woken: %s", alice.Outcome)
+	}
+}
+
+func TestReadLimitAboveOneThousandIsRefused(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	create(t, base, "job")
+	send(t, base, "job", "alice", []string{"bob"}, "one", "1")
+	over := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": MaxReadLimit + 1})
+	if over.Outcome != OutcomeRefused || over.Reason != ReasonLimitCap || over.Messages != nil {
+		t.Fatalf("limit 1001 = %+v", over)
+	}
+	huge := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": int64(1) << 62})
+	if huge.Outcome != OutcomeRefused || huge.Reason != ReasonLimitCap {
+		t.Fatalf("huge limit = %+v", huge)
+	}
+	capped := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": MaxReadLimit})
+	if capped.Outcome != OutcomeOK || capped.Messages == nil || len(*capped.Messages) != 1 {
+		t.Fatalf("limit 1000 = %+v", capped)
+	}
+	if !strings.Contains(ReasonLimitCap, strconv.Itoa(MaxReadLimit)) {
+		t.Fatalf("reason %q does not state %d", ReasonLimitCap, MaxReadLimit)
+	}
+}
+
+func TestReadMoreIsTrueOnlyWhenAFurtherMatchFollowsAFullPage(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	create(t, base, "job")
+	send(t, base, "job", "alice", []string{"bob"}, "one", "1")
+	send(t, base, "job", "alice", []string{"bob"}, "two", "2")
+	send(t, base, "job", "alice", []string{"carol"}, "side", "3")
+	send(t, base, "job", "alice", []string{"bob"}, "three", "4")
+	send(t, base, "job", "alice", []string{"carol"}, "tail", "5")
+	mustPost(t, base, PathSend, map[string]any{"chat": "job", "from": "alice", "to": []string{"carol"}, "body": "end", "txid": "6", "kind": "done"})
+	cases := []struct {
+		name string
+		body map[string]any
+		seqs []int64
+		more bool
+	}{
+		{"full page with a match after", map[string]any{"cursor": 0, "limit": 2}, []int64{1, 2}, true},
+		{"short page at the end", map[string]any{"cursor": 3, "limit": 10}, []int64{4, 5, 6}, false},
+		{"exactly full page at the end", map[string]any{"cursor": 3, "limit": 3}, []int64{4, 5, 6}, false},
+		{"named full page with a match after", map[string]any{"cursor": 0, "limit": 2, "name": "bob"}, []int64{1, 2}, true},
+		{"named full page with only other messages after", map[string]any{"cursor": 0, "limit": 3, "name": "bob"}, []int64{1, 2, 4}, false},
+		{"kinds full page with only other kinds after", map[string]any{"cursor": 3, "limit": 2, "kinds": []string{"say"}}, []int64{4, 5}, false},
+		{"kinds full page with a match after", map[string]any{"cursor": 0, "limit": 4, "kinds": []string{"say"}}, []int64{1, 2, 3, 4}, true},
+		{"kinds page with no match", map[string]any{"cursor": 0, "limit": 1, "kinds": []string{"ask"}}, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.body["chat"] = "job"
+			res, raw := mustRaw(t, base, PathRead, tc.body)
+			if res.Outcome != OutcomeOK || res.Messages == nil || res.More == nil {
+				t.Fatalf("read = %s", raw)
+			}
+			var seqs []int64
+			for _, m := range *res.Messages {
+				seqs = append(seqs, m.Seq)
+			}
+			if !slices.Equal(seqs, tc.seqs) || *res.More != tc.more {
+				t.Fatalf("seqs %v more %v, want %v more %v", seqs, *res.More, tc.seqs, tc.more)
+			}
+		})
 	}
 }
 
@@ -882,6 +947,27 @@ func TestUnknownOperation(t *testing.T) {
 	res := mustPost(t, base, "/nope", map[string]any{})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonUnknownOp {
 		t.Fatalf("unknown = %+v", res)
+	}
+}
+
+func TestOldSendAndJoinRoutesAreUnknownOperations(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	mustPost(t, base, PathCreate, map[string]any{"name": "job", "seat": "alpha", "roster": []string{"alpha"}})
+	conduct(t, base, "job")
+	if res := mustPost(t, base, PathMember, map[string]any{"chat": "job", "name": "alpha", "status": "launched", "holder": testHolder}); res.Outcome != OutcomeOK {
+		t.Fatalf("launch %+v", res)
+	}
+	for _, path := range []string{"/publish", "/register"} {
+		res := mustPost(t, base, path, map[string]any{"conversation": "job", "chat": "job", "from": "alice", "name": "alpha", "to": []string{}, "body": "x", "txid": "1", "kind": "say"})
+		if res.Outcome != OutcomeRefused || res.Reason != ReasonUnknownOp {
+			t.Fatalf("%s = %+v", path, res)
+		}
+	}
+	if res := send(t, base, "job", "alice", nil, "x", "1"); res.Outcome != OutcomeOK || res.Message == nil {
+		t.Fatalf("send %+v", res)
+	}
+	if res := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "alpha"}); res.Outcome != OutcomeOK || res.Member == nil || res.Member.Status != store.MemberJoined {
+		t.Fatalf("join %+v", res)
 	}
 }
 
@@ -894,17 +980,17 @@ func TestRefusedEdges(t *testing.T) {
 		body   any
 		reason string
 	}{
-		{"negative read cursor", PathRead, map[string]any{"conversation": "job", "cursor": -1, "limit": 1}, ReasonCursorRange},
-		{"negative wait cursor", PathWait, map[string]any{"conversation": "job", "cursor": -1}, ReasonCursorRange},
-		{"negative deadline", PathWait, map[string]any{"conversation": "job", "cursor": 0, "deadline": "-1s"}, ReasonDeadline},
-		{"bad deadline", PathWait, map[string]any{"conversation": "job", "cursor": 0, "deadline": "tomorrow"}, ReasonDeadline},
-		{"bad wait name", PathWait, map[string]any{"conversation": "job", "cursor": 0, "name": "bad name"}, ReasonBadName},
-		{"bad read name", PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 1, "name": "bad name"}, ReasonBadName},
-		{"empty wait name", PathWait, map[string]any{"conversation": "job", "cursor": 0, "name": ""}, ReasonBadName},
-		{"empty read name", PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 1, "name": ""}, ReasonBadName},
-		{"bad wait conversation", PathWait, map[string]any{"conversation": "bad name", "cursor": 0}, ReasonBadConversation},
-		{"bad read conversation", PathRead, map[string]any{"conversation": "bad name", "cursor": 0, "limit": 1}, ReasonBadConversation},
-		{"bad close conversation", PathClose, map[string]any{"conversation": "bad name"}, ReasonBadConversation},
+		{"negative read cursor", PathRead, map[string]any{"chat": "job", "cursor": -1, "limit": 1}, ReasonCursorRange},
+		{"negative wait cursor", PathWait, map[string]any{"chat": "job", "cursor": -1}, ReasonCursorRange},
+		{"negative deadline", PathWait, map[string]any{"chat": "job", "cursor": 0, "deadline": "-1s"}, ReasonDeadline},
+		{"bad deadline", PathWait, map[string]any{"chat": "job", "cursor": 0, "deadline": "tomorrow"}, ReasonDeadline},
+		{"bad wait name", PathWait, map[string]any{"chat": "job", "cursor": 0, "name": "bad name"}, ReasonBadName},
+		{"bad read name", PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 1, "name": "bad name"}, ReasonBadName},
+		{"empty wait name", PathWait, map[string]any{"chat": "job", "cursor": 0, "name": ""}, ReasonBadName},
+		{"empty read name", PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 1, "name": ""}, ReasonBadName},
+		{"bad wait chat", PathWait, map[string]any{"chat": "bad name", "cursor": 0}, ReasonBadChat},
+		{"bad read chat", PathRead, map[string]any{"chat": "bad name", "cursor": 0, "limit": 1}, ReasonBadChat},
+		{"bad close chat", PathClose, map[string]any{"chat": "bad name"}, ReasonBadChat},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -919,13 +1005,13 @@ func TestRefusedEdges(t *testing.T) {
 func TestOversizedRequestIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{MaxBody: 32})
 	create(t, base, "job")
-	raw := append([]byte(`{"conversation":"job","from":"alice","to":[],"body":"ok","txid":"k","pad":"`), bytes.Repeat([]byte("x"), 80_000)...)
+	raw := append([]byte(`{"chat":"job","from":"alice","to":[],"body":"ok","txid":"k","pad":"`), bytes.Repeat([]byte("x"), 80_000)...)
 	raw = append(raw, '"', '}')
-	res := mustPost(t, base, PathPublish, raw)
+	res := mustPost(t, base, PathSend, raw)
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonRequestSize {
 		t.Fatalf("outcome=%s reason=%s", res.Outcome, res.Reason)
 	}
-	read := mustPost(t, base, PathRead, map[string]any{"conversation": "job", "cursor": 0, "limit": 10})
+	read := mustPost(t, base, PathRead, map[string]any{"chat": "job", "cursor": 0, "limit": 10})
 	if messageLen(read) != 0 {
 		t.Fatalf("transcript len = %d", messageLen(read))
 	}

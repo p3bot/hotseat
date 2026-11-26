@@ -17,26 +17,26 @@ import (
 	"github.com/p3bot/hotseat/internal/store"
 )
 
-// publisher returns a function that publishes one message of a kind to conv and returns its seq.
-func publisher(t *testing.T, base, conv string) func(kind string) int64 {
+// kindSender returns a function that sends one message of a kind to chat and returns its seq.
+func kindSender(t *testing.T, base, chat string) func(kind string) int64 {
 	t.Helper()
 	n := 0
 	return func(kind string) int64 {
 		t.Helper()
 		n++
-		res := mustPost(t, base, PathPublish, map[string]any{
-			"conversation": conv, "from": "alice", "to": []string{}, "body": kind,
+		res := mustPost(t, base, PathSend, map[string]any{
+			"chat": chat, "from": "alice", "to": []string{}, "body": kind,
 			"txid": fmt.Sprint(n), "kind": kind,
 		})
 		if res.Outcome != OutcomeOK || res.Message == nil {
-			t.Fatalf("publish %s: %+v", kind, res)
+			t.Fatalf("send %s: %+v", kind, res)
 		}
 		return res.Message.Seq
 	}
 }
 
-func record(conv, kind string, fields map[string]any) map[string]any {
-	body := map[string]any{"conversation": conv, "record": kind, "holder": testHolder}
+func record(chat, kind string, fields map[string]any) map[string]any {
+	body := map[string]any{"chat": chat, "record": kind, "holder": testHolder}
 	for k, v := range fields {
 		body[k] = v
 	}
@@ -62,16 +62,16 @@ func assertRefused(t *testing.T, res wire, reason string) {
 	}
 }
 
-func readRecords(t *testing.T, base, conv string) (wire, []byte) {
+func readRecords(t *testing.T, base, chat string) (wire, []byte) {
 	t.Helper()
-	res, raw := mustRaw(t, base, PathRecords, map[string]any{"conversation": conv})
+	res, raw := mustRaw(t, base, PathRecords, map[string]any{"chat": chat})
 	if res.Outcome != OutcomeOK {
 		t.Fatalf("records: %s", raw)
 	}
 	return res, raw
 }
 
-func TestRecordsForAConversationWithNoRecordsReturnsSixEmptyArrays(t *testing.T) {
+func TestRecordsForAChatWithNoRecordsReturnsSixEmptyArrays(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
@@ -87,10 +87,10 @@ func TestRecordsForAConversationWithNoRecordsReturnsSixEmptyArrays(t *testing.T)
 	}
 }
 
-func TestRecordsOfAMissingConversationIsRefused(t *testing.T) {
+func TestRecordsOfAMissingChatIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
-	assertRefused(t, mustPost(t, base, PathRecords, map[string]any{"conversation": "nope"}), ReasonNotFound)
-	assertRefused(t, mustPost(t, base, PathRecords, map[string]any{}), ReasonConversationRequired)
+	assertRefused(t, mustPost(t, base, PathRecords, map[string]any{"chat": "nope"}), ReasonNotFound)
+	assertRefused(t, mustPost(t, base, PathRecords, map[string]any{}), ReasonChatRequired)
 	assertRefused(t, mustPost(t, base, PathRecord, record("nope", "halt", map[string]any{"finding": 1})), ReasonNotFound)
 }
 
@@ -99,7 +99,7 @@ func TestRecordResultsAppendToWhatRecordsReturns(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn := put("turn")
 	f1, _, f2, f3 := put("finding"), put("say"), put("finding"), put("finding")
 	high := put("error")
@@ -149,7 +149,7 @@ func TestRecordReplayReturnsTheStoredRecordAndTheOriginalAfter(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn := put("turn")
 	f1, f2, f3 := put("finding"), put("finding"), put("finding")
 	first := mustRecord(t, base, record("job", "set", map[string]any{"turn": turn, "findings": []int64{f1, f2, f3}}))
@@ -168,7 +168,7 @@ func TestRecordIgnoresAfterSentByTheCaller(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn := put("turn")
 	high := put("say")
 	res := mustRecord(t, base, record("job", "set", map[string]any{"turn": turn, "findings": []int64{}, "after": turn}))
@@ -181,10 +181,10 @@ func TestRecordRefusesAMissingOrUnknownSelector(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	assertRefused(t, mustPost(t, base, PathRecord, map[string]any{"conversation": "job"}), ReasonRecordRequired)
+	assertRefused(t, mustPost(t, base, PathRecord, map[string]any{"chat": "job"}), ReasonRecordRequired)
 	assertRefused(t, mustPost(t, base, PathRecord, record("job", "marker", nil)), ReasonRecordBad)
-	assertRefused(t, mustPost(t, base, PathRecord, record("", "halt", map[string]any{"finding": 1})), ReasonConversationRequired)
-	assertRefused(t, mustPost(t, base, PathRecord, record("bad name", "halt", map[string]any{"finding": 1})), ReasonBadConversation)
+	assertRefused(t, mustPost(t, base, PathRecord, record("", "halt", map[string]any{"finding": 1})), ReasonChatRequired)
+	assertRefused(t, mustPost(t, base, PathRecord, record("bad name", "halt", map[string]any{"finding": 1})), ReasonBadChat)
 }
 
 func TestRecordRefusesAMissingOrOutOfRangeField(t *testing.T) {
@@ -231,7 +231,7 @@ func TestSetWithARepeatedFindingIsRefusedBeforeTheStore(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn := put("turn")
 	f1, f2 := put("finding"), put("finding")
 	repeat := record("job", "set", map[string]any{"turn": turn, "findings": []int64{f1, f2, f1}})
@@ -244,7 +244,7 @@ func TestGroupingWithARepeatedDroppedFindingIsRefusedBeforeTheStore(t *testing.T
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn := put("turn")
 	f1, f2, f3 := put("finding"), put("finding"), put("finding")
 	mustRecord(t, base, record("job", "set", map[string]any{"turn": turn, "findings": []int64{f1, f2, f3}}))
@@ -259,7 +259,7 @@ func TestRecordReferencingAMessageOfTheWrongKindIsRefusedWithTheReferenceReason(
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn, say, finding := put("turn"), put("say"), put("finding")
 	assertRefused(t, mustPost(t, base, PathRecord, record("job", "set", map[string]any{"turn": say, "findings": []int64{finding}})), ReasonRecordReference)
 	assertRefused(t, mustPost(t, base, PathRecord, record("job", "set", map[string]any{"turn": turn, "findings": []int64{say}})), ReasonRecordReference)
@@ -272,7 +272,7 @@ func TestReusedFindingAndReusedFixedAreRefusedWithTheReferenceReasonNotUnavailab
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	t1, f1 := put("turn"), put("finding")
 	t2, f2 := put("turn"), put("finding")
 	mustRecord(t, base, record("job", "set", map[string]any{"turn": t1, "findings": []int64{f1}}))
@@ -289,7 +289,7 @@ func TestCrossRowRulesAreRefusedWithTheirOwnReasons(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn := put("turn")
 	f1, f2, f3 := put("finding"), put("finding"), put("finding")
 	mustRecord(t, base, record("job", "set", map[string]any{"turn": turn, "findings": []int64{f1, f2, f3}}))
@@ -308,7 +308,7 @@ func TestSecondHaltWithADifferentFindingIsAKeyConflict(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn := put("turn")
 	f1, f2 := put("finding"), put("finding")
 	mustRecord(t, base, record("job", "set", map[string]any{"turn": turn, "findings": []int64{f1, f2}}))
@@ -325,7 +325,7 @@ func TestSecondStopWithADifferentDoneIsAKeyConflictAndAReplayIsStored(t *testing
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	first, second := put("done"), put("done")
 	stored := mustRecord(t, base, record("job", "stop", map[string]any{"done": first}))
 	if stored.AlreadyStored == nil || *stored.AlreadyStored {
@@ -342,7 +342,7 @@ func TestStopThatNamesNoDoneIsRefusedWithTheReferenceReason(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	say := put("say")
 	assertRefused(t, mustPost(t, base, PathRecord, record("job", "stop", map[string]any{"done": say})), ReasonRecordReference)
 	assertRefused(t, mustPost(t, base, PathRecord, record("job", "stop", map[string]any{"done": say + 5})), ReasonRecordReference)
@@ -356,7 +356,7 @@ func TestRecordAndRecordsLeaveRevAndWakeNoWatch(t *testing.T) {
 	base, _, _, _ := startServer(t, opt)
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn, finding := put("turn"), put("finding")
 	rev := currentRev(t, base)
 	got := watchAsync(t, base, map[string]any{"cursor": finding, "limit": 10, "rev": rev, "deadline": "1s"})
@@ -378,19 +378,19 @@ func TestRecordLogHoldsTheCallAndOutcomeAndNoRecordContent(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	create(t, base, "job")
 	conduct(t, base, "job")
-	put := publisher(t, base, "job")
+	put := kindSender(t, base, "job")
 	turn := put("turn")
 	finding := put("finding")
 	mustRecord(t, base, record("job", "set", map[string]any{"turn": turn, "findings": []int64{finding}}))
 	readRecords(t, base, "job")
-	allowed := map[string]bool{"time": true, "level": true, "msg": true, "op": true, "conversation": true, "outcome": true, "duration": true, "already_stored": true}
+	allowed := map[string]bool{"time": true, "level": true, "msg": true, "op": true, "chat": true, "outcome": true, "duration": true, "already_stored": true}
 	var lines []string
 	for _, line := range strings.Split(logs.String(), "\n") {
 		if !strings.Contains(line, "op=record") {
 			continue
 		}
 		lines = append(lines, line)
-		if !strings.Contains(line, "conversation=job") || !strings.Contains(line, "outcome=ok") {
+		if !strings.Contains(line, "chat=job") || !strings.Contains(line, "outcome=ok") {
 			t.Fatalf("line lacks call or outcome: %s", line)
 		}
 		for _, field := range strings.Fields(line) {
@@ -409,11 +409,11 @@ func TestRecordRoutesFollowTheTokenRules(t *testing.T) {
 	const token = "hstk-0a1b2c3d4e5f"
 	base, _, _, _ := startServer(t, Options{Token: token})
 	for _, path := range []string{PathRecord, PathRecords} {
-		res, _ := authPost(t, base, path, "", []byte(`{"conversation":"job"}`), []string{token})
+		res, _ := authPost(t, base, path, "", []byte(`{"chat":"job"}`), []string{token})
 		if res.Outcome != OutcomeRefused || res.Reason != ReasonTokenRequired {
 			t.Fatalf("%s without token = %+v", path, res)
 		}
-		res, _ = authPost(t, base, path, "Bearer "+token, []byte(`{"conversation":"job"}`), []string{token})
+		res, _ = authPost(t, base, path, "Bearer "+token, []byte(`{"chat":"job"}`), []string{token})
 		if res.Outcome != OutcomeRefused || res.Reason == ReasonTokenRequired || res.Reason == ReasonTokenRejected {
 			t.Fatalf("%s with token = %+v", path, res)
 		}

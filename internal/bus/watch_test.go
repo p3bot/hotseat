@@ -91,27 +91,27 @@ func TestWatchWithoutRevReturnsAtOnceWithTheCounter(t *testing.T) {
 	}
 }
 
-func TestWatchWakesOnPublishToAnyConversation(t *testing.T) {
+func TestWatchWakesOnSendToAnyChat(t *testing.T) {
 	opt, blocked := blockSignal()
 	base, _, _, _ := startServer(t, opt)
 	create(t, base, "alpha")
 	create(t, base, "beta")
-	publish(t, base, "beta", "alice", nil, "first", "1")
+	send(t, base, "beta", "alice", nil, "first", "1")
 	rev := currentRev(t, base)
 
 	got := watchAsync(t, base, map[string]any{"cursor": 1, "limit": 10, "rev": rev})
 	awaitBlock(t, blocked)
-	publish(t, base, "beta", "alice", nil, "second", "2")
+	send(t, base, "beta", "alice", nil, "second", "2")
 	res := receive(t, got)
 	if res.Outcome != OutcomeOK || messageLen(res) != 1 {
 		t.Fatalf("watch = %+v", res)
 	}
 	msg := (*res.Messages)[0]
-	if msg.Seq != 2 || msg.Conversation != "beta" || msg.Body != "second" {
+	if msg.Seq != 2 || msg.Chat != "beta" || msg.Body != "second" {
 		t.Fatalf("message = %+v", msg)
 	}
 	if res.Rev == nil || *res.Rev != rev {
-		t.Fatalf("same-conversation publish changed rev: %v", res.Rev)
+		t.Fatalf("same-chat send changed rev: %v", res.Rev)
 	}
 }
 
@@ -134,54 +134,54 @@ func TestWatchWakesOnCreateThatInsertedAndCloseThatChangedStatus(t *testing.T) {
 	rev = *res.Rev
 	got = watchAsync(t, base, map[string]any{"rev": rev})
 	awaitBlock(t, blocked)
-	mustPost(t, base, PathClose, map[string]any{"conversation": "job"})
+	mustPost(t, base, PathClose, map[string]any{"chat": "job"})
 	res = receive(t, got)
 	if res.Outcome != OutcomeOK || res.Rev == nil || *res.Rev != rev+1 {
 		t.Fatalf("close watch = %+v", res)
 	}
 }
 
-func TestWatchIgnoresIdempotentPublishAndRepeatedClose(t *testing.T) {
+func TestWatchIgnoresIdempotentSendAndRepeatedClose(t *testing.T) {
 	opt, blocked := blockSignal()
 	base, _, _, _ := startServer(t, opt)
 	create(t, base, "job")
-	publish(t, base, "job", "alice", nil, "one", "1")
-	mustPost(t, base, PathClose, map[string]any{"conversation": "job"})
+	send(t, base, "job", "alice", nil, "one", "1")
+	mustPost(t, base, PathClose, map[string]any{"chat": "job"})
 	rev := currentRev(t, base)
 
 	got := watchAsync(t, base, map[string]any{"cursor": 1, "limit": 10, "rev": rev, "deadline": "1s"})
 	awaitBlock(t, blocked)
-	if again := publish(t, base, "job", "alice", nil, "one", "1"); again.AlreadyStored == nil || !*again.AlreadyStored {
+	if again := send(t, base, "job", "alice", nil, "one", "1"); again.AlreadyStored == nil || !*again.AlreadyStored {
 		t.Fatalf("retry = %+v", again)
 	}
 	noBlock(t, blocked)
-	mustPost(t, base, PathClose, map[string]any{"conversation": "job"})
+	mustPost(t, base, PathClose, map[string]any{"chat": "job"})
 	noBlock(t, blocked)
 	if res := receive(t, got); res.Outcome != OutcomeTimeout {
 		t.Fatalf("watch = %+v", res)
 	}
 }
 
-func TestFilteredWatchStaysBlockedAcrossAnotherConversation(t *testing.T) {
+func TestFilteredWatchStaysBlockedAcrossAnotherChat(t *testing.T) {
 	opt, blocked := blockSignal()
 	base, _, _, _ := startServer(t, opt)
 	create(t, base, "alpha")
 	create(t, base, "beta")
-	publish(t, base, "alpha", "alice", nil, "a1", "1")
-	publish(t, base, "beta", "alice", nil, "b1", "2")
+	send(t, base, "alpha", "alice", nil, "a1", "1")
+	send(t, base, "beta", "alice", nil, "b1", "2")
 	rev := currentRev(t, base)
 
-	got := watchAsync(t, base, map[string]any{"conversation": "alpha", "cursor": 1, "limit": 10, "rev": rev})
+	got := watchAsync(t, base, map[string]any{"chat": "alpha", "cursor": 1, "limit": 10, "rev": rev})
 	awaitBlock(t, blocked)
-	publish(t, base, "beta", "alice", nil, "b2", "3")
+	send(t, base, "beta", "alice", nil, "b2", "3")
 	// Woken by the store-wide set, found nothing in alpha, and parked again.
 	awaitBlock(t, blocked)
-	publish(t, base, "alpha", "alice", nil, "a2", "4")
+	send(t, base, "alpha", "alice", nil, "a2", "4")
 	res := receive(t, got)
 	if res.Outcome != OutcomeOK || messageLen(res) != 1 {
 		t.Fatalf("watch = %+v", res)
 	}
-	if msg := (*res.Messages)[0]; msg.Conversation != "alpha" || msg.Body != "a2" {
+	if msg := (*res.Messages)[0]; msg.Chat != "alpha" || msg.Body != "a2" {
 		t.Fatalf("message = %+v", msg)
 	}
 	if res.Rev == nil || *res.Rev != rev+1 {
@@ -193,12 +193,12 @@ func TestWatchWithoutCursorWakesOnlyOnRevChange(t *testing.T) {
 	opt, blocked := blockSignal()
 	base, _, _, _ := startServer(t, opt)
 	create(t, base, "job")
-	publish(t, base, "job", "alice", nil, "one", "1")
+	send(t, base, "job", "alice", nil, "one", "1")
 	rev := currentRev(t, base)
 
 	got := watchAsync(t, base, map[string]any{"rev": rev})
 	awaitBlock(t, blocked)
-	publish(t, base, "job", "alice", nil, "two", "2")
+	send(t, base, "job", "alice", nil, "two", "2")
 	awaitBlock(t, blocked)
 	create(t, base, "other")
 	res := receive(t, got)
@@ -207,7 +207,7 @@ func TestWatchWithoutCursorWakesOnlyOnRevChange(t *testing.T) {
 	}
 }
 
-func TestRevBumpsOnlyWhenTheNewestConversationChangesAndRestartLeavesHeldRev(t *testing.T) {
+func TestRevBumpsOnlyWhenTheNewestChatChangesAndRestartLeavesHeldRev(t *testing.T) {
 	base, dir, st, stop := startServer(t, Options{})
 	start := currentRev(t, base)
 	steps := []struct {
@@ -215,12 +215,12 @@ func TestRevBumpsOnlyWhenTheNewestConversationChangesAndRestartLeavesHeldRev(t *
 		want uint64
 	}{
 		{func() { create(t, base, "alpha") }, 1},
-		{func() { publish(t, base, "alpha", "alice", nil, "a1", "1") }, 2},
-		{func() { publish(t, base, "alpha", "alice", nil, "a2", "2") }, 2},
+		{func() { send(t, base, "alpha", "alice", nil, "a1", "1") }, 2},
+		{func() { send(t, base, "alpha", "alice", nil, "a2", "2") }, 2},
 		{func() { create(t, base, "beta") }, 3},
-		{func() { publish(t, base, "beta", "alice", nil, "b1", "3") }, 4},
-		{func() { publish(t, base, "beta", "alice", nil, "b2", "4") }, 4},
-		{func() { publish(t, base, "alpha", "alice", nil, "a3", "5") }, 5},
+		{func() { send(t, base, "beta", "alice", nil, "b1", "3") }, 4},
+		{func() { send(t, base, "beta", "alice", nil, "b2", "4") }, 4},
+		{func() { send(t, base, "alpha", "alice", nil, "a3", "5") }, 5},
 	}
 	for i, step := range steps {
 		step.do()
@@ -250,13 +250,13 @@ func TestRevBumpsOnlyWhenTheNewestConversationChangesAndRestartLeavesHeldRev(t *
 		t.Fatalf("held rev after restart = %+v", again)
 	}
 	restarted := *again.Rev
-	publish(t, base, "alpha", "alice", nil, "a4", "6")
+	send(t, base, "alpha", "alice", nil, "a4", "6")
 	if got := currentRev(t, base); got != restarted {
-		t.Fatalf("publish to the stored newest conversation moved rev from %d to %d", restarted, got)
+		t.Fatalf("send to the stored newest chat moved rev from %d to %d", restarted, got)
 	}
-	publish(t, base, "beta", "alice", nil, "b3", "7")
+	send(t, base, "beta", "alice", nil, "b3", "7")
 	if got := currentRev(t, base); got != restarted+1 {
-		t.Fatalf("publish to another conversation rev = %d, want %d", got, restarted+1)
+		t.Fatalf("send to another chat rev = %d, want %d", got, restarted+1)
 	}
 }
 
@@ -264,9 +264,9 @@ func TestWatchReportsMorePastTheLimit(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	create(t, base, "alpha")
 	create(t, base, "beta")
-	publish(t, base, "alpha", "alice", nil, "a1", "1")
-	publish(t, base, "beta", "alice", nil, "b1", "2")
-	publish(t, base, "alpha", "alice", nil, "a2", "3")
+	send(t, base, "alpha", "alice", nil, "a1", "1")
+	send(t, base, "beta", "alice", nil, "b1", "2")
+	send(t, base, "alpha", "alice", nil, "a2", "3")
 
 	first := mustPost(t, base, PathWatch, map[string]any{"cursor": 0, "limit": 2})
 	if first.Outcome != OutcomeOK || messageLen(first) != 2 || first.More == nil || !*first.More {
@@ -279,9 +279,9 @@ func TestWatchReportsMorePastTheLimit(t *testing.T) {
 	if messageLen(rest) != 1 || rest.More == nil || *rest.More {
 		t.Fatalf("rest = %+v", rest)
 	}
-	ghost := mustPost(t, base, PathWatch, map[string]any{"conversation": "ghost", "cursor": 0, "limit": 2})
+	ghost := mustPost(t, base, PathWatch, map[string]any{"chat": "ghost", "cursor": 0, "limit": 2})
 	if ghost.Outcome != OutcomeOK || messageLen(ghost) != 0 {
-		t.Fatalf("missing conversation = %+v", ghost)
+		t.Fatalf("missing chat = %+v", ghost)
 	}
 }
 
@@ -330,8 +330,8 @@ func TestWatchRefusesBrokenRules(t *testing.T) {
 		{map[string]any{"cursor": 0}, ReasonLimitRequired},
 		{map[string]any{"cursor": 0, "limit": 0}, ReasonLimitRange},
 		{map[string]any{"limit": -2}, ReasonLimitRange},
-		{map[string]any{"conversation": "bad name"}, ReasonBadConversation},
-		{map[string]any{"conversation": ""}, ReasonConversationRequired},
+		{map[string]any{"chat": "bad name"}, ReasonBadChat},
+		{map[string]any{"chat": ""}, ReasonChatRequired},
 		{map[string]any{"deadline": "-1s"}, ReasonDeadline},
 	}
 	for _, c := range cases {

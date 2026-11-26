@@ -65,7 +65,7 @@ func (h *harness) awaitStatus(conv, name, status string) {
 func (h *harness) session(conv, name string) string {
 	h.t.Helper()
 	n := name
-	res := h.do("session", client.SessionRequest{Conversation: conv, Name: &n})
+	res := h.do("session", client.SessionRequest{Chat: conv, Name: &n})
 	if res.Outcome != bus.OutcomeOK || res.Session == nil {
 		h.t.Fatalf("session %s %s", name, res.Reason)
 	}
@@ -235,7 +235,7 @@ func TestBackupActingAsSeatGetsTheDoneGrace(t *testing.T) {
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{
 		"alpha": {Exit: 1, Sleep: "1s"},
-		"bravo": {Register: true},
+		"bravo": {Join: true},
 	}
 	cfg := h.base()
 	cfg.TicketSet = false
@@ -245,7 +245,7 @@ func TestBackupActingAsSeatGetsTheDoneGrace(t *testing.T) {
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
-	h.awaitRegistered(name, "bravo")
+	h.awaitJoined(name, "bravo")
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) && countBody(h.messages(name), classProcessExit) == 0 {
 		time.Sleep(20 * time.Millisecond)
@@ -416,7 +416,7 @@ func (h *harness) noLaunchOf(stderr *lockedBuffer, name string) {
 	if n := len(launches(h.calls(), name)); n != 0 {
 		h.t.Fatalf("%s launches %d", name, n)
 	}
-	if res := h.do("member", client.MemberRequest{Conversation: "kept", Name: name}); res.Reason != bus.ReasonMemberMissing {
+	if res := h.do("member", client.MemberRequest{Chat: "kept", Name: name}); res.Reason != bus.ReasonMemberMissing {
 		h.t.Fatalf("%s row %+v %s", name, res.Member, res.Reason)
 	}
 	if out := stderr.String(); strings.Contains(out, "event=launch") {
@@ -566,7 +566,7 @@ func TestLaunchWhoseRowWriteIsRefusedForTheLeaseIsKilledAndItsExitIsRecorded(t *
 		t.Fatalf("launch %v", err)
 	}
 	// The kill can land before the fake records its call, so the events are the proof it started and ended.
-	if res := h.do("member", client.MemberRequest{Conversation: "kept", Name: "bravo"}); res.Reason != bus.ReasonMemberMissing {
+	if res := h.do("member", client.MemberRequest{Chat: "kept", Name: "bravo"}); res.Reason != bus.ReasonMemberMissing {
 		t.Fatalf("bravo row %+v %s", res.Member, res.Reason)
 	}
 	out := stderr.String()

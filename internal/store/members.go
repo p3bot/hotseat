@@ -16,15 +16,15 @@ import (
 // LaunchMember inserts one row for a roster name.
 // A second launch of that name returns ErrLaunched and writes nothing.
 // A name outside the roster returns ErrNotRoster and writes nothing.
-// A missing conversation returns ErrNotFound and writes nothing.
-// pid and its start token are stored only when hasPID is set, and an empty start stores none. The registered time stays empty.
-func (s *Store) LaunchMember(ctx context.Context, conv, name, now string, pid int64, hasPID bool, start string) (Member, error) {
+// A missing chat returns ErrNotFound and writes nothing.
+// pid and its start token are stored only when hasPID is set, and an empty start stores none. The joined time stays empty.
+func (s *Store) LaunchMember(ctx context.Context, chat, name, now string, pid int64, hasPID bool, start string) (Member, error) {
 	var out Member
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		if err := requireRosterName(ctx, tx, conv, name); err != nil {
+		if err := requireRosterName(ctx, tx, chat, name); err != nil {
 			return err
 		}
-		_, found, err := memberByName(ctx, tx, conv, name)
+		_, found, err := memberByName(ctx, tx, chat, name)
 		if err != nil {
 			return err
 		}
@@ -40,9 +40,9 @@ func (s *Store) LaunchMember(ctx context.Context, conv, name, now string, pid in
 		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO members (
-				conversation, name, launched, registered, status, session, pid, start
+				chat, name, launched, joined, status, session, pid, start
 			) VALUES (?, ?, ?, '', ?, '', ?, ?)`,
-			conv, name, now, MemberLaunched, pidVal, startVal)
+			chat, name, now, MemberLaunched, pidVal, startVal)
 		if err != nil {
 			return err
 		}
@@ -59,13 +59,13 @@ func (s *Store) LaunchMember(ctx context.Context, conv, name, now string, pid in
 // pid and start replace the stored pid and start token when hasPID is set, and are left unchanged otherwise.
 // An empty start with a pid clears the stored token, because it belonged to the old pid.
 // A missing row returns ErrNotMember and writes nothing.
-func (s *Store) SetMemberStatus(ctx context.Context, conv, name, status string, pid int64, hasPID bool, start string) (Member, error) {
+func (s *Store) SetMemberStatus(ctx context.Context, chat, name, status string, pid int64, hasPID bool, start string) (Member, error) {
 	var out Member
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		if err := requireRosterName(ctx, tx, conv, name); err != nil {
+		if err := requireRosterName(ctx, tx, chat, name); err != nil {
 			return err
 		}
-		cur, found, err := memberByName(ctx, tx, conv, name)
+		cur, found, err := memberByName(ctx, tx, chat, name)
 		if err != nil {
 			return err
 		}
@@ -75,16 +75,16 @@ func (s *Store) SetMemberStatus(ctx context.Context, conv, name, status string, 
 		if hasPID {
 			_, err = tx.ExecContext(ctx, `
 				UPDATE members SET status = ?, pid = ?, start = ?
-				WHERE conversation = ? AND name = ?`,
-				status, pid, nullable(start), conv, name)
+				WHERE chat = ? AND name = ?`,
+				status, pid, nullable(start), chat, name)
 			cur.PID = pid
 			cur.HasPID = true
 			cur.Start = start
 		} else {
 			_, err = tx.ExecContext(ctx, `
 				UPDATE members SET status = ?
-				WHERE conversation = ? AND name = ?`,
-				status, conv, name)
+				WHERE chat = ? AND name = ?`,
+				status, chat, name)
 		}
 		if err != nil {
 			return err
@@ -99,16 +99,16 @@ func (s *Store) SetMemberStatus(ctx context.Context, conv, name, status string, 
 	return out, nil
 }
 
-// RegisterMember sets the registered time from now.
-// Status becomes registered only when the row is launched. Any other status stays.
+// JoinMember sets the joined time from now.
+// Status becomes joined only when the row is launched. Any other status stays.
 // A missing row returns ErrNotMember and writes nothing.
-func (s *Store) RegisterMember(ctx context.Context, conv, name, now string) (Member, error) {
+func (s *Store) JoinMember(ctx context.Context, chat, name, now string) (Member, error) {
 	var out Member
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		if err := requireRosterName(ctx, tx, conv, name); err != nil {
+		if err := requireRosterName(ctx, tx, chat, name); err != nil {
 			return err
 		}
-		cur, found, err := memberByName(ctx, tx, conv, name)
+		cur, found, err := memberByName(ctx, tx, chat, name)
 		if err != nil {
 			return err
 		}
@@ -117,16 +117,16 @@ func (s *Store) RegisterMember(ctx context.Context, conv, name, now string) (Mem
 		}
 		status := cur.Status
 		if status == MemberLaunched {
-			status = MemberRegistered
+			status = MemberJoined
 		}
 		_, err = tx.ExecContext(ctx, `
-			UPDATE members SET registered = ?, status = ?
-			WHERE conversation = ? AND name = ?`,
-			now, status, conv, name)
+			UPDATE members SET joined = ?, status = ?
+			WHERE chat = ? AND name = ?`,
+			now, status, chat, name)
 		if err != nil {
 			return err
 		}
-		cur.Registered = now
+		cur.Joined = now
 		cur.Status = status
 		out = cur
 		return nil
@@ -139,13 +139,13 @@ func (s *Store) RegisterMember(ctx context.Context, conv, name, now string) (Mem
 
 // Member returns one row. The session id is not loaded.
 // A missing row returns ErrNotMember.
-func (s *Store) Member(ctx context.Context, conv, name string) (Member, error) {
+func (s *Store) Member(ctx context.Context, chat, name string) (Member, error) {
 	var out Member
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		if err := requireRosterName(ctx, tx, conv, name); err != nil {
+		if err := requireRosterName(ctx, tx, chat, name); err != nil {
 			return err
 		}
-		cur, found, err := memberByName(ctx, tx, conv, name)
+		cur, found, err := memberByName(ctx, tx, chat, name)
 		if err != nil {
 			return err
 		}
@@ -161,19 +161,19 @@ func (s *Store) Member(ctx context.Context, conv, name string) (Member, error) {
 	return out, nil
 }
 
-// Members returns the rows of one conversation in roster order.
+// Members returns the rows of one chat in roster order.
 // A roster name with no row is omitted. Session ids are not loaded.
-// A missing conversation returns ErrNotFound.
-func (s *Store) Members(ctx context.Context, conv string) ([]Member, error) {
+// A missing chat returns ErrNotFound.
+func (s *Store) Members(ctx context.Context, chat string) ([]Member, error) {
 	var out []Member
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		roster, err := rosterOf(ctx, tx, conv)
+		roster, err := rosterOf(ctx, tx, chat)
 		if err != nil {
 			return err
 		}
 		out, err = queryRows(ctx, tx, scanMember, `
-			SELECT name, launched, registered, status, pid, start
-			FROM members WHERE conversation = ?`, conv)
+			SELECT name, launched, joined, status, pid, start
+			FROM members WHERE chat = ?`, chat)
 		if err != nil {
 			return err
 		}
@@ -191,13 +191,13 @@ func (s *Store) Members(ctx context.Context, conv string) ([]Member, error) {
 
 // SetSession stores or replaces the session id for a member row.
 // A missing row returns ErrNotMember and writes nothing.
-func (s *Store) SetSession(ctx context.Context, conv, name, session string) (MemberSession, error) {
+func (s *Store) SetSession(ctx context.Context, chat, name, session string) (MemberSession, error) {
 	var out MemberSession
 	err := s.withTx(ctx, true, func(tx *sql.Tx) error {
-		if err := requireRosterName(ctx, tx, conv, name); err != nil {
+		if err := requireRosterName(ctx, tx, chat, name); err != nil {
 			return err
 		}
-		_, found, err := memberByName(ctx, tx, conv, name)
+		_, found, err := memberByName(ctx, tx, chat, name)
 		if err != nil {
 			return err
 		}
@@ -206,8 +206,8 @@ func (s *Store) SetSession(ctx context.Context, conv, name, session string) (Mem
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE members SET session = ?
-			WHERE conversation = ? AND name = ?`,
-			session, conv, name)
+			WHERE chat = ? AND name = ?`,
+			session, chat, name)
 		if err != nil {
 			return err
 		}
@@ -222,16 +222,16 @@ func (s *Store) SetSession(ctx context.Context, conv, name, session string) (Mem
 
 // Session returns the stored session id. An unset id is an empty string.
 // A missing row returns ErrNotMember.
-func (s *Store) Session(ctx context.Context, conv, name string) (MemberSession, error) {
+func (s *Store) Session(ctx context.Context, chat, name string) (MemberSession, error) {
 	var out MemberSession
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		if err := requireRosterName(ctx, tx, conv, name); err != nil {
+		if err := requireRosterName(ctx, tx, chat, name); err != nil {
 			return err
 		}
 		var session string
 		err := tx.QueryRowContext(ctx, `
-			SELECT session FROM members WHERE conversation = ? AND name = ?`,
-			conv, name).Scan(&session)
+			SELECT session FROM members WHERE chat = ? AND name = ?`,
+			chat, name).Scan(&session)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotMember
 		}
@@ -248,11 +248,11 @@ func (s *Store) Session(ctx context.Context, conv, name string) (MemberSession, 
 }
 
 // Sessions returns every member name and session id in roster order.
-// A missing conversation returns ErrNotFound.
-func (s *Store) Sessions(ctx context.Context, conv string) ([]MemberSession, error) {
+// A missing chat returns ErrNotFound.
+func (s *Store) Sessions(ctx context.Context, chat string) ([]MemberSession, error) {
 	var out []MemberSession
 	err := s.withTx(ctx, false, func(tx *sql.Tx) error {
-		roster, err := rosterOf(ctx, tx, conv)
+		roster, err := rosterOf(ctx, tx, chat)
 		if err != nil {
 			return err
 		}
@@ -260,7 +260,7 @@ func (s *Store) Sessions(ctx context.Context, conv string) ([]MemberSession, err
 			var item MemberSession
 			err := row.Scan(&item.Name, &item.Session)
 			return item, err
-		}, `SELECT name, session FROM members WHERE conversation = ?`, conv)
+		}, `SELECT name, session FROM members WHERE chat = ?`, chat)
 		if err != nil {
 			return err
 		}
@@ -276,8 +276,8 @@ func (s *Store) Sessions(ctx context.Context, conv string) ([]MemberSession, err
 	return out, nil
 }
 
-func requireRosterName(ctx context.Context, tx *sql.Tx, conv, name string) error {
-	roster, err := rosterOf(ctx, tx, conv)
+func requireRosterName(ctx context.Context, tx *sql.Tx, chat, name string) error {
+	roster, err := rosterOf(ctx, tx, chat)
 	if err != nil {
 		return err
 	}
@@ -289,19 +289,19 @@ func requireRosterName(ctx context.Context, tx *sql.Tx, conv, name string) error
 	return ErrNotRoster
 }
 
-func rosterOf(ctx context.Context, tx *sql.Tx, conv string) ([]string, error) {
-	row, err := conversationByName(ctx, tx, conv)
+func rosterOf(ctx context.Context, tx *sql.Tx, chat string) ([]string, error) {
+	row, err := chatByName(ctx, tx, chat)
 	if err != nil {
 		return nil, err
 	}
 	return row.Roster, nil
 }
 
-func memberByName(ctx context.Context, tx *sql.Tx, conv, name string) (Member, bool, error) {
+func memberByName(ctx context.Context, tx *sql.Tx, chat, name string) (Member, bool, error) {
 	m, err := scanMember(tx.QueryRowContext(ctx, `
-		SELECT name, launched, registered, status, pid, start
-		FROM members WHERE conversation = ? AND name = ?`,
-		conv, name))
+		SELECT name, launched, joined, status, pid, start
+		FROM members WHERE chat = ? AND name = ?`,
+		chat, name))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Member{}, false, nil
 	}
@@ -311,12 +311,12 @@ func memberByName(ctx context.Context, tx *sql.Tx, conv, name string) (Member, b
 	return m, true, nil
 }
 
-// scanMember reads name, launched, registered, status, pid, and start.
+// scanMember reads name, launched, joined, status, pid, and start.
 func scanMember(row rowScanner) (Member, error) {
 	var m Member
 	var pid sql.NullInt64
 	var start sql.NullString
-	if err := row.Scan(&m.Name, &m.Launched, &m.Registered, &m.Status, &pid, &start); err != nil {
+	if err := row.Scan(&m.Name, &m.Launched, &m.Joined, &m.Status, &pid, &start); err != nil {
 		return Member{}, err
 	}
 	if pid.Valid {

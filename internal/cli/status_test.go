@@ -69,7 +69,7 @@ func TestStatusOfAnIdleConversationExitsZeroWithItsBindingCountsAndNewestStopErr
 func TestStatusLinesFollowTheDocumentedOrder(t *testing.T) {
 	discussing := int64(41)
 	st := run.Status{
-		Binding: client.Conversation{
+		Binding: client.Chat{
 			Name: "job", Status: "open", Task: "tasks:hotseat/ticket/triage", Ticket: "p3bot-e734",
 			Seat: "grok", Directory: "/tmp/x", Roster: []string{"grok", "opus"},
 		},

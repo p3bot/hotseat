@@ -717,10 +717,10 @@ func (e *engine) finishDone(done client.Message) error {
 	e.doneFrom = done.From
 	e.doneSeq = done.Seq
 	e.mu.Unlock()
-	if _, err := e.writeRecord(client.StopRecord{Conversation: e.name, Done: done.Seq}); err != nil {
+	if _, err := e.writeRecord(client.StopRecord{Chat: e.name, Done: done.Seq}); err != nil {
 		return err
 	}
-	if _, err := e.call(e.root, "close", client.CloseRequest{Conversation: e.name}); err != nil {
+	if _, err := e.call(e.root, "close", client.CloseRequest{Chat: e.name}); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -754,7 +754,7 @@ const readPage = 200
 // to the end. It returns the messages and the last cursor it read from.
 func readAll(ctx context.Context, call caller, conv string, cursor int64, kinds []string) ([]client.Message, int64, error) {
 	var all []client.Message
-	req := client.ReadRequest{Conversation: conv, Limit: readPage}
+	req := client.ReadRequest{Chat: conv, Limit: readPage}
 	if kinds != nil {
 		req.Kinds = &kinds
 	}
@@ -799,8 +799,8 @@ func (e *engine) head() (int64, error) {
 
 func (e *engine) waitOn(ctx context.Context, cursor int64) (client.Message, error) {
 	res, err := e.call(ctx, "wait", client.WaitRequest{
-		Conversation: e.name,
-		Cursor:       cursor,
+		Chat:   e.name,
+		Cursor: cursor,
 	})
 	if err != nil {
 		return client.Message{}, err

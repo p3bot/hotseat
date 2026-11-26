@@ -53,7 +53,7 @@ func TestStatusStopResultEqualsTheStopResultRunPrinted(t *testing.T) {
 				disputed(h)
 				h.script("a3",
 					on(promptStall, says(kindDeadlock, "a1", "a2", "a3", "owner")),
-					stepFile{On: promptReport, Publish: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "report"}}},
+					stepFile{On: promptReport, Send: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "report"}}},
 				)
 				cfg := h.team("a3", "a1", "a2", "a3")
 				cfg.MaxSays, cfg.MaxSaysSet = 1, true
@@ -112,7 +112,7 @@ func TestStatusReportsTheRecordedDoneAfterTheBackupThatPostedItTimesOut(t *testi
 	h.setMember("kept", "alpha", statusLaunched, nil)
 	h.setMember("kept", "alpha", statusTimedOut, nil)
 	h.setMember("kept", "bravo", statusLaunched, nil)
-	h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"})
+	h.do("join", client.JoinRequest{Chat: "kept", Name: "bravo"})
 	h.setMember("kept", "bravo", statusExited, nil)
 	done := h.publish("kept", "bravo", kindDone, "yes", []string{"owner"})
 	out, _, err := h.runBounded(h.continueKept(""))
@@ -180,7 +180,7 @@ func TestStatusIsClosedOnlyWhenNoConductorHoldsTheLease(t *testing.T) {
 	if st := h.status("kept"); st.State != StateIdle || st.Binding.Name != "kept" || st.Binding.Seat != "alpha" || !slices.Equal(st.Binding.Roster, abcRoster) {
 		t.Fatalf("open %+v", st)
 	}
-	if res := h.do("close", client.CloseRequest{Conversation: "kept"}); res.Outcome != bus.OutcomeOK {
+	if res := h.do("close", client.CloseRequest{Chat: "kept"}); res.Outcome != bus.OutcomeOK {
 		t.Fatal(res.Reason)
 	}
 	if st := h.status("kept"); st.State != StateClosed || st.Stop != nil {
@@ -202,7 +202,7 @@ func TestStatusCountsFindingsFromTheWholeLedgerAndNamesTheOneBeingWorkedOn(t *te
 	h.publish("kept", "bravo", kindSay, "found", []string{"alpha"})
 	h.publish("kept", "charlie", kindSay, "found", []string{"alpha"})
 	h.closed(turn, f1, f2, dup)
-	h.record("kept", client.GroupingRecord{Conversation: "kept", Turn: turn.Seq, Drops: []client.Drop{{Finding: dup.Seq, Kept: f1.Seq}}})
+	h.record("kept", client.GroupingRecord{Chat: "kept", Turn: turn.Seq, Drops: []client.Drop{{Finding: dup.Seq, Kept: f1.Seq}}})
 	h.engineLease("kept")
 
 	type counts struct{ findings, settled, fixed, dropped int }
@@ -226,7 +226,7 @@ func TestStatusCountsFindingsFromTheWholeLedgerAndNamesTheOneBeingWorkedOn(t *te
 	if st := h.status("kept"); st.Newest != fixed.Seq {
 		t.Fatalf("newest %d, want %d", st.Newest, fixed.Seq)
 	}
-	h.record("kept", client.HaltRecord{Conversation: "kept", Finding: f2.Seq})
+	h.record("kept", client.HaltRecord{Chat: "kept", Finding: f2.Seq})
 	check("halted", counts{2, 1, 1, 1}, 0)
 }
 
@@ -239,12 +239,12 @@ func TestStatusNamesNoFindingAfterAHaltOnAnEarlierOne(t *testing.T) {
 	h.publish("kept", "bravo", kindSay, "found", []string{"alpha"})
 	h.publish("kept", "charlie", kindSay, "found", []string{"alpha"})
 	h.closed(turn, f1, f2)
-	h.record("kept", client.GroupingRecord{Conversation: "kept", Turn: turn.Seq})
+	h.record("kept", client.GroupingRecord{Chat: "kept", Turn: turn.Seq})
 	h.engineLease("kept")
 	if st := h.status("kept"); st.Discussing == nil || *st.Discussing != f1.Seq {
 		t.Fatalf("before the halt: discussing %+v, want %d", st, f1.Seq)
 	}
-	h.record("kept", client.HaltRecord{Conversation: "kept", Finding: f1.Seq})
+	h.record("kept", client.HaltRecord{Chat: "kept", Finding: f1.Seq})
 	if st := h.status("kept"); st.Discussing != nil {
 		t.Fatalf("after the halt: discussing %d, want none", *st.Discussing)
 	}
@@ -257,9 +257,9 @@ func TestStatusCountsADismissalAsSettledAndNeverFixed(t *testing.T) {
 	f := h.publish("kept", "bravo", kindFinding, "one", abcRoster)
 	h.publish("kept", "bravo", kindSay, "found", []string{"alpha"})
 	h.closed(turn, f)
-	h.record("kept", client.GroupingRecord{Conversation: "kept", Turn: turn.Seq})
+	h.record("kept", client.GroupingRecord{Chat: "kept", Turn: turn.Seq})
 	dismiss := h.publishRe("kept", "charlie", kindDismiss, kindDismiss, abcRoster, f.Seq)
-	h.record("kept", client.SettleRecord{Conversation: "kept", Finding: f.Seq, Proposal: dismiss.Seq, ProposalKind: kindDismiss})
+	h.record("kept", client.SettleRecord{Chat: "kept", Finding: f.Seq, Proposal: dismiss.Seq, ProposalKind: kindDismiss})
 	h.publishRe("kept", "bravo", kindFixed, kindFixed, abcRoster, f.Seq)
 	h.engineLease("kept")
 	st := h.status("kept")
@@ -273,7 +273,7 @@ func TestStatusShowsOnlyAStopErrorNewerThanTheRecordedDone(t *testing.T) {
 	h.keptConversation(abcRoster...)
 	stopError := func(class string) client.Message {
 		t.Helper()
-		res := h.do("publish", client.PublishRequest{Conversation: "kept", From: fromRun, To: []string{fromOwner}, Body: class, TxID: class, Kind: kindError})
+		res := h.do("send", client.SendRequest{Chat: "kept", From: fromRun, To: []string{fromOwner}, Body: class, TxID: class, Kind: kindError})
 		if res.Outcome != bus.OutcomeOK || res.Message == nil {
 			t.Fatal(res.Reason)
 		}
@@ -284,7 +284,7 @@ func TestStatusShowsOnlyAStopErrorNewerThanTheRecordedDone(t *testing.T) {
 		t.Fatalf("no stop record: %+v", st.StopError)
 	}
 	done := h.publish("kept", "alpha", kindDone, "done", []string{"owner"})
-	h.record("kept", client.StopRecord{Conversation: "kept", Done: done.Seq})
+	h.record("kept", client.StopRecord{Chat: "kept", Done: done.Seq})
 	st := h.status("kept")
 	if st.StopError != nil || st.Stop == nil || st.Stop.Done != done.Seq || st.Stop.Outcome != outcomeDone {
 		t.Fatalf("older than the done: stop %+v stop error %+v", st.Stop, st.StopError)

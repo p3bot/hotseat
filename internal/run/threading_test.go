@@ -31,8 +31,8 @@ func withSeqRe(m client.Message, re int64) client.Message {
 // publishRe stores a message in conv with re, as a member would.
 func (h *harness) publishRe(conv, from, kind, body string, to []string, re int64) client.Message {
 	h.t.Helper()
-	res := h.do("publish", client.PublishRequest{
-		Conversation: conv, From: from, To: to, Body: body, TxID: "re-" + from + "-" + seqText(txSeq.Add(1)), Kind: kind, Re: &re,
+	res := h.do("send", client.SendRequest{
+		Chat: conv, From: from, To: to, Body: body, TxID: "re-" + from + "-" + seqText(txSeq.Add(1)), Kind: kind, Re: &re,
 	})
 	if res.Outcome != bus.OutcomeOK || res.Message == nil {
 		h.t.Fatalf("publish %s: %s", kind, res.Reason)
@@ -216,7 +216,7 @@ func TestFindingWhoseReNamesAClosedSetsTurnIsBad(t *testing.T) {
 		on("second", withRe(says(kindFinding, "alpha", "bravo"), "2"), withRe(says(kindSay, "alpha"), "$re")),
 	)
 	h.script("alpha",
-		stepFile{On: promptFollow, Publish: []messageFile{{Kind: kindTurn, To: []string{"bravo"}, Body: "mode: serial\nsecond"}}},
+		stepFile{On: promptFollow, Send: []messageFile{{Kind: kindTurn, To: []string{"bravo"}, Body: "mode: serial\nsecond"}}},
 		on(promptFollow, says(kindDone, "owner")),
 	)
 	res, name := h.play(h.team("alpha", "alpha", "bravo"))
@@ -494,7 +494,7 @@ func TestRefusedDerivedErrorStopsTheRun(t *testing.T) {
 	h.storedErr("charlie", classNoReply, bad.Seq, "bad finding/charlie/"+seqOf(bad))
 	h.script("alpha", on(promptFollow, says(kindDone, "owner")))
 	res := h.playKept()
-	if res.err == nil || !strings.Contains(res.err.Error(), "publish error") || res.out.outcome() != "error" {
+	if res.err == nil || !strings.Contains(res.err.Error(), "send error") || res.out.outcome() != "error" {
 		t.Fatalf("%v\n%s", res.err, res.out)
 	}
 	if got := errorBodies(h.messages("kept")); len(got) != 2 || got[1] != stopRefusal {

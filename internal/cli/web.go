@@ -39,9 +39,9 @@ The default bus address is ` + bus.DefaultListen + `. The default page address i
 The token is not a flag and the page does not receive it. Omit the flag for a loopback bus.
 The page listens on loopback. Any other listen address is refused.
 The page answers for the address it listens on. On loopback, localhost with that port is the same address.
-The top bar searches every conversation by name, task, and ticket, in the list order. Messages, at /, shows the newest 50 messages across every conversation, newest first. A conversation can appear more than once. Conversations, at /conversations, shows an Open section and then a Closed section. Each keeps that order and shows the task, ticket, and seat. An empty section stays on the page. A conversation named "." or ".." is shown without a link.
-Opening /conversations/{name} shows its name, status, task, ticket, seat, and directory, then the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit.
-Send posts to /conversations/{name}/messages. The person at the page supplies from, to, kind, and the body.
+The top bar searches every conversation by name, task, and ticket, in the list order. Messages, at /, shows the newest 50 messages across every conversation, newest first. A conversation can appear more than once. Chats, at /chats, shows an Open section and then a Closed section. Each keeps that order and shows the task, ticket, and seat. An empty section stays on the page. A conversation named "." or ".." is shown without a link.
+Opening /chats/{name} shows its name, status, task, ticket, seat, and directory, then the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit.
+Send posts to /chats/{name}/messages. The person at the page supplies from, to, kind, and the body.
 An empty transaction id is filled in the page when Send is submitted.
 The server does not keep the place in the transcript or the transaction id, and it does not invent one.
 A stored send redirects to the conversation. Any other result leaves the form open with the posted id.

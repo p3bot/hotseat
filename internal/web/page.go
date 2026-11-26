@@ -16,42 +16,42 @@ import (
 )
 
 const (
-	kindMessages     = "messages"
-	kindList         = "list"
-	kindConversation = "conversation"
+	kindMessages = "messages"
+	kindList     = "list"
+	kindChat     = "chat"
 )
 
 type page struct {
-	Kind          string
-	Notice        string
-	Open          []conversationRow
-	Closed        []conversationRow
-	Index         []indexEntry
-	ListOutcome   string
-	ListReason    string
-	Name          string
-	Status        string
-	StatusKnown   bool
-	Task          string
-	Ticket        string
-	Seat          string
-	Directory     string
-	PublishAction string
-	History       bool
-	NewestHref    string
-	Group         *messageGroup
-	From          string
-	ToText        string
-	MessageKind   string
-	Body          string
-	TxID          string
-	Publish       *publishView
-	SendOpen      bool
-	HTTPStatus    int
+	Kind        string
+	Notice      string
+	Open        []chatRow
+	Closed      []chatRow
+	Index       []indexEntry
+	ListOutcome string
+	ListReason  string
+	Name        string
+	Status      string
+	StatusKnown bool
+	Task        string
+	Ticket      string
+	Seat        string
+	Directory   string
+	SendAction  string
+	History     bool
+	NewestHref  string
+	Group       *messageGroup
+	From        string
+	ToText      string
+	MessageKind string
+	Body        string
+	TxID        string
+	Send        *sendView
+	SendOpen    bool
+	HTTPStatus  int
 }
 
-// conversationRow is one entry in the Open or Closed section.
-type conversationRow struct {
+// chatRow is one entry in the Open or Closed section.
+type chatRow struct {
 	Name   string
 	Href   string
 	Task   string
@@ -59,12 +59,12 @@ type conversationRow struct {
 	Seat   string
 }
 
-// messageItem is one rendered message with the conversation it belongs to.
-// Href is the conversation link. It is empty for a name that has none.
+// messageItem is one rendered message with the chat it belongs to.
+// Href is the chat link. It is empty for a name that has none.
 type messageItem struct {
-	Conversation string
-	Href         string
-	Message      client.Message
+	Chat    string
+	Href    string
+	Message client.Message
 }
 
 // Anchor is the element id of this message. seq is unique across the store, so it is unique on a page.
@@ -72,8 +72,8 @@ func (m messageItem) Anchor() string {
 	return messageAnchor(m.Message.Seq)
 }
 
-// ReHref links the message re names: its conversation's history group with
-// that message at the top. It is empty when there is no re or no conversation link.
+// ReHref links the message re names: its chat's history group with
+// that message at the top. It is empty when there is no re or no chat link.
 func (m messageItem) ReHref() string {
 	if m.Message.Re == nil || m.Href == "" {
 		return ""
@@ -102,19 +102,19 @@ type messageGroup struct {
 	NextPage string
 }
 
-type publishView struct {
+type sendView struct {
 	Outcome string
 	Reason  string
 }
 
 // TabTitle is the browser tab label. Messages is the product name.
-// The conversation list and a transcript add a suffix so two tabs stay distinct.
+// The chat list and a transcript add a suffix so two tabs stay distinct.
 func (p page) TabTitle() string {
 	switch {
 	case p.Name != "":
 		return "Hotseat - " + p.Name
 	case p.Kind == kindList:
-		return "Hotseat - Conversations"
+		return "Hotseat - Chats"
 	default:
 		return "Hotseat"
 	}
@@ -134,9 +134,9 @@ func (s Server) render(w http.ResponseWriter, p page) {
 
 func setPageHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// The body holds the transcript and, after a failed publish, the posted id.
+	// The body holds the transcript and, after a failed send, the posted id.
 	w.Header().Set("Cache-Control", "no-store")
-	// Inline script fills an empty txid on Publish. default-src none would block it.
+	// Inline script fills an empty txid on Send. default-src none would block it.
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// same-origin keeps a cross-site request from carrying the cursor in Referer.
@@ -210,22 +210,22 @@ main { grid-area: main; min-width: 0; min-height: 0; overflow: auto; padding: 1.
 body:not(.has-meta) main { max-width: 46rem; }
 body.has-meta main { display: flex; flex-direction: column; overflow: hidden; }
 body.has-meta #transcript-section { flex: 1 1 auto; min-height: 0; overflow: auto; margin-right: -1.5rem; margin-bottom: -1.5rem; padding: 0 1.25rem 1.5rem 0; }
-.conv-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex: none; }
-.conv-head h1 { margin: 0 0 2rem; }
-#conversation-meta { grid-area: meta; min-width: 0; min-height: 0; overflow: auto; padding: 1.25rem 1rem 2rem; border-left: 1px solid var(--line); background: var(--ticket); }
+.chat-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex: none; }
+.chat-head h1 { margin: 0 0 2rem; }
+#chat-meta { grid-area: meta; min-width: 0; min-height: 0; overflow: auto; padding: 1.25rem 1rem 2rem; border-left: 1px solid var(--line); background: var(--ticket); }
 .binding { display: grid; gap: 0.9rem; margin: 0; }
 .binding div { display: grid; gap: 0.15rem; min-width: 0; }
 .binding dt { color: var(--fg); font-weight: 650; font-size: 1.05rem; }
 .binding dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-#conversation-meta .status { font-size: 1rem; }
+#chat-meta .status { font-size: 1rem; }
 #send-pen { border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 4px; padding: 0.4rem; line-height: 0; }
 #send-pen:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
 #send-pen svg { width: 1.15rem; height: 1.15rem; display: block; }
 label { display: grid; gap: 0.25rem; margin: 0.75rem 0; }
 button { padding: 0.3rem 0.7rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); cursor: pointer; }
 button:hover { border-color: var(--accent); }
-#publish-button { background: var(--accent); border-color: var(--accent); color: #fff; }
-#publish-button:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
+#send-button { background: var(--accent); border-color: var(--accent); color: #fff; }
+#send-button:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 dialog { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); padding: 1rem 1.15rem 1.15rem; width: min(34rem, calc(100vw - 2rem)); }
 dialog input, dialog textarea, dialog button { background: var(--ticket); }
@@ -234,9 +234,9 @@ dialog::backdrop { background: rgb(28 25 23 / 0.45); }
 #transcript .where { display: none; }
 .message { background: var(--ticket); border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.75rem; margin: 0 0 1.2rem; box-shadow: 0 1px 2px rgb(28 25 23 / 0.08), 0 4px 12px rgb(28 25 23 / 0.12); }
 #more { height: 1px; }
-#group-error, #list-error, #publish-reason { color: var(--issues); }
+#group-error, #list-error, #send-reason { color: var(--issues); }
 #group-error:empty { display: none; }
-#notice, #list-error, #publish-reason { background: var(--banner); padding: 0.35rem 0.55rem; border-radius: 4px; }
+#notice, #list-error, #send-reason { background: var(--banner); padding: 0.35rem 0.55rem; border-radius: 4px; }
 .meta-end { display: flex; align-items: center; gap: 0.75rem; margin-left: auto; flex: none; }
 .msg-actions { display: flex; align-items: center; gap: 0.35rem; flex: none; }
 .msg-actions .markdown,
@@ -279,22 +279,22 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 .kind[data-kind="instruction"], .kind[data-kind="instructions"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, #fff); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
 .where { margin: 0 0 0.35rem; font-weight: 650; }
 #messages { list-style: none; margin: 0; padding: 0; }
-.conv-group { margin: 0 0 2rem; }
-.conv-group h2 { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; font-size: 1.15rem; }
-.conv-group .count { padding: 0.05rem 0.55rem; border: 1px solid var(--line); border-radius: 999px; background: var(--ticket); color: var(--muted); font-size: 0.75rem; font-weight: 650; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.chat-group { margin: 0 0 2rem; }
+.chat-group h2 { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; font-size: 1.15rem; }
+.chat-group .count { padding: 0.05rem 0.55rem; border: 1px solid var(--line); border-radius: 999px; background: var(--ticket); color: var(--muted); font-size: 0.75rem; font-weight: 650; line-height: 1.4; font-variant-numeric: tabular-nums; }
 #open-section .count { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
-.conv-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
-.conv { position: relative; padding: 0.6rem 0.85rem; border: 1px solid var(--line); border-radius: 6px; background: var(--ticket); box-shadow: 0 1px 2px rgb(28 25 23 / 0.08), 0 4px 12px rgb(28 25 23 / 0.12); }
-.conv:has(a):hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
-.conv-name { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
-.conv-name a::after { content: ""; position: absolute; inset: 0; border-radius: 6px; }
-.conv-name a:hover { text-decoration: none; }
-.conv-binding { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 0.15rem 1.25rem; margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--muted); }
-.conv-binding div { display: flex; gap: 0.35rem; min-width: 0; }
-.conv-binding dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
-#closed-section .conv { background: transparent; box-shadow: none; }
-#closed-section .conv-name a { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); }
-.conv-empty { margin: 0; color: var(--muted); }
+.chat-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+.chat { position: relative; padding: 0.6rem 0.85rem; border: 1px solid var(--line); border-radius: 6px; background: var(--ticket); box-shadow: 0 1px 2px rgb(28 25 23 / 0.08), 0 4px 12px rgb(28 25 23 / 0.12); }
+.chat:has(a):hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.chat-name { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+.chat-name a::after { content: ""; position: absolute; inset: 0; border-radius: 6px; }
+.chat-name a:hover { text-decoration: none; }
+.chat-binding { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 0.15rem 1.25rem; margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--muted); }
+.chat-binding div { display: flex; gap: 0.35rem; min-width: 0; }
+.chat-binding dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
+#closed-section .chat { background: transparent; box-shadow: none; }
+#closed-section .chat-name a { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); }
+.chat-empty { margin: 0; color: var(--muted); }
 .arrived { animation: arrived 2.4s ease-out; }
 @keyframes arrived { from { background-color: var(--arrived); } }
 @keyframes arrived-still { from, to { background-color: var(--arrived); } }
@@ -306,23 +306,23 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
   main, body.has-meta main, body.has-meta #transcript-section { display: block; overflow: visible; }
   body.has-meta #transcript-section { margin: 0; padding: 0; }
   nav { border-right: 0; border-bottom: 1px solid var(--line); }
-  #conversation-meta { border-left: 0; border-bottom: 1px solid var(--line); }
+  #chat-meta { border-left: 0; border-bottom: 1px solid var(--line); }
   .search { width: min(16rem, 50vw); }
 }
 </style>
 </head>
-<body{{if eq .Kind "conversation"}} class="has-meta"{{end}}>
+<body{{if eq .Kind "chat"}} class="has-meta"{{end}}>
 <header class="topbar">
 <a class="brand" href="/">Hotseat</a>
 <div class="search">
 <label class="sr" for="search">Search</label>
-<input id="search" type="search" placeholder="Search conversations" autocomplete="off">
+<input id="search" type="search" placeholder="Search chats" autocomplete="off">
 <ul id="search-results" hidden></ul>
 </div>
 </header>
 <nav>
 <a href="/" id="nav-messages"{{if eq .Kind "messages"}} aria-current="page"{{end}}>Messages</a>
-<a href="/conversations" id="nav-conversations"{{if eq .Kind "list"}} aria-current="page"{{end}}>Conversations</a>
+<a href="/chats" id="nav-chats"{{if eq .Kind "list"}} aria-current="page"{{end}}>Chats</a>
 </nav>
 <main id="main">
 {{if .Notice}}<p id="notice">{{.Notice}}</p>{{end}}
@@ -336,19 +336,19 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{end}}{{template "olderMarker" .Group}}{{end}}{{end}}
 <p id="group-error"></p>
 {{else if eq .Kind "list"}}
-<h1>Conversations</h1>
+<h1>Chats</h1>
 {{if .ListOutcome}}<p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p>
-{{else if not .Notice}}{{template "convSections" .}}{{end}}
-{{else if eq .Kind "conversation"}}
-<header class="conv-head">
+{{else if not .Notice}}{{template "chatSections" .}}{{end}}
+{{else if eq .Kind "chat"}}
+<header class="chat-head">
 <h1>{{.Name}}</h1>
 <button type="button" id="send-pen" aria-label="Send" title="Send">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
 </button>
 </header>
-{{if .Publish}}<section id="publish-result">
-<p id="publish-outcome">{{.Publish.Outcome}}</p>
-{{if .Publish.Reason}}<p id="publish-reason">{{.Publish.Reason}}</p>{{end}}
+{{if .Send}}<section id="send-result">
+<p id="send-outcome">{{.Send.Outcome}}</p>
+{{if .Send.Reason}}<p id="send-reason">{{.Send.Reason}}</p>{{end}}
 </section>{{end}}
 <section id="transcript-section"{{if .History}} data-history{{end}}>
 {{if .History}}<p id="newest"><a href="{{.NewestHref}}">Newest messages</a></p>
@@ -360,7 +360,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 {{end}}{{template "olderMarker" .Group}}{{end}}{{end}}
 <p id="group-error"></p>
 </section>
-<form id="send-form" method="post" action="{{.PublishAction}}">
+<form id="send-form" method="post" action="{{.SendAction}}">
 <dialog id="send-dialog"{{if .SendOpen}} data-send-open{{end}}>
 <h2>Send</h2>
 <label for="from">From <input id="from" name="from" value="{{.From}}" autocomplete="off"></label>
@@ -371,15 +371,15 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 <label for="txid">Transaction id <input id="txid" name="txid" value="{{.TxID}}" autocomplete="off"></label>
 <div class="dialog-actions">
 <button type="button" id="send-cancel">Cancel</button>
-<button type="submit" id="publish-button">Send</button>
+<button type="submit" id="send-button">Send</button>
 </div>
 <p class="hint">An empty id is filled here when you send. The server does not invent one. A stored send clears this field.</p>
 </dialog>
 </form>
 {{end}}
 </main>
-{{if eq .Kind "conversation"}}{{template "convMeta" .}}{{end}}
-{{template "convIndex" .}}
+{{if eq .Kind "chat"}}{{template "chatMeta" .}}{{end}}
+{{template "chatIndex" .}}
 <script>
 (function () {
   var mainEl = document.getElementById("main");
@@ -387,7 +387,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
   var results = document.getElementById("search-results");
   function trim(s) { return s.replace(/^\s+/, "").replace(/\s+$/, ""); }
   function indexItems() {
-    var index = document.getElementById("conversation-index");
+    var index = document.getElementById("chat-index");
     var items = [];
     if (!index) return items;
     var rows = index.children;
@@ -445,10 +445,10 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     });
   }
   var form = document.getElementById("send-form");
-  var publish = document.getElementById("publish-button");
-  if (form && publish) {
+  var send = document.getElementById("send-button");
+  if (form && send) {
     form.addEventListener("submit", function (event) {
-      if (event.submitter !== publish) return;
+      if (event.submitter !== send) return;
       var field = document.getElementById("txid");
       if (!field || field.value !== "") return;
       var bytes = new Uint8Array(5);
@@ -544,8 +544,8 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
   var historyView = !!(historySection && historySection.hasAttribute("data-history"));
   function pageView(path) {
     if (path === "/") return { list: "messages", empty: "empty", region: "main", url: "/", stream: "/events?", loadNotice: true };
-    if (path === "/conversations") return { sections: true, stream: "/events?view=list", loadNotice: true };
-    var m = /^\/conversations\/([^\/]+)(\/messages)?$/.exec(path);
+    if (path === "/chats") return { sections: true, stream: "/events?view=list", loadNotice: true };
+    var m = /^\/chats\/([^\/]+)(\/messages)?$/.exec(path);
     if (!m) return null;
     var name;
     try { name = decodeURIComponent(m[1]); } catch (err) { return null; }
@@ -554,9 +554,9 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
       list: "transcript",
       empty: "transcript-empty",
       region: "transcript-section",
-      url: "/conversations/" + m[1],
-      stream: "/events?conversation=" + encodeURIComponent(name) + "&",
-      history: "/events?conversation=" + encodeURIComponent(name) + "&view=history",
+      url: "/chats/" + m[1],
+      stream: "/events?chat=" + encodeURIComponent(name) + "&",
+      history: "/events?chat=" + encodeURIComponent(name) + "&view=history",
       // After a failed Send the notice explains the send, which a reload does not undo.
       loadNotice: !m[2]
     };
@@ -704,7 +704,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     if (source || reloading || document.visibilityState === "hidden") return;
     if (historyView) source = new EventSource(view.history);
     else source = new EventSource(view.list ? view.stream + "after=" + seq : view.stream);
-    source.addEventListener("conversations", applyConversations);
+    source.addEventListener("chats", applyChats);
     if (view.meta) source.addEventListener("meta", applyMeta);
     if (view.list && !historyView) {
       source.addEventListener("message", applyMessage);
@@ -741,9 +741,9 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
   }
   function rowNames(section) {
     var names = [];
-    var rows = section ? section.querySelectorAll("li.conv") : [];
+    var rows = section ? section.querySelectorAll("li.chat") : [];
     for (var i = 0; i < rows.length; i++) {
-      var label = rows[i].querySelector(".conv-name");
+      var label = rows[i].querySelector(".chat-name");
       names.push(label ? label.textContent : "");
     }
     return names;
@@ -752,7 +752,7 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     var before = rowNames(document.getElementById(id));
     var section = replaceFrom(doc, id);
     if (!section) return;
-    var rows = section.querySelectorAll("li.conv");
+    var rows = section.querySelectorAll("li.chat");
     var names = rowNames(section);
     for (var i = 0; i < rows.length; i++) {
       if (passedOthers(before, names, i)) markArrived(rows[i]);
@@ -785,16 +785,16 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
     if (at) mainEl.removeChild(at);
     clearLoadNotice();
   }
-  function applyConversations(event) {
+  function applyChats(event) {
     var doc = parseHTML(event.data);
-    replaceFrom(doc, "conversation-index");
+    replaceFrom(doc, "chat-index");
     if (view.sections && mainEl) applySections(doc);
     if (box && results && trim(box.value) !== "") renderSearch();
     // The event follows a watch and a list that worked, so a quiet view can recover too.
     if (view.list && !historyView && groupMissing()) reset();
   }
   function applyMeta(event) {
-    replaceFrom(parseHTML(event.data), "conversation-meta");
+    replaceFrom(parseHTML(event.data), "chat-meta");
   }
   var regionIds = {};
   var regionList = [view.list, view.empty, "group-error", "more", "list-error", "read-outcome", "read-reason"];
@@ -871,28 +871,28 @@ pre.body.source { white-space: pre-wrap; overflow-wrap: anywhere; margin: 1rem 0
 </script>
 </body>
 </html>
-{{define "convSections"}}<section class="conv-group" id="open-section">
+{{define "chatSections"}}<section class="chat-group" id="open-section">
 <h2>Open <span class="count">{{len .Open}}</span></h2>
-{{if .Open}}<ul class="conv-list" id="open-conversations">{{template "convRows" .Open}}</ul>{{else}}<p class="conv-empty" id="open-empty">No open conversations.</p>{{end}}
+{{if .Open}}<ul class="chat-list" id="open-chats">{{template "chatRows" .Open}}</ul>{{else}}<p class="chat-empty" id="open-empty">No open chats.</p>{{end}}
 </section>
-<section class="conv-group" id="closed-section">
+<section class="chat-group" id="closed-section">
 <h2>Closed <span class="count">{{len .Closed}}</span></h2>
-{{if .Closed}}<ul class="conv-list" id="closed-conversations">{{template "convRows" .Closed}}</ul>{{else}}<p class="conv-empty" id="closed-empty">No closed conversations.</p>{{end}}
-</section>{{end}}{{define "convIndex"}}<ul id="conversation-index" hidden>
+{{if .Closed}}<ul class="chat-list" id="closed-chats">{{template "chatRows" .Closed}}</ul>{{else}}<p class="chat-empty" id="closed-empty">No closed chats.</p>{{end}}
+</section>{{end}}{{define "chatIndex"}}<ul id="chat-index" hidden>
 {{range .Index}}<li data-name="{{.Name}}" data-status="{{.Status}}" data-task="{{.Task}}" data-ticket="{{.Ticket}}" data-href="{{.Href}}"></li>
-{{end}}</ul>{{end}}{{define "convMeta"}}<aside id="conversation-meta">
+{{end}}</ul>{{end}}{{define "chatMeta"}}<aside id="chat-meta">
 <dl class="binding">
-{{if .StatusKnown}}<div><dt>Status</dt><dd id="conversation-status"><span class="status" data-status="{{.Status}}">{{.Status}}</span></dd></div>
-{{else if .ListOutcome}}<div><dt>Status</dt><dd id="conversation-status"><p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p></dd></div>
-{{else}}<div><dt>Status</dt><dd id="conversation-status">Not listed.</dd></div>{{end}}
+{{if .StatusKnown}}<div><dt>Status</dt><dd id="chat-status"><span class="status" data-status="{{.Status}}">{{.Status}}</span></dd></div>
+{{else if .ListOutcome}}<div><dt>Status</dt><dd id="chat-status"><p id="list-error">{{.ListOutcome}}{{if .ListReason}} {{.ListReason}}{{end}}</p></dd></div>
+{{else}}<div><dt>Status</dt><dd id="chat-status">Not listed.</dd></div>{{end}}
 {{if .Task}}<div><dt>Task</dt><dd id="task">{{.Task}}</dd></div>{{end}}
 {{if .Ticket}}<div><dt>Ticket</dt><dd id="ticket">{{.Ticket}}</dd></div>{{end}}
 {{if .Seat}}<div><dt>Seat</dt><dd id="seat">{{.Seat}}</dd></div>{{end}}
 {{if .Directory}}<div><dt>Directory</dt><dd id="directory">{{.Directory}}</dd></div>{{end}}
 </dl>
-</aside>{{end}}{{define "convRows"}}{{range .}}<li class="conv"><p class="conv-name">{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="name">{{.Name}}</span>{{end}}</p>{{if or .Task .Ticket .Seat}}<dl class="conv-binding">{{if .Task}}<div><dt>Task</dt><dd>{{.Task}}</dd></div>{{end}}{{if .Ticket}}<div><dt>Ticket</dt><dd>{{.Ticket}}</dd></div>{{end}}{{if .Seat}}<div><dt>Seat</dt><dd>{{.Seat}}</dd></div>{{end}}</dl>{{end}}</li>
+</aside>{{end}}{{define "chatRows"}}{{range .}}<li class="chat"><p class="chat-name">{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span class="name">{{.Name}}</span>{{end}}</p>{{if or .Task .Ticket .Seat}}<dl class="chat-binding">{{if .Task}}<div><dt>Task</dt><dd>{{.Task}}</dd></div>{{end}}{{if .Ticket}}<div><dt>Ticket</dt><dd>{{.Ticket}}</dd></div>{{end}}{{if .Seat}}<div><dt>Seat</dt><dd>{{.Seat}}</dd></div>{{end}}</dl>{{end}}</li>
 {{end}}{{end}}
-{{define "messageItem"}}<li class="message" id="{{.Anchor}}" data-seq="{{.Message.Seq}}" data-conversation="{{.Conversation}}"><p class="where">{{if .Href}}<a href="{{.Href}}">{{.Conversation}}</a>{{else}}{{.Conversation}}{{end}}</p>
+{{define "messageItem"}}<li class="message" id="{{.Anchor}}" data-seq="{{.Message.Seq}}" data-chat="{{.Chat}}"><p class="where">{{if .Href}}<a href="{{.Href}}">{{.Chat}}</a>{{else}}{{.Chat}}{{end}}</p>
 {{template "messageMeta" .Message}}
 {{template "messageBody" .Message}}
 {{template "messageFoot" .}}

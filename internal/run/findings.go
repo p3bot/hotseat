@@ -126,7 +126,7 @@ func (e *engine) ledgerOn(ctx context.Context) (ledger, error) {
 
 // loadRecords reads every decision record of the conversation. It runs once, before anything reads a ledger.
 func (e *engine) loadRecords() error {
-	res, err := e.call(e.root, "records", client.RecordsRequest{Conversation: e.name})
+	res, err := e.call(e.root, "records", client.RecordsRequest{Chat: e.name})
 	if err != nil {
 		return err
 	}
@@ -368,7 +368,7 @@ func (e *engine) closeSet(turn client.Message) error {
 	for _, f := range l.findingsOf(turn.Seq) {
 		findings = append(findings, f.Seq)
 	}
-	_, err = e.writeRecord(client.SetRecord{Conversation: e.name, Turn: turn.Seq, Findings: findings})
+	_, err = e.writeRecord(client.SetRecord{Chat: e.name, Turn: turn.Seq, Findings: findings})
 	return err
 }
 
@@ -464,7 +464,7 @@ func (e *engine) aggregateSet(turn client.Message, findings []client.Message) er
 	if e.quiet() {
 		return e.halting()
 	}
-	if _, err := e.writeRecord(client.GroupingRecord{Conversation: e.name, Turn: turn.Seq, Drops: drops(groups)}); err != nil {
+	if _, err := e.writeRecord(client.GroupingRecord{Chat: e.name, Turn: turn.Seq, Drops: drops(groups)}); err != nil {
 		return err
 	}
 	for _, g := range groups {
@@ -526,7 +526,7 @@ func (e *engine) fixSettled(l ledger, f client.Message, s client.Settle) error {
 		return nil
 	}
 	if fixed, ok := l.creditable(f.Seq); ok {
-		_, err := e.writeRecord(client.FixRecord{Conversation: e.name, Finding: f.Seq, Fixed: fixed})
+		_, err := e.writeRecord(client.FixRecord{Chat: e.name, Finding: f.Seq, Fixed: fixed})
 		return err
 	}
 	return e.fix(f.Seq, f.From, s.Proposal)
@@ -677,7 +677,7 @@ func (e *engine) judgeTurn(d *discussion, speaker string, w window) (string, err
 
 // settle writes the settle record and announces it before any fix launch, then has the finder apply a settled change.
 func (e *engine) settle(d *discussion) error {
-	res, err := e.writeRecord(client.SettleRecord{Conversation: e.name, Finding: d.finding, Proposal: d.proposal, ProposalKind: d.kind})
+	res, err := e.writeRecord(client.SettleRecord{Chat: e.name, Finding: d.finding, Proposal: d.proposal, ProposalKind: d.kind})
 	if err != nil {
 		return err
 	}
@@ -750,7 +750,7 @@ func (e *engine) fix(finding int64, finder string, proposal int64) error {
 
 // fixed writes the fix record for a counted fixed and its event.
 func (e *engine) fixed(finding int64, m client.Message, from string) error {
-	if _, err := e.writeRecord(client.FixRecord{Conversation: e.name, Finding: finding, Fixed: m.Seq}); err != nil {
+	if _, err := e.writeRecord(client.FixRecord{Chat: e.name, Finding: finding, Fixed: m.Seq}); err != nil {
 		return err
 	}
 	e.events.Info("fixed", "seq", finding, "from", from)
@@ -808,7 +808,7 @@ func (e *engine) stall(d *discussion) (bool, error) {
 		}
 		if len(deadlocks) == 1 {
 			e.events.Info("deadlock", "seq", d.finding, "from", seat)
-			if _, err := e.writeRecord(client.HaltRecord{Conversation: e.name, Finding: d.finding}); err != nil {
+			if _, err := e.writeRecord(client.HaltRecord{Chat: e.name, Finding: d.finding}); err != nil {
 				return false, err
 			}
 			return false, e.report(d)

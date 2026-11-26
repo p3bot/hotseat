@@ -101,12 +101,16 @@ func TestSelectRead(t *testing.T) {
 		msg(3, "bob", []string{"bob"}, "self"),
 		msg(4, "alice", []string{"all"}, "broadcast"),
 	}
-	got := selectRead(msgs, "bob", true, nil, false, 10)
-	if len(got) != 2 || got[0].Seq != 2 || got[1].Seq != 4 {
-		t.Fatalf("named read = %+v", got)
+	got, more := selectRead(msgs, "bob", true, nil, false, 10)
+	if len(got) != 2 || got[0].Seq != 2 || got[1].Seq != 4 || more {
+		t.Fatalf("named read = %+v more %v", got, more)
 	}
-	limited := selectRead(msgs, "", false, nil, false, 2)
-	if len(limited) != 2 || limited[0].Seq != 1 || limited[1].Seq != 2 {
-		t.Fatalf("limited read = %+v", limited)
+	limited, more := selectRead(msgs, "", false, nil, false, 2)
+	if len(limited) != 2 || limited[0].Seq != 1 || limited[1].Seq != 2 || !more {
+		t.Fatalf("limited read = %+v more %v", limited, more)
+	}
+	full, more := selectRead(msgs, "bob", true, nil, false, 2)
+	if len(full) != 2 || more {
+		t.Fatalf("full named page at the end = %+v more %v", full, more)
 	}
 }

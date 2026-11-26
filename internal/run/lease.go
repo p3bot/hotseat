@@ -106,7 +106,7 @@ func (e *engine) renew(ctx context.Context, done chan<- struct{}) {
 			return
 		case <-tick.C:
 		}
-		req := client.LeaseRequest{Conversation: e.name, Lease: bus.LeaseRenew, Holder: e.holder}
+		req := client.LeaseRequest{Chat: e.name, Lease: bus.LeaseRenew, Holder: e.holder}
 		res, err := client.Do(ctx, e.addr, "lease", e.token, req)
 		if ctx.Err() != nil {
 			return
@@ -153,7 +153,7 @@ func (e *engine) endLease() {
 
 // lease makes one lease call as this run's holder. Any outcome but ok is an error.
 func (e *engine) lease(ctx context.Context, op string) (client.Result, error) {
-	return e.call(ctx, "lease", client.LeaseRequest{Conversation: e.name, Lease: op, Holder: e.holder})
+	return e.call(ctx, "lease", client.LeaseRequest{Chat: e.name, Lease: op, Holder: e.holder})
 }
 
 // haltOnLostLease stops the engine when res refuses a conductor write for want of the lease, and returns that stop.

@@ -43,13 +43,13 @@ func (h *harness) script(name string, steps ...stepFile) {
 		h.plan.Launch = map[string]runFile{}
 	}
 	r := h.plan.Launch[name]
-	r.Register = true
+	r.Join = true
 	r.Steps = append(r.Steps, steps...)
 	h.plan.Launch[name] = r
 }
 
 func on(prompt string, msgs ...messageFile) stepFile {
-	return stepFile{On: prompt, Publish: msgs}
+	return stepFile{On: prompt, Send: msgs}
 }
 
 func says(kind string, to ...string) messageFile {
@@ -86,7 +86,7 @@ func (h *harness) play(cfg Config) (runResult, string) {
 
 // review scripts the seat's boot to post one parallel review turn to names.
 func (h *harness) review(seat string, names ...string) {
-	h.script(seat, stepFile{On: promptBoot, Publish: []messageFile{{Kind: kindTurn, To: names, Body: "mode: parallel\nreview"}}})
+	h.script(seat, stepFile{On: promptBoot, Send: []messageFile{{Kind: kindTurn, To: names, Body: "mode: parallel\nreview"}}})
 }
 
 func first(msgs []client.Message, from, kind string) client.Message {
@@ -195,7 +195,7 @@ var abcRoster = []string{"alpha", "bravo", "charlie"}
 // recordsOf is every decision record of conv.
 func (h *harness) recordsOf(conv string) records {
 	h.t.Helper()
-	res := h.do("records", client.RecordsRequest{Conversation: conv})
+	res := h.do("records", client.RecordsRequest{Chat: conv})
 	if res.Outcome != bus.OutcomeOK {
 		h.t.Fatalf("records: %s", res.Reason)
 	}
@@ -282,7 +282,7 @@ func TestTwoFindingsAreDiscussedInOrderAndFixedBeforeTheFollowUp(t *testing.T) {
 		on(promptAggregate, messageFile{Kind: kindAggregate, To: abcRoster, Body: "$lines:findings"}),
 		on(promptDiscussion, says(kindAgree, abcRoster...)),
 		on(promptDiscussion, says(kindAgree, abcRoster...)),
-		stepFile{On: promptFollow, Publish: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nstub"}}},
+		stepFile{On: promptFollow, Send: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nstub"}}},
 	)
 	h.script("bravo",
 		on(promptTurn, says(kindFinding, abcRoster...), says(kindFinding, abcRoster...), says(kindSay, "alpha")),
@@ -455,7 +455,7 @@ func TestDeadlockHaltsReportsAndExitsUnresolved(t *testing.T) {
 	all := []string{"a1", "a2", "a3"}
 	h.script("a3",
 		on(promptStall, says(kindDeadlock, "a1", "a2", "a3", "owner")),
-		stepFile{On: promptReport, Publish: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nreport"}}},
+		stepFile{On: promptReport, Send: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nreport"}}},
 	)
 	cfg := h.team("a3", all...)
 	cfg.MaxSays, cfg.MaxSaysSet = 1, true
@@ -614,7 +614,7 @@ func TestStanceWindowViolationsReportAndLeaveTheProposal(t *testing.T) {
 		{
 			name: "stance from a member who is not the speaker",
 			setup: func(h *harness) {
-				h.plan.Launch["charlie"] = runFile{Register: true, Steps: []stepFile{
+				h.plan.Launch["charlie"] = runFile{Join: true, Steps: []stepFile{
 					on(promptTurn, says(kindAgree, abcRoster...), says(kindSay, "alpha")),
 				}}
 				settles(h, abcRoster, "charlie", "alpha")
@@ -709,7 +709,7 @@ func TestPassTakesEffectOnlyFromOneStanceToOneEligibleMember(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			bravoFinds(h, abcd...)
-			h.script("charlie", stepFile{On: promptDiscussion, Publish: tc.launch})
+			h.script("charlie", stepFile{On: promptDiscussion, Send: tc.launch})
 			settles(h, abcd, "charlie", "alpha", "delta")
 			res, name := h.play(h.team("alpha", abcd...))
 			if res.err != nil {
@@ -741,7 +741,7 @@ func TestPassOutsideADiscussionLaunchIsReported(t *testing.T) {
 	h := newHarness(t)
 	bravoFinds(h, abcRoster...)
 	settles(h, abcRoster, "charlie", "alpha")
-	h.plan.Launch["bravo"] = runFile{Register: true, Steps: []stepFile{
+	h.plan.Launch["bravo"] = runFile{Join: true, Steps: []stepFile{
 		on(promptTurn, says(kindFinding, abcRoster...), says(kindSay, "alpha")),
 		on(promptFix, says(kindFixed, abcRoster...), says(kindPass, "charlie")),
 	}}
@@ -758,7 +758,7 @@ func TestTimedOutFinderHandsTheFixToTheSeatAndASecondMissStops(t *testing.T) {
 		t.Run(fmt.Sprintf("seat fixes %v", seatFixes), func(t *testing.T) {
 			h := newHarness(t)
 			h.review("alpha", "bravo", "charlie")
-			h.script("bravo", stepFile{On: promptTurn, Publish: []messageFile{says(kindFinding, abcRoster...), says(kindSay, "alpha")}, Exit: 1})
+			h.script("bravo", stepFile{On: promptTurn, Send: []messageFile{says(kindFinding, abcRoster...), says(kindSay, "alpha")}, Exit: 1})
 			h.script("charlie", on(promptTurn, says(kindSay, "alpha")), on(promptDiscussion, says(kindAgree, abcRoster...)))
 			h.script("alpha", on(promptDiscussion, says(kindAgree, abcRoster...)))
 			if seatFixes {
@@ -802,7 +802,7 @@ func stalled(h *harness, names ...string) Config {
 func TestExtendRefreshesLiveNamesAndReportsTheRest(t *testing.T) {
 	h := newHarness(t)
 	cfg := stalled(h, abcd...)
-	h.plan.Launch["delta"] = runFile{Register: true, Steps: []stepFile{{On: promptTurn, Exit: 1}}}
+	h.plan.Launch["delta"] = runFile{Join: true, Steps: []stepFile{{On: promptTurn, Exit: 1}}}
 	h.script("alpha",
 		on(promptStall, says(kindExtend)),
 		on(promptStall, says(kindExtend, "charlie", "delta", "zed")),
@@ -892,7 +892,7 @@ func TestStallLaunchWithNoSingleDecisionStopsWithTheConversationOpen(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			cfg := stalled(h, abcRoster...)
-			h.script("alpha", stepFile{On: promptStall, Publish: tc.msgs})
+			h.script("alpha", stepFile{On: promptStall, Send: tc.msgs})
 			res, name := h.play(cfg)
 			if res.err == nil || res.err.Error() != classNoDecision || !res.out.endedBy(stopProtocol) {
 				t.Fatalf("%v\n%s", res.err, res.out)
@@ -915,7 +915,7 @@ func TestStallAndReportPromptsListEveryAskOfTheDiscussion(t *testing.T) {
 	h.script("alpha",
 		on(promptStall, says(kindAsk, "owner"), says(kindExtend, "zulu")),
 		on(promptStall, says(kindDeadlock, "alpha", "bravo", "charlie", "owner")),
-		stepFile{On: promptReport, Publish: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nreport"}}},
+		stepFile{On: promptReport, Send: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nreport"}}},
 	)
 	res, name := h.play(cfg)
 	if !errors.Is(res.err, ErrUnresolved) {
@@ -995,7 +995,7 @@ func (h *harness) keptMembers(roster ...string) {
 	launched, exited := statusLaunched, statusExited
 	for _, name := range roster {
 		h.setMember("kept", name, launched, nil)
-		h.do("register", client.RegisterRequest{Conversation: "kept", Name: name})
+		h.do("join", client.JoinRequest{Chat: "kept", Name: name})
 		h.setMember("kept", name, exited, nil)
 		n, s := name, "sess-"+name
 		h.setSession("kept", n, s)
@@ -1022,8 +1022,8 @@ func (h *harness) reviewed() (turn, finding client.Message) {
 // storedErr stores an error from run in kept, as an earlier process would have, under tx.
 func (h *harness) storedErr(member, class string, re int64, tx string) client.Message {
 	h.t.Helper()
-	res := h.do("publish", client.PublishRequest{
-		Conversation: "kept", From: fromRun, To: []string{fromOwner}, Body: errBody(member, class), TxID: tx, Kind: kindError, Re: &re,
+	res := h.do("send", client.SendRequest{
+		Chat: "kept", From: fromRun, To: []string{fromOwner}, Body: errBody(member, class), TxID: tx, Kind: kindError, Re: &re,
 	})
 	if res.Outcome != bus.OutcomeOK || res.Message == nil {
 		h.t.Fatalf("publish error: %s", res.Reason)
@@ -1034,13 +1034,13 @@ func (h *harness) storedErr(member, class string, re int64, tx string) client.Me
 // closed writes the set record of turn with its findings, as an earlier process would have.
 func (h *harness) closed(turn client.Message, findings ...client.Message) {
 	h.t.Helper()
-	h.record("kept", client.SetRecord{Conversation: "kept", Turn: turn.Seq, Findings: seqs(findings)})
+	h.record("kept", client.SetRecord{Chat: "kept", Turn: turn.Seq, Findings: seqs(findings)})
 }
 
 // settledOn writes the settle record of f on f itself, as an earlier process would have before announcing it.
 func (h *harness) settledOn(f client.Message) {
 	h.t.Helper()
-	h.record("kept", client.SettleRecord{Conversation: "kept", Finding: f.Seq, Proposal: f.Seq, ProposalKind: kindFinding})
+	h.record("kept", client.SettleRecord{Chat: "kept", Finding: f.Seq, Proposal: f.Seq, ProposalKind: kindFinding})
 }
 
 // finishes scripts the discussion of bravo's finding to its fix and alpha's done.
@@ -1146,8 +1146,8 @@ func continueAfterSettle(t *testing.T, announced bool) {
 	h.settledOn(f)
 	if announced {
 		re := f.Seq
-		res := h.do("publish", client.PublishRequest{
-			Conversation: "kept", From: fromRun, To: []string{fromOwner}, Body: settledBy(f, kindFinding, "bravo"),
+		res := h.do("send", client.SendRequest{
+			Chat: "kept", From: fromRun, To: []string{fromOwner}, Body: settledBy(f, kindFinding, "bravo"),
 			TxID: "settled/" + seqOf(f), Kind: kindSettled, Re: &re,
 		})
 		if res.Outcome != bus.OutcomeOK {
@@ -1478,8 +1478,8 @@ func TestContinueAfterAHaltRecordReportsAgainAndNothingElse(t *testing.T) {
 	turn, f := h.reviewed()
 	h.closed(turn, f)
 	ask := h.publish("kept", "charlie", kindAsk, "which one?", []string{"owner"})
-	h.record("kept", client.HaltRecord{Conversation: "kept", Finding: f.Seq})
-	h.script("alpha", stepFile{On: promptReport, Publish: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nreport"}}})
+	h.record("kept", client.HaltRecord{Chat: "kept", Finding: f.Seq})
+	h.script("alpha", stepFile{On: promptReport, Send: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nreport"}}})
 	res := h.playKept()
 	if s := res.out.stop(); !errors.Is(res.err, ErrUnresolved) || s == nil || !slices.Equal(s.Unsettled, []int64{f.Seq}) || len(s.Unfixed) != 0 || res.out.outcome() != outcomeDeadlock {
 		t.Fatalf("%v\n%s", res.err, res.out)
@@ -1639,7 +1639,7 @@ func TestMemberLostBelowTheMinimumStopsADiscussion(t *testing.T) {
 func TestFailedDiscussionLaunchKeepsItsStanceAndReportsOnlyTheExit(t *testing.T) {
 	h := newHarness(t)
 	bravoFinds(h, abcRoster...)
-	h.script("charlie", stepFile{On: promptDiscussion, Publish: []messageFile{says(kindAgree, abcRoster...), says(kindPass, "alpha")}, Exit: 1})
+	h.script("charlie", stepFile{On: promptDiscussion, Send: []messageFile{says(kindAgree, abcRoster...), says(kindPass, "alpha")}, Exit: 1})
 	settles(h, abcRoster, "alpha")
 	res, name := h.play(h.team("alpha", abcRoster...))
 	if res.err != nil || res.out.outcome() != "done" {
@@ -1667,7 +1667,7 @@ func TestFailedDiscussionLaunchReportsOnlyAnInvalidStance(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			bravoFinds(h, abcRoster...)
-			h.script("charlie", stepFile{On: promptDiscussion, Publish: tc.msgs, Exit: 1})
+			h.script("charlie", stepFile{On: promptDiscussion, Send: tc.msgs, Exit: 1})
 			settles(h, abcRoster, "alpha")
 			res, name := h.play(h.team("alpha", abcRoster...))
 			if res.err != nil || res.out.outcome() != "done" {
@@ -1716,7 +1716,7 @@ func TestLedgerBuildReadsOnlyNewMessagesAndTheMemberRowsOnce(t *testing.T) {
 	h.keptConversation(abcRoster...)
 	launched := statusLaunched
 	h.setMember("kept", "bravo", launched, nil)
-	h.do("register", client.RegisterRequest{Conversation: "kept", Name: "bravo"})
+	h.do("join", client.JoinRequest{Chat: "kept", Name: "bravo"})
 	h.setMember("kept", "alpha", launched, nil)
 	if res := h.setMember("kept", "alpha", statusTimedOut, nil); res.Outcome != bus.OutcomeOK {
 		t.Fatal(res.Reason)

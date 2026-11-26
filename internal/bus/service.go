@@ -22,19 +22,19 @@ import (
 // The store is unchanged. This is not a protocol outcome.
 var ErrDropped = errors.New("connection dropped")
 
-// PublishInput is one publish after the JSON object has been decoded.
+// SendInput is one send after the JSON object has been decoded.
 // BodyMissing distinguishes an absent body from an empty one.
 // A nil Re responds to nothing.
-type PublishInput struct {
-	Conversation string
-	From         string
-	To           []string
-	Body         string
-	BodyMissing  bool
-	TxID         string
-	Kind         string
-	Re           *int64
-	// Holder, when set, fences the publish to the conversation lease.
+type SendInput struct {
+	Chat        string
+	From        string
+	To          []string
+	Body        string
+	BodyMissing bool
+	TxID        string
+	Kind        string
+	Re          *int64
+	// Holder, when set, fences the send to the chat lease.
 	Holder *string
 }
 
@@ -47,8 +47,8 @@ type Result struct {
 	MatchSeq       int64
 	Message        *store.Message
 	Messages       []store.Message
-	Conversation   *store.Conversation
-	Conversations  []store.Conversation
+	Chat           *store.Chat
+	Chats          []store.Chat
 	Member         *store.Member
 	Members        []store.Member
 	Session        *store.MemberSession
@@ -77,7 +77,7 @@ type Service struct {
 	maxBody int
 	clock   func() time.Time
 	log     *slog.Logger
-	onBlock func(conversation, name string)
+	onBlock func(chat, name string)
 	schema  func(context.Context) (string, error)
 	mu      sync.Mutex
 	waiters map[string][]*waiter
@@ -119,7 +119,7 @@ func newService(ctx context.Context, st *store.Store, opt Options) (*Service, er
 		done:   life.Done(),
 	}
 	if len(newest) == 1 {
-		svc.newest = newest[0].Conversation
+		svc.newest = newest[0].Chat
 	}
 	return svc, nil
 }
@@ -138,7 +138,7 @@ func (s *Service) Create(ctx context.Context, name string, b store.Binding) (Res
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	conv, already, err := s.store.Create(ctx, name, b)
+	chat, already, err := s.store.Create(ctx, name, b)
 	if err != nil {
 		return s.fail(err, "create")
 	}
@@ -148,12 +148,12 @@ func (s *Service) Create(ctx context.Context, name string, b store.Binding) (Res
 	return Result{
 		Outcome:        OutcomeOK,
 		AlreadyExisted: already,
-		Conversation:   &conv,
+		Chat:           &chat,
 	}, nil
 }
 
-func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) {
-	if err := validatePublish(in, s.maxBody); err != nil {
+func (s *Service) Send(ctx context.Context, in SendInput) (Result, error) {
+	if err := validateSend(in, s.maxBody); err != nil {
 		return asRefused(err)
 	}
 	s.mu.Lock()
@@ -162,40 +162,40 @@ func (s *Service) Publish(ctx context.Context, in PublishInput) (Result, error) 
 		return Result{}, ErrDropped
 	}
 	if in.Holder != nil {
-		if err := s.fence(ctx, in.Conversation, *in.Holder); err != nil {
-			return s.fail(err, "publish")
+		if err := s.fence(ctx, in.Chat, *in.Holder); err != nil {
+			return s.fail(err, "send")
 		}
 	}
-	msg, conv, already, err := s.store.Publish(ctx, store.Publish{
-		Conversation: in.Conversation,
-		From:         in.From,
-		To:           append([]string{}, in.To...),
-		Body:         in.Body,
-		TxID:         in.TxID,
-		Kind:         in.Kind,
-		Re:           in.Re,
-		Time:         s.clock().UTC().Format(time.RFC3339Nano),
+	msg, chat, already, err := s.store.Send(ctx, store.Send{
+		Chat: in.Chat,
+		From: in.From,
+		To:   append([]string{}, in.To...),
+		Body: in.Body,
+		TxID: in.TxID,
+		Kind: in.Kind,
+		Re:   in.Re,
+		Time: s.clock().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
-		return s.fail(err, "publish")
+		return s.fail(err, "send")
 	}
 	if !already {
-		// A publish changes list order only when another conversation held the newest message.
-		if in.Conversation != s.newest {
-			s.newest = in.Conversation
+		// A send changes list order only when another chat held the newest message.
+		if in.Chat != s.newest {
+			s.newest = in.Chat
 			s.rev++
 		}
-		s.notify(in.Conversation)
+		s.notify(in.Chat)
 	}
 	return Result{
 		Outcome:       OutcomeOK,
 		AlreadyStored: already,
 		Message:       &msg,
-		Conversation:  &conv,
+		Chat:          &chat,
 	}, nil
 }
 
-// Messages returns the newest limit messages across every conversation.
+// Messages returns the newest limit messages across every chat.
 // A non-nil before keeps only messages whose seq is less than it, and a
 // before less than one is refused.
 func (s *Service) Messages(ctx context.Context, limit int, before *int64) (Result, error) {
@@ -218,8 +218,8 @@ func (s *Service) Messages(ctx context.Context, limit int, before *int64) (Resul
 	return Result{Outcome: OutcomeOK, Messages: msgs}, nil
 }
 
-func (s *Service) Read(ctx context.Context, conv string, cursor int64, limit int, name string, hasName bool, kinds []string, hasKinds bool) (Result, error) {
-	if err := requireConversation(conv); err != nil {
+func (s *Service) Read(ctx context.Context, chat string, cursor int64, limit int, name string, hasName bool, kinds []string, hasKinds bool) (Result, error) {
+	if err := requireChat(chat); err != nil {
 		return asRefused(err)
 	}
 	if cursor < 0 {
@@ -227,6 +227,9 @@ func (s *Service) Read(ctx context.Context, conv string, cursor int64, limit int
 	}
 	if limit < 1 {
 		return refused(ReasonLimitRange), nil
+	}
+	if limit > MaxReadLimit {
+		return refused(ReasonLimitCap), nil
 	}
 	if hasName {
 		if err := requireParticipant(name); err != nil {
@@ -238,27 +241,21 @@ func (s *Service) Read(ctx context.Context, conv string, cursor int64, limit int
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	msgs := make([]store.Message, 0)
-	_, err := s.store.Scan(ctx, conv, cursor, func(m store.Message) bool {
-		keep, more := nextRead(m, name, hasName, kinds, hasKinds, len(msgs), limit)
-		if keep {
-			msgs = append(msgs, m)
-		}
-		return more
-	})
+	page := readPage{name: name, hasName: hasName, kinds: kinds, hasKinds: hasKinds, limit: limit, msgs: make([]store.Message, 0)}
+	_, err := s.store.Scan(ctx, chat, cursor, page.take)
 	if err != nil {
 		return s.fail(err, "read")
 	}
-	return Result{Outcome: OutcomeOK, Messages: msgs}, nil
+	return Result{Outcome: OutcomeOK, Messages: page.msgs, More: page.more}, nil
 }
 
-func (s *Service) CloseConversation(ctx context.Context, name string) (Result, error) {
-	if err := requireConversation(name); err != nil {
+func (s *Service) CloseChat(ctx context.Context, name string) (Result, error) {
+	if err := requireChat(name); err != nil {
 		return asRefused(err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	conv, already, err := s.store.CloseConversation(ctx, name)
+	chat, already, err := s.store.CloseChat(ctx, name)
 	if err != nil {
 		return s.fail(err, "close")
 	}
@@ -267,22 +264,22 @@ func (s *Service) CloseConversation(ctx context.Context, name string) (Result, e
 		s.bump()
 	}
 	return Result{
-		Outcome:      OutcomeOK,
-		Conversation: &conv,
+		Outcome: OutcomeOK,
+		Chat:    &chat,
 	}, nil
 }
 
 func (s *Service) List(ctx context.Context) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	convs, err := s.store.List(ctx)
+	chats, err := s.store.List(ctx)
 	if err != nil {
 		return s.fail(err, "list")
 	}
-	if convs == nil {
-		convs = []store.Conversation{}
+	if chats == nil {
+		chats = []store.Chat{}
 	}
-	return Result{Outcome: OutcomeOK, Conversations: convs}, nil
+	return Result{Outcome: OutcomeOK, Chats: chats}, nil
 }
 
 const (
@@ -292,10 +289,10 @@ const (
 )
 
 // Wait blocks until a match is stored, the deadline passes, or ctx ends.
-// The waiter is registered before the transcript is read, under the same lock
-// as publish, so a match cannot land unseen between the read and the wait.
-func (s *Service) Wait(ctx context.Context, conv string, cursor int64, name string, hasName bool, kinds []string, hasKinds bool, limit waitLimit) (Result, error) {
-	if err := requireConversation(conv); err != nil {
+// The waiter is added before the transcript is read, under the same lock
+// as send, so a match cannot land unseen between the read and the wait.
+func (s *Service) Wait(ctx context.Context, chat string, cursor int64, name string, hasName bool, kinds []string, hasKinds bool, limit waitLimit) (Result, error) {
+	if err := requireChat(chat); err != nil {
 		return asRefused(err)
 	}
 	if cursor < 0 {
@@ -326,22 +323,22 @@ func (s *Service) Wait(ctx context.Context, conv string, cursor int64, name stri
 		if !held {
 			s.mu.Lock()
 		}
-		s.remove(conv, w)
+		s.remove(chat, w)
 		s.mu.Unlock()
 		held = false
 	}()
-	s.add(conv, w)
+	s.add(chat, w)
 
 	for {
-		res, pending, err := s.eval(ctx, conv, cursor, name, hasName, kinds, hasKinds)
+		res, pending, err := s.eval(ctx, chat, cursor, name, hasName, kinds, hasKinds)
 		if err != nil || !pending {
 			return res, err
 		}
 		s.mu.Unlock()
 		held = false
-		s.log.Debug("wait blocking", "conversation", conv, "name", name)
+		s.log.Debug("wait blocking", "chat", chat, "name", name)
 		if s.onBlock != nil {
-			s.onBlock(conv, name)
+			s.onBlock(chat, name)
 		}
 		action := actWake
 		select {
@@ -362,7 +359,7 @@ func (s *Service) Wait(ctx context.Context, conv string, cursor int64, name stri
 		if action == actWake {
 			continue
 		}
-		res, pending, err = s.eval(ctx, conv, cursor, name, hasName, kinds, hasKinds)
+		res, pending, err = s.eval(ctx, chat, cursor, name, hasName, kinds, hasKinds)
 		if err != nil || !pending {
 			return res, err
 		}
@@ -370,9 +367,9 @@ func (s *Service) Wait(ctx context.Context, conv string, cursor int64, name stri
 	}
 }
 
-func (s *Service) eval(ctx context.Context, conv string, cursor int64, name string, hasName bool, kinds []string, hasKinds bool) (Result, bool, error) {
+func (s *Service) eval(ctx context.Context, chat string, cursor int64, name string, hasName bool, kinds []string, hasKinds bool) (Result, bool, error) {
 	msgs := make([]store.Message, 0)
-	_, err := s.store.Scan(ctx, conv, cursor, func(m store.Message) bool {
+	_, err := s.store.Scan(ctx, chat, cursor, func(m store.Message) bool {
 		if !hasName {
 			if !kindListed(m.Kind, kinds, hasKinds) {
 				return true
@@ -426,9 +423,9 @@ func (s *Service) fail(err error, op string) (Result, error) {
 	}
 }
 
-// notify wakes the waits on conv and every watch after a message is appended.
-func (s *Service) notify(conv string) {
-	wakeAll(s.waiters[conv])
+// notify wakes the waits on chat and every watch after a message is appended.
+func (s *Service) notify(chat string) {
+	wakeAll(s.waiters[chat])
 	wakeAll(s.watches)
 }
 
@@ -447,21 +444,21 @@ func wakeAll(ws []*waiter) {
 	}
 }
 
-func (s *Service) add(conv string, w *waiter) {
-	s.waiters[conv] = append(s.waiters[conv], w)
+func (s *Service) add(chat string, w *waiter) {
+	s.waiters[chat] = append(s.waiters[chat], w)
 }
 
-func (s *Service) remove(conv string, w *waiter) {
-	ws := s.waiters[conv]
+func (s *Service) remove(chat string, w *waiter) {
+	ws := s.waiters[chat]
 	for i, cur := range ws {
 		if cur != w {
 			continue
 		}
-		s.waiters[conv] = append(ws[:i], ws[i+1:]...)
+		s.waiters[chat] = append(ws[:i], ws[i+1:]...)
 		break
 	}
-	if len(s.waiters[conv]) == 0 {
-		delete(s.waiters, conv)
+	if len(s.waiters[chat]) == 0 {
+		delete(s.waiters, chat)
 	}
 }
 

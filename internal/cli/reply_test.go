@@ -177,8 +177,8 @@ func TestAttendPrintsTheReLine(t *testing.T) {
 	turn := publishAs(t, ctx, addr, "job", "owner", "turn", []string{"alpha"}, "go", "turn-1")
 	proc := startAttend(t, "attend", "--address", addr, "--conversation", "job")
 	re := turn.Seq
-	res, err := client.Do(ctx, addr, "publish", "", client.PublishRequest{
-		Conversation: "job", From: "alpha", To: []string{"owner"},
+	res, err := client.Do(ctx, addr, "send", "", client.SendRequest{
+		Chat: "job", From: "alpha", To: []string{"owner"},
 		Body: "finished", TxID: "done-1", Kind: "done", Re: &re,
 	})
 	if err != nil || res.Outcome != bus.OutcomeOK {
