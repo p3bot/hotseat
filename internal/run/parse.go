@@ -99,7 +99,7 @@ func nameIn(roster []agent, name string) bool {
 	return false
 }
 
-// taskSlug is the conversation stem of a start id line.
+// taskSlug is the chat stem of a start id line.
 // A leading tasks: category is dropped, then one leading hotseat path segment.
 func taskSlug(idLine string) (string, error) {
 	s := strings.TrimSpace(idLine)
@@ -115,13 +115,13 @@ func taskSlug(idLine string) (string, error) {
 	}
 	s = strings.ReplaceAll(s, "/", "-")
 	if s == "" {
-		return "", errors.New("task id has no conversation name")
+		return "", errors.New("task id has no chat name")
 	}
 	return s, nil
 }
 
-// bareConversation leads with the ticket id so one work item sorts together.
-func bareConversation(slug, ticket string) string {
+// bareChat leads with the ticket id so one work item sorts together.
+func bareChat(slug, ticket string) string {
 	if ticket == "" {
 		return slug
 	}
@@ -129,7 +129,7 @@ func bareConversation(slug, ticket string) string {
 }
 
 func nameLimit(name string) error {
-	return fmt.Errorf("conversation name %q exceeds the %d character limit", name, bus.MaxNameLen)
+	return fmt.Errorf("chat name %q exceeds the %d character limit", name, bus.MaxNameLen)
 }
 
 func checkName(name string) error {
@@ -137,7 +137,7 @@ func checkName(name string) error {
 		return nameLimit(name)
 	}
 	if !validName(name) {
-		return fmt.Errorf("conversation name %q must be 1 to %d characters from ASCII letters, digits, '.', '_', and '-'", name, bus.MaxNameLen)
+		return fmt.Errorf("chat name %q must be 1 to %d characters from ASCII letters, digits, '.', '_', and '-'", name, bus.MaxNameLen)
 	}
 	return nil
 }
@@ -146,19 +146,19 @@ func mintCode(r io.Reader) (string, error) {
 	if r == nil {
 		r = rand.Reader
 	}
-	var buf [conversationCode]byte
+	var buf [chatCode]byte
 	if _, err := io.ReadFull(r, buf[:]); err != nil {
 		return "", err
 	}
-	out := make([]byte, conversationCode)
+	out := make([]byte, chatCode)
 	out[0] = LetterAlphabet[int(buf[0])%len(LetterAlphabet)]
-	for i := 1; i < conversationCode; i++ {
+	for i := 1; i < chatCode; i++ {
 		out[i] = ShortIDAlphabet[int(buf[i])%len(ShortIDAlphabet)]
 	}
 	return string(out), nil
 }
 
-// fitInstructions returns body when the bus can store it. A larger body is start output run cannot publish.
+// fitInstructions returns body when the bus can store it. A larger body is start output run cannot send.
 func fitInstructions(body string) (string, error) {
 	if len(body) > bus.DefaultMaxBody {
 		return "", unusable(fmt.Errorf("instruction body exceeds %d bytes", bus.DefaultMaxBody))

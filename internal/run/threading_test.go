@@ -28,19 +28,19 @@ func withSeqRe(m client.Message, re int64) client.Message {
 	return m
 }
 
-// publishRe stores a message in conv with re, as a member would.
-func (h *harness) publishRe(conv, from, kind, body string, to []string, re int64) client.Message {
+// sendRe stores a message in the chat name with re, as a member would.
+func (h *harness) sendRe(name, from, kind, body string, to []string, re int64) client.Message {
 	h.t.Helper()
 	res := h.do("send", client.SendRequest{
-		Chat: conv, From: from, To: to, Body: body, TxID: "re-" + from + "-" + seqText(txSeq.Add(1)), Kind: kind, Re: &re,
+		Chat: name, From: from, To: to, Body: body, TxID: "re-" + from + "-" + seqText(txSeq.Add(1)), Kind: kind, Re: &re,
 	})
 	if res.Outcome != bus.OutcomeOK || res.Message == nil {
-		h.t.Fatalf("publish %s: %s", kind, res.Reason)
+		h.t.Fatalf("send %s: %s", kind, res.Reason)
 	}
 	return *res.Message
 }
 
-// reCommand is the publish command text a prompt gives for kind with re.
+// reCommand is the send command text a prompt gives for kind with re.
 func reCommand(kind string, re int64) string {
 	return "--kind " + kind + " --re " + seqText(re) + ","
 }
@@ -283,12 +283,12 @@ func TestContinueLaunchesARecipientWhoseStoredSayNamesAnotherMessage(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.keptMembers(abcRoster...)
-			turn := h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
+			turn := h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
 			re := int64(1)
 			if tc.atTurn {
 				re = turn.Seq
 			}
-			h.publishRe("kept", "bravo", kindSay, "clean", []string{tc.to}, re)
+			h.sendRe("kept", "bravo", kindSay, "clean", []string{tc.to}, re)
 			h.script("bravo", on(promptTurn, says(kindSay, "alpha")))
 			h.script("alpha", on(promptFollow, says(kindDone, "owner")))
 			res := h.playKept()
@@ -360,7 +360,7 @@ func TestDeadlockWithAWrongReIsBadThenNoDecisionAndWritesNoHalt(t *testing.T) {
 	msgs := h.messages(name)
 	wantErrors(t, msgs, errLine("alpha", classBadDeadlock, first(msgs, "alpha", kindDeadlock).Seq), errLine("alpha", classNoDecision, 0),
 		protocolStopLine(t, msgs, errBody("alpha", classNoDecision)))
-	if c, _ := h.conv(name); c.Status != "open" || len(h.recordsOf(name).halts) != 0 || len(h.launchesWith("alpha", promptReport)) != 0 {
+	if c, _ := h.chat(name); c.Status != "open" || len(h.recordsOf(name).halts) != 0 || len(h.launchesWith("alpha", promptReport)) != 0 {
 		t.Fatalf("status %s msgs %+v", c.Status, msgs)
 	}
 }
@@ -400,12 +400,12 @@ func TestFixedWithAWrongReDoesNotCountAndTheFixIsHandedOff(t *testing.T) {
 func (h *harness) keptRejectedTurn(stored bool) client.Message {
 	h.t.Helper()
 	h.keptMembers(abcRoster...)
-	bad := h.publish("kept", "alpha", kindTurn, "nope", nil)
+	bad := h.send("kept", "alpha", kindTurn, "nope", nil)
 	if stored {
 		h.storedErr("", classBadTurn, bad.Seq, "bad turn/"+seqOf(bad))
 	}
-	h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
-	h.publish("kept", "bravo", kindSay, "clean", []string{"alpha"})
+	h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
+	h.send("kept", "bravo", kindSay, "clean", []string{"alpha"})
 	h.script("alpha", on(promptFollow, says(kindDone, "owner")))
 	return bad
 }
@@ -415,7 +415,7 @@ func TestContinueReportsAStoredRejectedTurnOnceAndDoesNotCountIt(t *testing.T) {
 		t.Run("stored "+map[bool]string{true: "error", false: "no error"}[stored], func(t *testing.T) {
 			h := newHarness(t)
 			bad := h.keptRejectedTurn(stored)
-			cfg := h.continueKept(agentsOf(abcRoster...))
+			cfg := h.continueKept()
 			cfg.MaxTurns, cfg.MaxTurnsSet = 1, true
 			out, _, err := h.runBounded(cfg)
 			if err != nil || out.outcome() != "done" {
@@ -440,8 +440,8 @@ func TestContinueMeetsAStoredFactErrorAndStoresNoSecondCopy(t *testing.T) {
 		{
 			name: "no reply", class: classNoReply,
 			setup: func(h *harness) string {
-				turn := h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
-				h.publish("kept", "bravo", kindSay, "clean", []string{"alpha"})
+				turn := h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
+				h.send("kept", "bravo", kindSay, "clean", []string{"alpha"})
 				h.storedErr("charlie", classNoReply, turn.Seq, "no reply/charlie/"+seqOf(turn))
 				h.script("charlie", on(promptTurn))
 				return errLine("charlie", classNoReply, turn.Seq)
@@ -450,8 +450,8 @@ func TestContinueMeetsAStoredFactErrorAndStoresNoSecondCopy(t *testing.T) {
 		{
 			name: "bad turn naming a name outside the roster", class: classBadTurn,
 			setup: func(h *harness) string {
-				turn := h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "zulu"})
-				h.publish("kept", "bravo", kindSay, "clean", []string{"alpha"})
+				turn := h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "zulu"})
+				h.send("kept", "bravo", kindSay, "clean", []string{"alpha"})
 				h.storedErr("zulu", classBadTurn, turn.Seq, "bad turn/zulu/"+seqOf(turn))
 				return errLine("zulu", classBadTurn, turn.Seq)
 			},
@@ -459,10 +459,10 @@ func TestContinueMeetsAStoredFactErrorAndStoresNoSecondCopy(t *testing.T) {
 		{
 			name: "bad finding", class: classBadFinding,
 			setup: func(h *harness) string {
-				h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
-				bad := h.publish("kept", "charlie", kindFinding, "not mine", abcRoster)
+				h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
+				bad := h.send("kept", "charlie", kindFinding, "not mine", abcRoster)
 				h.storedErr("charlie", classBadFinding, bad.Seq, "bad finding/charlie/"+seqOf(bad))
-				h.publish("kept", "bravo", kindSay, "clean", []string{"alpha"})
+				h.send("kept", "bravo", kindSay, "clean", []string{"alpha"})
 				return errLine("charlie", classBadFinding, bad.Seq)
 			},
 		},
@@ -487,9 +487,9 @@ func TestContinueMeetsAStoredFactErrorAndStoresNoSecondCopy(t *testing.T) {
 func TestRefusedDerivedErrorStopsTheRun(t *testing.T) {
 	h := newHarness(t)
 	h.keptMembers(abcRoster...)
-	h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
-	bad := h.publish("kept", "charlie", kindFinding, "not mine", abcRoster)
-	h.publish("kept", "bravo", kindSay, "clean", []string{"alpha"})
+	h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
+	bad := h.send("kept", "charlie", kindFinding, "not mine", abcRoster)
+	h.send("kept", "bravo", kindSay, "clean", []string{"alpha"})
 	// Another caller took the derived id first with other content.
 	h.storedErr("charlie", classNoReply, bad.Seq, "bad finding/charlie/"+seqOf(bad))
 	h.script("alpha", on(promptFollow, says(kindDone, "owner")))
@@ -500,7 +500,7 @@ func TestRefusedDerivedErrorStopsTheRun(t *testing.T) {
 	if got := errorBodies(h.messages("kept")); len(got) != 2 || got[1] != stopRefusal {
 		t.Fatalf("errors %q", got)
 	}
-	if c, _ := h.conv("kept"); c.Status != "open" {
+	if c, _ := h.chat("kept"); c.Status != "open" {
 		t.Fatalf("status %s", c.Status)
 	}
 }
@@ -518,8 +518,7 @@ func TestUnsettledErrorNamesTheStoppingDoneAndAReplayStoresNoSecondCopy(t *testi
 	if len(errs) != 1 || errs[0].Body != classUnsettled || reOf(errs[0]) != done.Seq || errs[0].TxID != "unsettled/"+seqOf(done) {
 		t.Fatalf("errors %+v", errs)
 	}
-	cfg := h.continueKept("")
-	cfg.Conversation = name
+	cfg := h.continuing(name)
 	_, stderr, err := h.runBounded(cfg)
 	if !errors.Is(err, ErrUnresolved) || strings.Contains(stderr, " event=error ") {
 		t.Fatalf("replay %v\n%s", err, stderr)
@@ -530,11 +529,11 @@ func TestUnsettledErrorNamesTheStoppingDoneAndAReplayStoresNoSecondCopy(t *testi
 func TestContinueSkipsAFinishedSetWhoseOnlyFindingIsRejected(t *testing.T) {
 	h := newHarness(t)
 	h.keptMembers(abcRoster...)
-	h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
-	bad := h.publishRe("kept", "bravo", kindFinding, "names the instructions", abcRoster, 1)
-	h.publish("kept", "bravo", kindSay, "found one", []string{"alpha"})
-	h.publish("kept", "charlie", kindSay, "clean", []string{"alpha"})
-	next := h.publish("kept", "alpha", kindTurn, "mode: serial\nnext", []string{"bravo"})
+	h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
+	bad := h.sendRe("kept", "bravo", kindFinding, "names the instructions", abcRoster, 1)
+	h.send("kept", "bravo", kindSay, "found one", []string{"alpha"})
+	h.send("kept", "charlie", kindSay, "clean", []string{"alpha"})
+	next := h.send("kept", "alpha", kindTurn, "mode: serial\nnext", []string{"bravo"})
 	h.script("bravo", on("next", says(kindSay, "alpha")))
 	h.script("alpha", on(promptFollow, says(kindDone, "owner")))
 	res := h.playKept()

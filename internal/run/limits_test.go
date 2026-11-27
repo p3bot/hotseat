@@ -18,17 +18,17 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
-// awaitBody waits until a message in conv contains part.
-func (h *harness) awaitBody(conv, part string) {
+// awaitBody waits until a message in the chat name contains part.
+func (h *harness) awaitBody(name, part string) {
 	h.t.Helper()
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if countBody(h.messages(conv), part) > 0 {
+		if countBody(h.messages(name), part) > 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	h.t.Fatalf("no %q in %+v", part, h.messages(conv))
+	h.t.Fatalf("no %q in %+v", part, h.messages(name))
 }
 
 // stillRunning fails when the run has returned.
@@ -41,32 +41,32 @@ func (h *harness) stillRunning(ch <-chan runResult) {
 	}
 }
 
-// keptConversation creates kept with roster and seat alpha and publishes its instructions.
-func (h *harness) keptConversation(roster ...string) {
+// keptChat creates kept with roster, each on its test module, permission auto, and seat alpha, and sends its instructions.
+func (h *harness) keptChat(roster ...string) {
+	h.t.Helper()
+	h.keptChatAs(seeded(roster...), DefaultPermission)
+}
+
+// keptChatAs creates kept with seat alpha and the stored roster and permission as given, as chat create or an old
+// writer could, and sends its instructions.
+func (h *harness) keptChatAs(roster []client.RosterEntry, permission string) {
 	h.t.Helper()
 	res := h.do("create", client.CreateRequest{
 		Name: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha",
-		Directory: h.dir, Roster: roster,
+		Directory: h.dir, Roster: roster, Permission: permission,
 	})
 	if res.Outcome != bus.OutcomeOK {
 		h.t.Fatal(res.Reason)
 	}
-	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", roster)
+	h.send("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", client.RosterNames(roster))
 }
 
-func (h *harness) continueKept(agents string) Config {
-	cfg := h.base()
-	cfg.Conversation = "kept"
-	cfg.ConversationSet = true
-	cfg.TaskSet = false
-	cfg.TicketSet = false
-	cfg.Agents = agents
-	cfg.AgentsSet = agents != ""
-	return cfg
+func (h *harness) continueKept() runArgs {
+	return h.continuing("kept")
 }
 
 // runBounded is run with a deadline, so a run that does not stop fails instead of hanging the suite.
-func (h *harness) runBounded(cfg Config) (*recorder, string, error) {
+func (h *harness) runBounded(cfg runArgs) (*recorder, string, error) {
 	h.t.Helper()
 	cctx, cancel := ctx()
 	defer cancel()
@@ -96,7 +96,7 @@ func TestRosterBelowTaskMinimumCreatesNothing(t *testing.T) {
 		t.Fatalf("out %s", out)
 	}
 	if h.onlyExists() {
-		t.Fatal("conversation created")
+		t.Fatal("chat created")
 	}
 	if n := h.launchCount(); n != 0 {
 		t.Fatalf("launches %d", n)
@@ -124,13 +124,13 @@ func TestTaskWithoutMinimumRunsWithOneMember(t *testing.T) {
 	h.pace.grace = time.Second
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1"
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
 	h.awaitStatus(name, "alpha", statusExited)
-	h.publish(name, "alpha", "done", "finished", nil)
+	h.send(name, "alpha", "done", "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
@@ -143,15 +143,15 @@ func TestTaskWithoutMinimumRunsWithOneMember(t *testing.T) {
 func TestContinueBelowTaskMinimumWithoutDoneFails(t *testing.T) {
 	h := newHarness(t)
 	h.plan.MinMembers = "2\n"
-	h.keptConversation("alpha")
-	out, _, err := h.runBounded(h.continueKept(""))
+	h.keptChat("alpha")
+	out, _, err := h.runBounded(h.continueKept())
 	if err == nil || !strings.Contains(err.Error(), "requires 2") {
 		t.Fatalf("err %v", err)
 	}
 	if out.outcome() != "error" {
 		t.Fatalf("out %s", out)
 	}
-	if conv, _ := h.conv("kept"); conv.Status == "closed" {
+	if chat, _ := h.chat("kept"); chat.Status == "closed" {
 		t.Fatal("closed")
 	}
 	// The roster check refuses the request as it does on create, so no stop error is said.
@@ -164,17 +164,17 @@ func TestContinueBelowTaskMinimumWithoutDoneFails(t *testing.T) {
 func TestContinueWithStoredDoneReportsDoneUnderARisenMinimum(t *testing.T) {
 	h := newHarness(t)
 	h.plan.MinMembers = "2\n"
-	h.keptConversation("alpha")
-	h.publish("kept", "alpha", "done", "finished", nil)
-	out, stderr, err := h.runBounded(h.continueKept(""))
+	h.keptChat("alpha")
+	h.send("kept", "alpha", "done", "finished", nil)
+	out, stderr, err := h.runBounded(h.continueKept())
 	if err != nil {
 		t.Fatal(err, stderr)
 	}
 	if out.outcome() != "done" || strings.Contains(stderr, "requires") {
 		t.Fatalf("out %s stderr %s", out, stderr)
 	}
-	if conv, _ := h.conv("kept"); conv.Status != "closed" {
-		t.Fatalf("status %s", conv.Status)
+	if chat, _ := h.chat("kept"); chat.Status != "closed" {
+		t.Fatalf("status %s", chat.Status)
 	}
 	for _, c := range h.calls() {
 		if c.Kind == "field" && strings.Contains(strings.Join(c.Argv, " "), "min_members") {
@@ -194,11 +194,11 @@ func TestContinueWithStoredDoneAndDeadLeftoverUnderTheMinimumReportsDone(t *test
 	if err := child.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	h.keptConversation("alpha", "bravo")
+	h.keptChat("alpha", "bravo")
 	launched := statusLaunched
 	h.setMember("kept", "bravo", launched, &deadPID)
-	h.publish("kept", "alpha", "done", "finished", nil)
-	out, stderr, err := h.runBounded(h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1"))
+	h.send("kept", "alpha", "done", "finished", nil)
+	out, stderr, err := h.runBounded(h.continueKept())
 	if err != nil {
 		t.Fatal(err, stderr)
 	}
@@ -216,12 +216,12 @@ func TestContinueWithStoredDoneAndDeadLeftoverUnderTheMinimumReportsDone(t *test
 func TestContinueThatFindsTooFewLiveMembersStops(t *testing.T) {
 	h := newHarness(t)
 	h.plan.MinMembers = "2\n"
-	h.keptConversation("alpha", "bravo")
+	h.keptChat("alpha", "bravo")
 	launched, timedOut := statusLaunched, statusTimedOut
 	h.setMember("kept", "bravo", launched, nil)
 	h.setMember("kept", "bravo", timedOut, nil)
-	h.publish("kept", "alpha", "turn", "mode: parallel\nreview", []string{"alpha"})
-	out, stderr, err := h.runBounded(h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1"))
+	h.send("kept", "alpha", "turn", "mode: parallel\nreview", []string{"alpha"})
+	out, stderr, err := h.runBounded(h.continueKept())
 	if err == nil || !strings.Contains(err.Error(), classBelowMinimum) {
 		t.Fatalf("err %v", err)
 	}
@@ -234,30 +234,27 @@ func TestContinueThatFindsTooFewLiveMembersStops(t *testing.T) {
 	if n := h.launchCount(); n != 0 {
 		t.Fatalf("launches %d", n)
 	}
-	if conv, _ := h.conv("kept"); conv.Status == "closed" {
+	if chat, _ := h.chat("kept"); chat.Status == "closed" {
 		t.Fatal("closed")
 	}
 }
 
-func TestResumeThatCannotLaunchDoesNotApplyTheMinimum(t *testing.T) {
+func TestContinueAppliesTheMinimumToTheStoredRoster(t *testing.T) {
 	h := newHarness(t)
 	h.plan.MinMembers = "2\n"
-	h.keptConversation("alpha", "bravo")
+	h.keptChat("alpha", "bravo")
 	launched, timedOut := statusLaunched, statusTimedOut
 	h.setMember("kept", "bravo", launched, nil)
 	h.setMember("kept", "bravo", timedOut, nil)
-	cctx, cancel := ctx()
-	defer cancel()
-	ch := h.goRun(cctx, h.continueKept(""))
-	time.Sleep(500 * time.Millisecond)
-	h.stillRunning(ch)
-	h.publish("kept", "alpha", "done", "finished", nil)
-	res := h.awaitRun(ch, 8*time.Second)
-	if res.err != nil {
-		t.Fatal(res.err, res.stderr)
+	res := h.awaitRun(h.goRun(t.Context(), h.continueKept()), 8*time.Second)
+	if res.err == nil || res.out.outcome() != outcomeError {
+		t.Fatalf("err %v\n%s", res.err, res.out)
 	}
-	if countBody(h.messages("kept"), classBelowMinimum) != 0 {
-		t.Fatalf("msgs %+v", h.messages("kept"))
+	if countBody(h.messages("kept"), classBelowMinimum) != 1 || h.launchCount() != 0 {
+		t.Fatalf("msgs %+v calls %+v", h.messages("kept"), h.calls())
+	}
+	if chat, _ := h.chat("kept"); chat.Status == "closed" {
+		t.Fatal("closed")
 	}
 }
 
@@ -266,7 +263,7 @@ func TestMemberLostBelowMinimumLetsTheOtherFinishAndStops(t *testing.T) {
 	h.plan.MinMembers = "2\n"
 	h.plan.Launch = map[string]runFile{"alpha": {Exit: 1, ExitOn: "mode:"}}
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
@@ -274,14 +271,14 @@ func TestMemberLostBelowMinimumLetsTheOtherFinishAndStops(t *testing.T) {
 	h.awaitStatus(name, "alpha", statusExited)
 	h.awaitStatus(name, "bravo", statusExited)
 	h.hold("bravo")
-	h.publish(name, "alpha", "turn", "mode: parallel\nreview", []string{"alpha", "bravo"})
+	h.send(name, "alpha", "turn", "mode: parallel\nreview", []string{"alpha", "bravo"})
 	h.awaitStatus(name, "bravo", statusRunning)
 	h.awaitBody(name, classBelowMinimum)
 	if got := h.memberStatus(name, "alpha"); got != statusTimedOut {
 		t.Fatalf("alpha %s", got)
 	}
 	// A turn from the finishing member during the stop launches nothing and stops nobody.
-	h.publish(name, "bravo", "turn", "mode: serial\nnext", []string{"alpha", "bravo"})
+	h.send(name, "bravo", "turn", "mode: serial\nnext", []string{"alpha", "bravo"})
 	time.Sleep(500 * time.Millisecond)
 	h.stillRunning(ch)
 	if got := h.memberStatus(name, "bravo"); got != statusRunning {
@@ -310,7 +307,7 @@ func TestMemberLostBelowMinimumLetsTheOtherFinishAndStops(t *testing.T) {
 	}
 	msgs := h.messages(name)
 	wantErrors(t, msgs, errLine("alpha", classProcessExit, 0), classBelowMinimum, protocolStopLine(t, msgs, classBelowMinimum))
-	if conv, _ := h.conv(name); conv.Status == "closed" {
+	if chat, _ := h.chat(name); chat.Status == "closed" {
 		t.Fatal("closed")
 	}
 }
@@ -322,7 +319,7 @@ func TestStoppingDoneDuringTheMinimumStopCloses(t *testing.T) {
 	h.pace.grace = time.Second
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
@@ -331,10 +328,10 @@ func TestStoppingDoneDuringTheMinimumStopCloses(t *testing.T) {
 		h.awaitStatus(name, n, statusExited)
 	}
 	h.hold("bravo")
-	h.publish(name, "alpha", "turn", "mode: parallel\nreview", []string{"bravo", "charlie"})
+	h.send(name, "alpha", "turn", "mode: parallel\nreview", []string{"bravo", "charlie"})
 	h.awaitStatus(name, "bravo", statusRunning)
 	h.awaitBody(name, classBelowMinimum)
-	h.publish(name, "alpha", "done", "finished", nil)
+	h.send(name, "alpha", "done", "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
@@ -342,8 +339,8 @@ func TestStoppingDoneDuringTheMinimumStopCloses(t *testing.T) {
 	if res.out.outcome() != "done" {
 		t.Fatalf("out %s", res.out)
 	}
-	if conv, _ := h.conv(name); conv.Status != "closed" {
-		t.Fatalf("status %s", conv.Status)
+	if chat, _ := h.chat(name); chat.Status != "closed" {
+		t.Fatalf("status %s", chat.Status)
 	}
 	if got := h.memberStatus(name, "bravo"); got != statusTimedOut {
 		t.Fatalf("bravo %s", got)
@@ -353,12 +350,12 @@ func TestStoppingDoneDuringTheMinimumStopCloses(t *testing.T) {
 	}
 }
 
-func TestDoneThatStopsRunningMembersPublishesNoBelowMinimum(t *testing.T) {
+func TestDoneThatStopsRunningMembersSendsNoBelowMinimum(t *testing.T) {
 	h := newHarness(t)
 	h.plan.MinMembers = "2\n"
 	h.pace.grace = 300 * time.Millisecond
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
@@ -367,10 +364,10 @@ func TestDoneThatStopsRunningMembersPublishesNoBelowMinimum(t *testing.T) {
 	h.awaitStatus(name, "bravo", statusExited)
 	h.hold("alpha")
 	h.hold("bravo")
-	h.publish(name, "alpha", "turn", "mode: parallel\nreview", []string{"alpha", "bravo"})
+	h.send(name, "alpha", "turn", "mode: parallel\nreview", []string{"alpha", "bravo"})
 	h.awaitStatus(name, "alpha", statusRunning)
 	h.awaitStatus(name, "bravo", statusRunning)
-	h.publish(name, "alpha", "done", "finished", nil)
+	h.send(name, "alpha", "done", "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
@@ -391,7 +388,7 @@ func TestLaunchCapStartsNoMoreAndAContinuationLaunchesAgain(t *testing.T) {
 	h.pace.grace = 500 * time.Millisecond
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cfg.MaxLaunches = 2
 	cfg.MaxLaunchesSet = true
 	names := []string{"alpha", "bravo", "charlie"}
@@ -433,15 +430,13 @@ func TestLaunchCapStartsNoMoreAndAContinuationLaunchesAgain(t *testing.T) {
 	if countBody(h.messages(name), classLaunchCap) != 1 {
 		t.Fatalf("msgs %+v", h.messages(name))
 	}
-	if conv, _ := h.conv(name); conv.Status == "closed" {
+	if chat, _ := h.chat(name); chat.Status == "closed" {
 		t.Fatal("closed")
 	}
 
-	h.publish(name, "alpha", "turn", "mode: parallel\nreview", []string{"bravo", "charlie"})
+	h.send(name, "alpha", "turn", "mode: parallel\nreview", []string{"bravo", "charlie"})
 	next := cfg
-	next.Conversation = name
-	next.ConversationSet = true
-	next.TaskSet = false
+	next.Chat = name
 	next.MaxLaunches = 10
 	ch = h.goRun(cctx, next)
 	deadline := time.Now().Add(8 * time.Second)
@@ -451,7 +446,7 @@ func TestLaunchCapStartsNoMoreAndAContinuationLaunchesAgain(t *testing.T) {
 	if n := h.launchCount(); n < 4 {
 		t.Fatalf("continuation launches %d", n-2)
 	}
-	h.publish(name, "alpha", "done", "finished", nil)
+	h.send(name, "alpha", "done", "finished", nil)
 	res = h.awaitRun(ch, 8*time.Second)
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
@@ -488,14 +483,14 @@ func TestLaunchCapCountsTurnLaunchesAndWaitsForALeftover(t *testing.T) {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 		_, _ = child.Process.Wait()
 	})
-	h.keptConversation("alpha", "bravo", "charlie")
+	h.keptChat("alpha", "bravo", "charlie")
 	launched := statusLaunched
 	live := int64(pid)
 	h.setMember("kept", "charlie", launched, &live)
 	n, s := "charlie", "sess-charlie"
 	h.setSession("kept", n, s)
-	h.publish("kept", "alpha", "turn", "mode: parallel\nreview", []string{"bravo"})
-	cfg := h.continueKept("alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2")
+	h.send("kept", "alpha", "turn", "mode: parallel\nreview", []string{"bravo"})
+	cfg := h.continueKept()
 	cfg.MaxLaunches = 1
 	cfg.MaxLaunchesSet = true
 	cctx, cancel := ctx()

@@ -4,12 +4,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Package cli is the hotseat command line.
-// The bus runs detached: start and stop manage that process.
-// bus status asks a listen address whether it can serve.
-// run shells out to start for one conversation.
-// attend waits as owner and prints ask, error, and done.
-// status reads one conversation and prints its state, findings, and stop.
+// Package cli is the hotseat command line. The root holds bus, chat, run, and web.
+// The bus runs detached: bus start and bus stop manage that process, and
+// bus status asks an address whether it can serve.
+// chat holds the verbs on one chat, each naming the chat as its first argument.
+// chat attend waits as owner and prints ask, error, and done.
+// chat status reads one chat and prints its state, findings, and stop.
+// run shells out to start for one chat. web serves the page for a running bus.
+// Every chat verb and bus status exits by outcome through one table in exit.go.
 // The bus process does not launch agents and it does not open connections to clients.
 package cli
 
@@ -34,9 +36,6 @@ import (
 
 // Version is set at build time with -X.
 var Version = "dev"
-
-// ExitFailure is the process status for a startup or runtime error.
-const ExitFailure = 1
 
 var caughtSignal atomic.Int32
 
@@ -102,7 +101,7 @@ func SignalExitCode() int {
 func newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "hotseat",
-		Short:         "Durable conversation bus",
+		Short:         "Durable chat bus",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       Version,
@@ -112,31 +111,31 @@ func newRoot() *cobra.Command {
 		},
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
-	root.AddCommand(newBusCmd())
-	root.AddCommand(newWebCmd())
-	addClientCommands(root)
+	// cobra lists any command named help, so the replacement has no name and the --help flag is the only help surface.
+	root.SetHelpCommand(&cobra.Command{Hidden: true})
+	root.AddCommand(newBusCmd(), newChatCmd(), newRunCmd(), newWebCmd())
 	return root
 }
 
 func newBusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "bus",
-		Short:         "Run the detached conversation bus",
+		Short:         "Run the detached chat bus",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		Example: `  hotseat bus start
   hotseat bus stop
   hotseat bus status`,
-		Long: `Start, stop, and check the conversation bus. The bus process is detached
+		Long: `Start, stop, and check the chat bus. The bus process is detached
 from the terminal. Its log is ` + logName + ` in the store directory.
 
 The database is ` + store.FileName + ` inside the store directory. When --store
 is omitted the directory is $XDG_DATA_HOME/hotseat. An unset, empty, or relative
 $XDG_DATA_HOME uses $HOME/.local/share/hotseat. A relative home directory is
 refused and nothing is created. hotseat bus start leaves the bus running until
-hotseat bus stop. status asks a listen address, ` + bus.DefaultListen + ` by
-default, and does not select a store directory.`,
+hotseat bus stop. status asks an address, ` + bus.DefaultListen + ` by default,
+and does not select a store directory.`,
 		RunE: func(*cobra.Command, []string) error {
 			return errors.New("choose start, stop, or status")
 		},
@@ -146,17 +145,13 @@ default, and does not select a store directory.`,
 }
 
 type busFlags struct {
-	store     string
-	listen    string
-	tokenFile string
-	maxBody   int
-	debug     bool
+	store   string
+	maxBody int
+	debug   bool
 }
 
-func addServeFlags(cmd *cobra.Command, f *busFlags) {
+func addBusFlags(cmd *cobra.Command, f *busFlags) {
 	cmd.Flags().StringVar(&f.store, "store", "", "directory for the SQLite database (default $XDG_DATA_HOME/hotseat)")
-	cmd.Flags().StringVar(&f.listen, "listen", bus.DefaultListen, "listen address")
-	cmd.Flags().StringVar(&f.tokenFile, "token-file", "", "file holding the capability token; the token is not a flag")
 	cmd.Flags().IntVar(&f.maxBody, "max-body", bus.DefaultMaxBody, "maximum message body size in bytes")
 	cmd.Flags().BoolVar(&f.debug, "debug", false, "log at debug level to "+logName)
 }
@@ -171,8 +166,8 @@ func newBusStartCmd() *cobra.Command {
 		Args:          cobra.NoArgs,
 		Example: `  hotseat bus start
   hotseat bus start --store /var/lib/hotseat
-  hotseat bus start --store /var/lib/hotseat --listen 127.0.0.1:4727 --max-body 524288
-  hotseat bus start --store /var/lib/hotseat --listen 192.0.2.10:4727 --token-file /run/hotseat/token`,
+  hotseat bus start --store /var/lib/hotseat --address 127.0.0.1:4727 --max-body 524288
+  hotseat bus start --store /var/lib/hotseat --address 192.0.2.10:4727 --token-file /run/hotseat/token`,
 		Long: `Listen for create, send, read, wait, watch, close, list, messages, join, member, session, members, record, records, and lease. The process runs
 in a new session with no controlling terminal. Stdin is discarded. Stdout and
 stderr append to ` + logName + ` in the store directory. start returns after the
@@ -185,16 +180,28 @@ bus is running, prints the running process and does not change it.
 The database is ` + store.FileName + ` inside the store directory. When --store
 is omitted the directory is $XDG_DATA_HOME/hotseat. An unset, empty, or relative
 $XDG_DATA_HOME uses $HOME/.local/share/hotseat. A relative home directory is
-refused and nothing is created. The default address is loopback and requires no
-token. Any other address requires --token-file. A hostname is resolved once,
+refused and nothing is created. --address or HOTSEAT_ADDRESS is the address
+the bus listens on and clients dial. The default is ` + bus.DefaultListen + `,
+which is loopback and requires no token. Any other address requires
+--token-file or HOTSEAT_TOKEN_FILE. The flag wins over the variable. A hostname is resolved once,
 and the process listens on one address from that lookup. A missing or empty
 token file does not listen and nothing is opened. A failed bind opens nothing.
 The token is not logged. Clients send JSON to POST /<operation>.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return startDaemon(cmd.Context(), cmd.OutOrStdout(), f.store, f.listen, f.tokenFile, f.maxBody, f.debug)
+			address, err := resolveAddress(cmd)
+			if err != nil {
+				return err
+			}
+			tokenFile, _, err := resolveTokenFile(cmd)
+			if err != nil {
+				return err
+			}
+			return startDaemon(cmd.Context(), cmd.OutOrStdout(), f.store, address, tokenFile, f.maxBody, f.debug)
 		},
 	}
-	addServeFlags(cmd, &f)
+	addBusFlags(cmd, &f)
+	addAddress(cmd)
+	addTokenFile(cmd)
 	return cmd
 }
 
@@ -227,19 +234,19 @@ $HOME/.local/share/hotseat.`,
 }
 
 func newBusStatusCmd() *cobra.Command {
-	var address string
 	cmd := &cobra.Command{
 		Use:           "status",
-		Short:         "Ask a listen address whether the bus can serve",
+		Short:         "Ask an address whether the bus can serve",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
-		Long: `Send GET /health to the address and print the result. The default
-address is ` + bus.DefaultListen + `. The request carries no token. GET /health
-is pass or fail, and it is not an operation.
+		Long: `Send GET /health to the address and print the result. --address or
+HOTSEAT_ADDRESS names it, and the flag wins. The default address is
+` + bus.DefaultListen + `. The request carries no token, so status takes no
+token file. GET /health is pass or fail, and it is not an operation.
 
 health is pass, fail, or connection_failure. listen is the address contacted.
-pass exits 0. fail and connection_failure exit 1. A completed response that is
+pass exits 0. fail and connection_failure exit 4. A completed response that is
 not 200 with a pass body is fail. When the request does not complete, health
 is connection_failure and reason names the address and the cause.
 
@@ -247,15 +254,21 @@ When a bus serve process on this machine is bound to that address, the report
 also prints its pid and the store directory it holds. A remote answer prints
 health and listen only.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			address, err := resolveAddress(cmd)
+			if err != nil {
+				return err
+			}
 			return statusBus(cmd.Context(), cmd.OutOrStdout(), address)
 		},
 	}
-	cmd.Flags().StringVar(&address, "address", bus.DefaultListen, "bus address")
+	addAddress(cmd)
 	return cmd
 }
 
+// newBusServeCmd is the detached child bus start execs. It takes the resolved --listen and reads no variable.
 func newBusServeCmd() *cobra.Command {
 	var f busFlags
+	var listen, tokenFile string
 	cmd := &cobra.Command{
 		Use:           "serve",
 		Hidden:        true,
@@ -263,10 +276,12 @@ func newBusServeCmd() *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return serveDetached(cmd.Context(), f.store, f.listen, f.tokenFile, f.maxBody, f.debug)
+			return serveDetached(cmd.Context(), f.store, listen, tokenFile, f.maxBody, f.debug)
 		},
 	}
-	addServeFlags(cmd, &f)
+	addBusFlags(cmd, &f)
+	cmd.Flags().StringVar(&listen, "listen", bus.DefaultListen, "listen address")
+	cmd.Flags().StringVar(&tokenFile, flagTokenFile, "", "file holding the capability token")
 	return cmd
 }
 

@@ -116,11 +116,11 @@ func TestWebCommandUsesTokenFile(t *testing.T) {
 	_, stored := httpPost(t, "http://"+webAddr+"/chats/job/messages", form)
 	_, read := httpGet(t, "http://"+webAddr+"/chats/job?cursor=0&limit=10")
 	if !strings.Contains(body, ">job<") || !strings.Contains(stored, ">hello<") || !strings.Contains(read, ">hello<") {
-		t.Fatalf("list %s\npublish %s\nread %s", body, stored, read)
+		t.Fatalf("list %s\nsent %s\nread %s", body, stored, read)
 	}
 	for _, part := range []struct{ name, text string }{
 		{"list", body},
-		{"publish", stored},
+		{"sent", stored},
 		{"read", read},
 		{"stderr", stderr.String()},
 		{"bus", busLogs.String()},

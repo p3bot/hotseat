@@ -124,7 +124,7 @@ func (e *engine) ledgerOn(ctx context.Context) (ledger, error) {
 	return buildLedger(rosterNames(e.roster), e.seat, rows, msgs, recs), nil
 }
 
-// loadRecords reads every decision record of the conversation. It runs once, before anything reads a ledger.
+// loadRecords reads every decision record of the chat. It runs once, before anything reads a ledger.
 func (e *engine) loadRecords() error {
 	res, err := e.call(e.root, "records", client.RecordsRequest{Chat: e.name})
 	if err != nil {
@@ -137,7 +137,7 @@ func (e *engine) loadRecords() error {
 }
 
 // writeRecord stores one decision record and keeps every record the result returns. A stored copy is success.
-// A refusal stops the run as a refused publish does.
+// A refusal stops the run as a refused send does.
 func (e *engine) writeRecord(w client.RecordWrite) (client.Result, error) {
 	res, err := e.call(e.root, "record", client.RecordRequest{Holder: e.holder, Record: w})
 	if err != nil {
@@ -149,9 +149,9 @@ func (e *engine) writeRecord(w client.RecordWrite) (client.Result, error) {
 	return res, nil
 }
 
-// announce publishes the settle to owner with re the agreed proposal. Its transaction id is fixed by the finding,
+// announce sends the settle to owner with re the agreed proposal. Its transaction id is fixed by the finding,
 // so a continuation that announces again stores no second copy. The body comes only from the settle record and
-// the stored proposal, so a live run and a continuation publish the same bytes.
+// the stored proposal, so a live run and a continuation send the same bytes.
 func (e *engine) announce(l ledger, s client.Settle) error {
 	proposer := l.sender(s.Proposal)
 	if proposer == "" {
@@ -177,12 +177,9 @@ func announcement(s client.Settle, proposer string) string {
 	return fmt.Sprintf("settled finding %d: %s by %s, %s", s.Finding, s.ProposalKind, proposer, outcome)
 }
 
-// announceSettles publishes the announcement of every settle record again, before a continuation resumes any work
+// announceSettles sends the announcement of every settle record again, before a continuation resumes any work
 // or closes on a stored stopping done.
 func (e *engine) announceSettles() error {
-	if !e.canLaunch() {
-		return nil
-	}
 	l, err := e.ledgerOn(e.child)
 	if err != nil {
 		return e.busErr(err)
@@ -225,7 +222,7 @@ func (e *engine) awaitLeftovers() error {
 	}
 }
 
-// history reports whether an earlier process judged m or a leftover process published it.
+// history reports whether an earlier process judged m or a leftover process sent it.
 func (e *engine) history(m client.Message) bool {
 	if !e.continuing {
 		return false
@@ -261,9 +258,6 @@ func (e *engine) holdHandoffs(on bool) {
 
 // judgeFinding reports a finding that opened no discussion. The derived transaction id stores that report once.
 func (e *engine) judgeFinding(f client.Message) error {
-	if !e.canLaunch() {
-		return nil
-	}
 	l, err := e.ledgerOn(e.child)
 	if err != nil {
 		return e.busErr(err)
@@ -277,7 +271,7 @@ func (e *engine) judgeFinding(f client.Message) error {
 // judgeStray reports a stance, pass, extend, or deadlock that no live launch window ruled on.
 // Stored history is never judged again.
 func (e *engine) judgeStray(m client.Message) error {
-	if !e.canLaunch() || e.wasJudged(m.Seq) || e.history(m) {
+	if e.wasJudged(m.Seq) || e.history(m) {
 		return nil
 	}
 	class := classBadStance
@@ -301,9 +295,6 @@ var strayKinds = append([]string{kindAggregate, kindPass, kindExtend, kindDeadlo
 // judgeBacklog reports each finding and stray protocol message stored since the last check.
 // The transcript loop sees them only after the job, and a job often ends on a stopping done.
 func (e *engine) judgeBacklog() error {
-	if !e.canLaunch() {
-		return nil
-	}
 	e.mu.Lock()
 	from := e.backlog
 	e.mu.Unlock()
@@ -394,12 +385,9 @@ func (e *engine) resumeSet(turn client.Message, seen int64) error {
 	return e.followUp(turn, seen)
 }
 
-// judgeReplies reports each live recipient of the set that published no answer to the turn.
-// A recipient that timed out already has its failure published. The derived transaction id stores each report once.
+// judgeReplies reports each live recipient of the set that sent no answer to the turn.
+// A recipient that timed out already has its failure sent. The derived transaction id stores each report once.
 func (e *engine) judgeReplies(turn client.Message) error {
-	if !e.canLaunch() {
-		return nil
-	}
 	l, err := e.ledgerOn(e.child)
 	if err != nil {
 		return e.busErr(err)
@@ -418,9 +406,6 @@ func (e *engine) judgeReplies(turn client.Message) error {
 // aggregateSet launches the acting seat to drop duplicate findings, then writes the set's grouping record.
 // A seat that leaves no single valid aggregate makes each finding its own issue, so duplicates cost discussions and nothing is lost.
 func (e *engine) aggregateSet(turn client.Message, findings []client.Message) error {
-	if !e.canLaunch() {
-		return nil
-	}
 	seqs := make([]int64, len(findings))
 	for i, f := range findings {
 		seqs[i] = f.Seq
@@ -474,7 +459,7 @@ func (e *engine) aggregateSet(turn client.Message, findings []client.Message) er
 }
 
 // settleFindings runs the set's discussions one at a time in seq order, after its grouping.
-// A set with findings waits until every leftover has exited and reads the transcript again, so a fixed a leftover published counts.
+// A set with findings waits until every leftover has exited and reads the transcript again, so a fixed a leftover sent counts.
 func (e *engine) settleFindings(turn client.Message, resumed bool) error {
 	l, err := e.ledgerOn(e.child)
 	if err != nil {
@@ -620,7 +605,7 @@ func (e *engine) discussionStart(finding int64) (int64, []int64, error) {
 }
 
 // judgeTurn rules on one discussion launch and returns the member its accepted pass names.
-// A speaker that ended timed-out already has its failure published, so its stance count is not a protocol error
+// A speaker that ended timed-out already has its failure sent, so its stance count is not a protocol error
 // and its pass is ignored. A single stance it stored is still judged.
 func (e *engine) judgeTurn(d *discussion, speaker string, w window) (string, error) {
 	stances := w.of(stanceKinds...)
@@ -797,7 +782,7 @@ func (e *engine) stall(d *discussion) (bool, error) {
 			decided = false
 		}
 		if !decided {
-			// A seat that timed out already has its failure published, so the backup decides.
+			// A seat that timed out already has its failure sent, so the backup decides.
 			if failed {
 				if e.quiet() {
 					return false, e.halting()
@@ -893,9 +878,6 @@ func (e *engine) reportAgain() (bool, error) {
 	if _, ok := l.halted(); !ok {
 		return false, nil
 	}
-	if !e.canLaunch() {
-		return true, nil
-	}
 	if err := e.awaitLeftovers(); err != nil {
 		return true, err
 	}
@@ -903,7 +885,7 @@ func (e *engine) reportAgain() (bool, error) {
 }
 
 // reportStop reads the stop result from the messages and records before the done the stop record names, and keeps it
-// for the result. An unsettled stop with no halt publishes one unsettled error about that done, under a derived
+// for the result. An unsettled stop with no halt sends one unsettled error about that done, under a derived
 // transaction id. Any outcome but done is ErrUnresolved.
 func (e *engine) reportStop() error {
 	r, err := e.readStop(e.root)
@@ -980,43 +962,47 @@ func nameList(names []string) string {
 // readCommands are the two reads a protocol prompt gives: findings and stances unnamed by kind, and the rest by name.
 func (e *engine) readCommands(b *strings.Builder, name string, cursor int64) {
 	fmt.Fprintf(b, "cursor: %d\n", cursor)
-	b.WriteString("Read findings and stances with: hotseat read --conversation " + e.name + " --cursor " + seqText(cursor) + " --limit 200")
+	b.WriteString("Read findings and stances with: hotseat chat read " + e.name + " --cursor " + seqText(cursor) + " --limit 200")
 	for _, k := range append([]string{kindFinding}, stanceKinds...) {
 		b.WriteString(" --kind " + k)
 	}
 	b.WriteByte('\n')
-	fmt.Fprintf(b, "Read everything else with: hotseat read --conversation %s --cursor %d --limit 200 --name %s\n", e.name, cursor, name)
+	fmt.Fprintf(b, "Read everything else with: hotseat chat read %s --cursor %d --limit 200 --to %s\n", e.name, cursor, name)
 }
 
-// publishCommand writes the publish command a prompt gives for what, with the re run judges it by.
-func (e *engine) publishCommand(b *strings.Builder, what, name, kind string, re int64) {
-	fmt.Fprintf(b, "Publish %s with: hotseat publish --conversation %s --from %s --kind %s --re %d, then --to and the body.\n", what, e.name, name, kind, re)
+// sendCommand writes the send command a prompt gives for what, with the re run judges it by.
+func (e *engine) sendCommand(b *strings.Builder, what, name, kind string, re int64) {
+	fmt.Fprintf(b, "Send %s with: hotseat chat send %s --from %s --kind %s --re %d, then --to and the body.\n", what, e.name, name, kind, re)
+}
+
+// openSend writes a send command for a turn or a done. Those kinds take no re, and sendCommand always adds one.
+func (e *engine) openSend(b *strings.Builder, what, name, kind, rest string) {
+	fmt.Fprintf(b, "Send %s with: hotseat chat send %s --from %s --kind %s%s\n", what, e.name, name, kind, rest)
 }
 
 func (e *engine) discussionPrompt(name string, d *discussion, restarted bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
+	fmt.Fprintf(&b, "You are %s in chat %s.\n", name, e.name)
 	fmt.Fprintf(&b, "This is a discussion launch for finding %d.\n", d.finding)
 	fmt.Fprintf(&b, "finding: %d\nproposal: %d\nproposer: %s\n", d.finding, d.proposal, d.proposer)
 	duplicatesNote(&b, d.duplicates)
 	startNote(&b, d)
 	e.readCommands(&b, name, slices.Min(append([]int64{d.finding}, d.duplicates...))-1)
 	if restarted {
-		b.WriteString("This discussion restarted. Stances published before the restart do not count.\n")
+		b.WriteString("This discussion restarted. Stances sent before the restart do not count.\n")
 	}
 	if d.dead[d.proposer] {
 		fmt.Fprintf(&b, "The proposer %s is timed-out. propose or dismiss is how you change the proposal.\n", d.proposer)
 	}
 	if name == d.proposer {
-		b.WriteString("You are the proposer. Publish exactly one stance: stand to keep the proposal and answer the objection, propose to amend it, or dismiss to withdraw it.\n")
+		b.WriteString("You are the proposer. Send exactly one stance: stand to keep the proposal and answer the objection, propose to amend it, or dismiss to withdraw it.\n")
 	} else {
-		b.WriteString("Publish exactly one stance: agree, object, propose, or dismiss.\n")
+		b.WriteString("Send exactly one stance: agree, object, propose, or dismiss.\n")
 	}
 	fmt.Fprintf(&b, "Address the stance to every roster name: %s.\n", strings.Join(d.roster, " "))
-	b.WriteString("When you need one member's answer next, also publish one pass addressed to that one member. Do not use turn for this.\n")
-	e.publishCommand(&b, "the stance", name, "<stance>", d.finding)
-	e.publishCommand(&b, "a pass", name, kindPass, d.finding)
-	b.WriteString(e.busNote())
+	b.WriteString("When you need one member's answer next, also send one pass addressed to that one member. Do not use turn for this.\n")
+	e.sendCommand(&b, "the stance", name, "<stance>", d.finding)
+	e.sendCommand(&b, "a pass", name, kindPass, d.finding)
 	return b.String()
 }
 
@@ -1031,17 +1017,16 @@ func duplicatesNote(b *strings.Builder, dups []int64) {
 
 func (e *engine) aggregatePrompt(name string, turn client.Message, findings []int64) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
+	fmt.Fprintf(&b, "You are %s in chat %s.\n", name, e.name)
 	fmt.Fprintf(&b, "This is an aggregate launch for the set opened by turn %d. You are the acting seat. Discussion has not started.\n", turn.Seq)
 	fmt.Fprintf(&b, "turn: %d\nfindings: %s\n", turn.Seq, seqList(findings))
 	e.readCommands(&b, name, turn.Seq)
 	b.WriteString("Read every finding. Two findings are duplicates when they describe the same issue, even when one names more locations than the other.\n")
-	fmt.Fprintf(&b, "Publish exactly one aggregate addressed to every roster name: %s.\n", strings.Join(rosterNames(e.roster), " "))
+	fmt.Fprintf(&b, "Send exactly one aggregate addressed to every roster name: %s.\n", strings.Join(rosterNames(e.roster), " "))
 	b.WriteString("The body has one line per issue: the seq of the finding to keep, then the seq of each duplicate it drops, separated by spaces. Keep the most complete finding.\n")
 	b.WriteString("Every finding listed above is on exactly one line. A finding with no duplicate is a line of its own. Nothing else is in the body.\n")
 	b.WriteString("Do not rewrite a finding, take a stance, pass, or edit the document. Each kept finding is discussed in seq order.\n")
-	e.publishCommand(&b, "the aggregate", name, kindAggregate, turn.Seq)
-	b.WriteString(e.busNote())
+	e.sendCommand(&b, "the aggregate", name, kindAggregate, turn.Seq)
 	return b.String()
 }
 
@@ -1054,7 +1039,7 @@ func startNote(b *strings.Builder, d *discussion) {
 func (e *engine) stallPrompt(name string, d *discussion, asks []int64) string {
 	agreed, not := d.split()
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
+	fmt.Fprintf(&b, "You are %s in chat %s.\n", name, e.name)
 	fmt.Fprintf(&b, "This is a stall launch for finding %d. The speaker order found nobody and the finding has not settled. You are the acting seat and you decide.\n", d.finding)
 	fmt.Fprintf(&b, "finding: %d\nproposal: %d\nproposer: %s\n", d.finding, d.proposal, d.proposer)
 	fmt.Fprintf(&b, "agreed: %s\nnot agreed: %s\nobjecting: %s\nout of budget: %s\ntimed-out: %s\n",
@@ -1064,24 +1049,22 @@ func (e *engine) stallPrompt(name string, d *discussion, asks []int64) string {
 	}
 	startNote(&b, d)
 	e.readCommands(&b, name, d.finding-1)
-	b.WriteString("Publish exactly one of these, not both:\n")
+	b.WriteString("Send exactly one of these, not both:\n")
 	b.WriteString("- extend with to naming each member whose budget is refreshed. The discussion continues from the same proposal and agreements.\n")
 	fmt.Fprintf(&b, "- deadlock addressed to every roster name and owner: %s owner. The run stops.\n", strings.Join(d.roster, " "))
-	e.publishCommand(&b, "the extend or deadlock", name, "<extend or deadlock>", d.finding)
-	b.WriteString(e.busNote())
+	e.sendCommand(&b, "the extend or deadlock", name, "<extend or deadlock>", d.finding)
 	return b.String()
 }
 
 func (e *engine) fixPrompt(name string, finding, proposal int64) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
+	fmt.Fprintf(&b, "You are %s in chat %s.\n", name, e.name)
 	fmt.Fprintf(&b, "This is a fix launch for finding %d. The roster agreed proposal %d.\n", finding, proposal)
 	fmt.Fprintf(&b, "finding: %d\nproposal: %d\n", finding, proposal)
 	e.readCommands(&b, name, finding-1)
 	fmt.Fprintf(&b, "Apply the agreed proposal at seq %d. You decide how to apply it. The decision to fix is made.\n", proposal)
-	fmt.Fprintf(&b, "Then publish fixed addressed to every roster name: %s. The body says what changed. Do not pass.\n", strings.Join(rosterNames(e.roster), " "))
-	e.publishCommand(&b, "the fixed", name, kindFixed, finding)
-	b.WriteString(e.busNote())
+	fmt.Fprintf(&b, "Then send fixed addressed to every roster name: %s. The body says what changed. Do not pass.\n", strings.Join(rosterNames(e.roster), " "))
+	e.sendCommand(&b, "the fixed", name, kindFixed, finding)
 	return b.String()
 }
 
@@ -1102,7 +1085,7 @@ func (e *engine) reportPrompt(name string, d *discussion, l ledger) string {
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
+	fmt.Fprintf(&b, "You are %s in chat %s.\n", name, e.name)
 	fmt.Fprintf(&b, "This is a report launch. A deadlock on finding %d stopped the run.\n", finding)
 	fmt.Fprintf(&b, "finding: %d\n", finding)
 	if d != nil {
@@ -1117,8 +1100,8 @@ func (e *engine) reportPrompt(name string, d *discussion, l ledger) string {
 		fmt.Fprintf(&b, "ask: %d\n", seq)
 	}
 	e.readCommands(&b, name, finding-1)
-	b.WriteString("Publish done addressed to owner. The body starts with outcome: hold and then a report that lists the deadlocked finding, who disagrees, the settled and fixed findings, each undiscussed finding, each dropped duplicate, the timed-out members, and each ask.\n")
-	b.WriteString(e.busNote())
+	b.WriteString("Send done addressed to owner. The body starts with outcome: hold and then a report that lists the deadlocked finding, who disagrees, the settled and fixed findings, each undiscussed finding, each dropped duplicate, the timed-out members, and each ask.\n")
+	e.openSend(&b, "the done", name, kindDone, " --to owner, then the body.")
 	return b.String()
 }
 

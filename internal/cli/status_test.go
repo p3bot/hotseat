@@ -18,17 +18,17 @@ import (
 	"github.com/p3bot/hotseat/internal/run"
 )
 
-func TestStatusOfAMissingConversationPrintsTheBusRefusalAndExitsNonZero(t *testing.T) {
+func TestStatusOfAMissingChatPrintsTheBusRefusalAndExitsTwo(t *testing.T) {
 	addr, stop := startBus(t)
 	t.Cleanup(stop)
-	res := runBinCmd(t, buildBinary(t), "status", "--address", addr, "--conversation", "missing")
+	res := runBinCmd(t, buildBinary(t), "chat", "status", "missing", "--address", addr)
 	want := "outcome: refused\nreason: " + bus.ReasonNotFound + "\n"
-	if res.code != ExitFailure || res.stderr != "" || res.stdout != want {
+	if res.code != ExitRefused || res.stderr != "" || res.stdout != want {
 		t.Fatalf("code %d stderr %q\n%s", res.code, res.stderr, res.stdout)
 	}
 }
 
-func TestStatusOfAnUnreachableBusPrintsConnectionFailureAndExitsNonZero(t *testing.T) {
+func TestStatusOfAnUnreachableBusPrintsConnectionFailureAndExitsFour(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -37,29 +37,29 @@ func TestStatusOfAnUnreachableBusPrintsConnectionFailureAndExitsNonZero(t *testi
 	if err := ln.Close(); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, err := runCommand(t, "status", "--address", addr, "--conversation", "job")
+	stdout, stderr, err := runCommand(t, "chat", "status", "job", "--address", addr)
 	res, perr := parseResult([]byte(stdout))
-	if !ReportedFailure(err) || stderr != "" || perr != nil || res.Outcome != client.OutcomeConnectionFailure {
+	if code, ok := ReportedExit(err); !ok || code != ExitUnavailable || stderr != "" || perr != nil || res.Outcome != client.OutcomeConnectionFailure {
 		t.Fatalf("err %v stderr %q\n%s", err, stderr, stdout)
 	}
 }
 
 func TestStatusUsageErrorPrintsNoStdout(t *testing.T) {
-	stdout, stderr, err := runCommand(t, "status")
-	if err == nil || ReportedFailure(err) || stdout != "" || stderr != "" {
+	stdout, stderr, err := runCommand(t, "chat", "status")
+	if _, ok := ReportedExit(err); err == nil || ok || stdout != "" || stderr != "" {
 		t.Fatalf("err %v stderr %q stdout %q", err, stderr, stdout)
 	}
 }
 
-func TestStatusOfAnIdleConversationExitsZeroWithItsBindingCountsAndNewestStopError(t *testing.T) {
+func TestStatusOfAnIdleChatExitsZeroWithItsBindingCountsAndNewestStopError(t *testing.T) {
 	addr, stop := startBus(t)
 	t.Cleanup(stop)
 	ctx := context.Background()
 	createRoster(t, ctx, addr, "job", "alpha")
-	stopped := publishAs(t, ctx, addr, "job", "run", "error", []string{"owner"}, "stopped by bus", "s1")
-	stdout, stderr, err := runCommand(t, "status", "--address", addr, "--conversation", "job")
+	stopped := sendAs(t, ctx, addr, "job", "run", "error", []string{"owner"}, "stopped by bus", "s1")
+	stdout, stderr, err := runCommand(t, "chat", "status", "job", "--address", addr)
 	seq := strconv.FormatInt(stopped.Seq, 10)
-	want := "outcome: ok\nconversation: job\nseat: alpha\nroster: alpha\nstate: idle\nnewest: " + seq +
+	want := "outcome: ok\nchat: job\nseat: alpha\nroster: alpha\nstate: idle\nnewest: " + seq +
 		"\nfindings: 0\nsettled: 0\nfixed: 0\ndropped: 0\nstop: stopped by bus\nstop_seq: " + seq + "\n"
 	if err != nil || stderr != "" || stdout != want {
 		t.Fatalf("err %v stderr %q\n%s", err, stderr, stdout)
@@ -71,7 +71,7 @@ func TestStatusLinesFollowTheDocumentedOrder(t *testing.T) {
 	st := run.Status{
 		Binding: client.Chat{
 			Name: "job", Status: "open", Task: "tasks:hotseat/ticket/triage", Ticket: "p3bot-e734",
-			Seat: "grok", Directory: "/tmp/x", Roster: []string{"grok", "opus"},
+			Seat: "grok", Directory: "/tmp/x", Roster: []client.RosterEntry{{Name: "grok"}, {Name: "opus"}},
 		},
 		State:      run.StateRunning,
 		Since:      "2026-11-18T08:47:13Z",
@@ -91,7 +91,7 @@ func TestStatusLinesFollowTheDocumentedOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := `outcome: ok
-conversation: job
+chat: job
 task: tasks:hotseat/ticket/triage
 ticket: p3bot-e734
 seat: grok

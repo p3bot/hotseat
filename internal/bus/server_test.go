@@ -952,7 +952,7 @@ func TestUnknownOperation(t *testing.T) {
 
 func TestOldSendAndJoinRoutesAreUnknownOperations(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
-	mustPost(t, base, PathCreate, map[string]any{"name": "job", "seat": "alpha", "roster": []string{"alpha"}})
+	mustPost(t, base, PathCreate, map[string]any{"name": "job", "seat": "alpha", "roster": rosterNames("alpha")})
 	conduct(t, base, "job")
 	if res := mustPost(t, base, PathMember, map[string]any{"chat": "job", "name": "alpha", "status": "launched", "holder": testHolder}); res.Outcome != OutcomeOK {
 		t.Fatalf("launch %+v", res)

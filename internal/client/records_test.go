@@ -168,7 +168,7 @@ func TestEachRecordSendsItsSelectorAndOnlyItsFields(t *testing.T) {
 
 func TestLeaseResultsDecodeAndFencedWritesCarryTheHolder(t *testing.T) {
 	addr := liveBus(t)
-	mustDo(t, addr, "create", CreateRequest{Name: "job", Seat: "alpha", Roster: []string{"alpha"}})
+	mustDo(t, addr, "create", CreateRequest{Name: "job", Seat: "alpha", Roster: []RosterEntry{{Name: "alpha"}}})
 	acquired := mustDo(t, addr, "lease", LeaseRequest{Chat: "job", Lease: bus.LeaseAcquire, Holder: "h1"})
 	if acquired.TTL == nil || *acquired.TTL != 20 {
 		t.Fatalf("acquire = %+v", acquired)

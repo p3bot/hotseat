@@ -81,6 +81,8 @@ type line struct {
 	Argv  []string `json:"argv"`
 	Dir   string   `json:"dir"`
 	Stdin string   `json:"stdin"`
+	// Env is the process environment of a launch.
+	Env []string `json:"env,omitempty"`
 }
 
 func main() {
@@ -126,13 +128,17 @@ func start(dir string, p plan, args []string) {
 	case has(args, "get"):
 		kind = "get"
 	}
-	record(dir, line{
+	l := line{
 		Time:  time.Now().UTC().Format(time.RFC3339Nano),
 		Kind:  kind,
 		Argv:  args,
 		Dir:   wd,
 		Stdin: string(stdin),
-	})
+	}
+	if kind == "launch" {
+		l.Env = os.Environ()
+	}
+	record(dir, l)
 	switch kind {
 	case "id":
 		if p.IDExit != 0 {
@@ -207,7 +213,7 @@ func launch(dir string, p plan, stdin string) {
 		code = 0
 	}
 	if st, ok := takeStep(dir, name, spec.Steps, stdin); ok {
-		chat := between(stdin, "in conversation ", ".\n")
+		chat := between(stdin, "in chat ", ".\n")
 		for i, m := range st.Send {
 			m.Body = fromPrompt(m.Body, stdin)
 			m.Re = reFromPrompt(m.Re, stdin)
@@ -273,8 +279,24 @@ func takeStep(dir, name string, steps []step, stdin string) (step, bool) {
 	return step{}, false
 }
 
+// post calls the bus HOTSEAT_ADDRESS names, with the token HOTSEAT_TOKEN_FILE holds when it is set, as a chat command does.
+func post(path string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, "http://"+os.Getenv("HOTSEAT_ADDRESS")+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if file := os.Getenv("HOTSEAT_TOKEN_FILE"); file != "" {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(raw)))
+	}
+	return http.DefaultClient.Do(req)
+}
+
 func send(chat, from, txid string, m message) {
-	bus := os.Getenv("HOTSEAT_FAKE_BUS")
 	to := m.To
 	if to == nil {
 		to = []string{}
@@ -295,7 +317,7 @@ func send(chat, from, txid string, m message) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	resp, err := http.Post("http://"+bus+"/send", "application/json", bytes.NewReader(body))
+	resp, err := post("/send", body)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -311,19 +333,13 @@ func send(chat, from, txid string, m message) {
 }
 
 func postJoin(stdin, name string) {
-	bus := os.Getenv("HOTSEAT_FAKE_BUS")
-	chat := between(stdin, "in conversation ", ".")
-	if bus == "" || chat == "" || name == "" {
+	chat := between(stdin, "in chat ", ".")
+	if chat == "" || name == "" {
 		return
 	}
 	body := []byte(`{"chat":"` + chat + `","name":"` + name + `"}`)
 	for i := 0; i < 50; i++ {
-		req, err := http.NewRequest(http.MethodPost, "http://"+bus+"/join", bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := post("/join", body)
 		if err != nil {
 			time.Sleep(20 * time.Millisecond)
 			continue

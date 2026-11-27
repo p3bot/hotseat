@@ -296,7 +296,7 @@ func withHolder(body map[string]any, holder any) map[string]any {
 // fencedJob creates job with roster alpha and a launched alpha, and returns a finding the halt record can name.
 func fencedJob(t *testing.T, base string) int64 {
 	t.Helper()
-	mustPost(t, base, PathCreate, map[string]any{"name": "job", "seat": "alpha", "roster": []string{"alpha"}})
+	mustPost(t, base, PathCreate, map[string]any{"name": "job", "seat": "alpha", "roster": rosterNames("alpha")})
 	conduct(t, base, "job")
 	mustPost(t, base, PathMember, map[string]any{"chat": "job", "name": "alpha", "status": "launched", "holder": testHolder})
 	put := kindSender(t, base, "job")
@@ -323,8 +323,8 @@ func TestFencedWriteWithoutAHolderOrWithAMalformedOneIsRefused(t *testing.T) {
 			}
 		}
 	}
-	pub := map[string]any{"chat": "job", "from": "run", "to": []string{}, "body": "b", "txid": "x", "kind": "say", "holder": ""}
-	if res := mustPost(t, base, PathSend, pub); res.Outcome != OutcomeRefused || res.Reason != ReasonHolderBad {
+	send := map[string]any{"chat": "job", "from": "run", "to": []string{}, "body": "b", "txid": "x", "kind": "say", "holder": ""}
+	if res := mustPost(t, base, PathSend, send); res.Outcome != OutcomeRefused || res.Reason != ReasonHolderBad {
 		t.Fatalf("send with empty holder = %+v", res)
 	}
 	assertUnchanged(t, base)
@@ -334,9 +334,9 @@ func TestFencedWriteByAHolderWithoutTheLiveLeaseIsRefusedAndStoresNothing(t *tes
 	clock := newFakeClock()
 	base, _, _, _ := startServer(t, Options{Clock: clock.read})
 	finding := fencedJob(t, base)
-	pub := map[string]any{"chat": "job", "from": "run", "to": []string{}, "body": "b", "txid": "x", "kind": "say"}
+	send := map[string]any{"chat": "job", "from": "run", "to": []string{}, "body": "b", "txid": "x", "kind": "say"}
 	writes := fencedWrites(finding)
-	writes[PathSend] = pub
+	writes[PathSend] = send
 	refuse := func(when, holder string) {
 		t.Helper()
 		for path, body := range writes {

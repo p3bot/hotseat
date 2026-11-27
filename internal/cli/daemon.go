@@ -30,6 +30,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/p3bot/hotseat/internal/bus"
+	"github.com/p3bot/hotseat/internal/client"
 	"github.com/p3bot/hotseat/internal/store"
 	"github.com/p3bot/hotseat/internal/web"
 )
@@ -38,19 +39,6 @@ const (
 	logName    = "hotseat.log"
 	recordName = "hotseat.pid"
 )
-
-// reportedFailure is a finished report already written to stdout.
-// Error is empty so main exits 1 without a second line.
-type reportedFailure struct{}
-
-func (reportedFailure) Error() string { return "" }
-
-// ReportedFailure reports an error that exits 1 with no stderr line.
-// The report is already on stdout.
-func ReportedFailure(err error) bool {
-	var failed reportedFailure
-	return errors.As(err, &failed)
-}
 
 type busConfig struct {
 	store     string
@@ -591,10 +579,7 @@ func statusBus(ctx context.Context, w io.Writer, address string) error {
 	if err := printHealth(w, rep); err != nil {
 		return err
 	}
-	if rep.health != "pass" {
-		return reportedFailure{}
-	}
-	return nil
+	return outcomeExit(rep.health)
 }
 
 func collectStatus(ctx context.Context, address string) (healthReport, error) {
@@ -608,7 +593,7 @@ func collectStatus(ctx context.Context, address string) (healthReport, error) {
 func interpretHealth(address, body string, code int, dialErr error) (healthReport, error) {
 	if dialErr != nil {
 		return healthReport{
-			health: "connection_failure",
+			health: client.OutcomeConnectionFailure,
 			listen: address,
 			reason: dialErr.Error(),
 		}, nil
@@ -626,10 +611,10 @@ func interpretHealth(address, body string, code int, dialErr error) (healthRepor
 }
 
 func healthWord(code int, body string) string {
-	if code == http.StatusOK && (body == "pass" || body == "pass\n") {
-		return "pass"
+	if code == http.StatusOK && (body == healthPass || body == healthPass+"\n") {
+		return healthPass
 	}
-	return "fail"
+	return healthFail
 }
 
 func getHealth(ctx context.Context, address string) (body string, code int, err error) {

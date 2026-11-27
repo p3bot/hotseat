@@ -281,15 +281,15 @@ func requireRosterName(ctx context.Context, tx *sql.Tx, chat, name string) error
 	if err != nil {
 		return err
 	}
-	for _, n := range roster {
-		if n == name {
+	for _, r := range roster {
+		if r.Name == name {
 			return nil
 		}
 	}
 	return ErrNotRoster
 }
 
-func rosterOf(ctx context.Context, tx *sql.Tx, chat string) ([]string, error) {
+func rosterOf(ctx context.Context, tx *sql.Tx, chat string) ([]RosterEntry, error) {
 	row, err := chatByName(ctx, tx, chat)
 	if err != nil {
 		return nil, err
@@ -335,10 +335,10 @@ func nullable(s string) any {
 	return s
 }
 
-func orderByRoster[T any](roster []string, rows []T, name func(T) string) []T {
+func orderByRoster[T any](roster []RosterEntry, rows []T, name func(T) string) []T {
 	pos := make(map[string]int, len(roster))
-	for i, n := range roster {
-		pos[n] = i
+	for i, r := range roster {
+		pos[r.Name] = i
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		return rosterIndex(pos, name(rows[i])) < rosterIndex(pos, name(rows[j]))

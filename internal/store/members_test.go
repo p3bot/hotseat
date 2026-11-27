@@ -18,7 +18,7 @@ import (
 func TestStartTokenIsStoredBesideItsPidAndReplacedWithIt(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "job", Binding{Roster: []string{"alpha"}}); err != nil {
+	if _, _, err := st.Create(ctx, "job", Binding{Roster: []RosterEntry{{Name: "alpha"}}}); err != nil {
 		t.Fatal(err)
 	}
 	launched, err := st.LaunchMember(ctx, "job", "alpha", "t", 41, true, "boot/100")
@@ -48,7 +48,7 @@ func TestStartTokenIsStoredBesideItsPidAndReplacedWithIt(t *testing.T) {
 func TestStartTokenWithoutAPidIsNotStored(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "job", Binding{Roster: []string{"alpha"}}); err != nil {
+	if _, _, err := st.Create(ctx, "job", Binding{Roster: []RosterEntry{{Name: "alpha"}}}); err != nil {
 		t.Fatal(err)
 	}
 	launched, err := st.LaunchMember(ctx, "job", "alpha", "t", 0, false, "boot/100")

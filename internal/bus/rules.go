@@ -274,14 +274,14 @@ func validateSend(in SendInput, maxBody int) error {
 
 func validateBinding(b store.Binding) error {
 	seen := make(map[string]struct{}, len(b.Roster))
-	for _, n := range b.Roster {
-		if !validName(n) {
+	for _, r := range b.Roster {
+		if !validName(r.Name) {
 			return rule(ReasonRosterBadName)
 		}
-		if _, ok := seen[n]; ok {
+		if _, ok := seen[r.Name]; ok {
 			return rule(ReasonRosterDuplicate)
 		}
-		seen[n] = struct{}{}
+		seen[r.Name] = struct{}{}
 	}
 	for _, p := range b.Prompts {
 		if p == "" {
@@ -335,15 +335,31 @@ func parseKinds(raw json.RawMessage) (kinds []string, has bool, err error) {
 	return names, true, nil
 }
 
-func parseRoster(raw json.RawMessage) ([]string, error) {
+// parseRoster reads an ordered array of {name, module, model} objects. name is a string and module and model are
+// optional strings the bus does not parse. Any other key, element, or shape is refused.
+func parseRoster(raw json.RawMessage) ([]store.RosterEntry, error) {
 	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		if bytes.Equal(trimmed, []byte("null")) {
+	if len(trimmed) == 0 {
+		return []store.RosterEntry{}, nil
+	}
+	var in []struct {
+		Name   *string `json:"name"`
+		Module string  `json:"module"`
+		Model  string  `json:"model"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	if bytes.Equal(trimmed, []byte("null")) || dec.Decode(&in) != nil || dec.More() {
+		return nil, rule(ReasonRosterShape)
+	}
+	out := make([]store.RosterEntry, len(in))
+	for i, r := range in {
+		if r.Name == nil {
 			return nil, rule(ReasonRosterShape)
 		}
-		return []string{}, nil
+		out[i] = store.RosterEntry{Name: *r.Name, Module: r.Module, Model: r.Model}
 	}
-	return decodeStringList(trimmed, ReasonRosterShape)
+	return out, nil
 }
 
 func parsePrompts(raw json.RawMessage) ([]string, error) {

@@ -16,7 +16,7 @@ import (
 	"github.com/p3bot/hotseat/internal/run"
 )
 
-// writeResult prints the call. Every client command uses this writer.
+// writeResult prints the call. Every chat verb uses this writer.
 // A field on one line is "key: value", including a value that contains "<<".
 // A value that holds a newline is a byte count and then those bytes, and a
 // message body always is. The count is what keeps an empty body, a body of
@@ -33,14 +33,15 @@ func writeResult(w io.Writer, res client.Result) error {
 	if res.MatchSeq != nil {
 		lw.integer("match_seq", *res.MatchSeq)
 	}
+	lw.boolean("more", res.More)
 	if res.Chat != nil {
-		lw.header("conversation")
-		lw.conversation(*res.Chat)
+		lw.header("chat")
+		lw.chat(*res.Chat)
 	}
 	if res.Chats != nil {
-		lw.header("conversations")
-		for _, conv := range *res.Chats {
-			lw.conversation(conv)
+		lw.header("chats")
+		for _, c := range *res.Chats {
+			lw.chat(c)
 		}
 	}
 	if res.Message != nil {
@@ -132,32 +133,35 @@ func (lw *lineWriter) stopLines(s *run.StopResult) {
 	}
 }
 
-func (lw *lineWriter) conversation(conv client.Chat) {
-	lw.plain("name", conv.Name)
+func (lw *lineWriter) chat(c client.Chat) {
+	lw.plain("name", c.Name)
 	// A caller that only has the name must not print a blank status.
-	if conv.Status != "" {
-		lw.plain("status", conv.Status)
+	if c.Status != "" {
+		lw.plain("status", c.Status)
 	}
-	if conv.Task != "" {
-		lw.plain("task", conv.Task)
+	if c.Task != "" {
+		lw.plain("task", c.Task)
 	}
-	if conv.Ticket != "" {
-		lw.plain("ticket", conv.Ticket)
+	if c.Ticket != "" {
+		lw.plain("ticket", c.Ticket)
 	}
-	if conv.Seat != "" {
-		lw.plain("seat", conv.Seat)
+	if c.Seat != "" {
+		lw.plain("seat", c.Seat)
 	}
-	if conv.Directory != "" {
-		lw.plain("directory", conv.Directory)
+	if c.Directory != "" {
+		lw.plain("directory", c.Directory)
 	}
-	for _, prompt := range conv.Prompts {
+	for _, prompt := range c.Prompts {
 		lw.plain("prompts", prompt)
 	}
-	if conv.Custom != "" {
-		lw.plain("custom", conv.Custom)
+	if c.Custom != "" {
+		lw.plain("custom", c.Custom)
 	}
-	for _, name := range conv.Roster {
-		lw.plain("roster", name)
+	for _, r := range c.Roster {
+		lw.plain("roster", r.String())
+	}
+	if c.Permission != "" {
+		lw.plain("permission", c.Permission)
 	}
 }
 
@@ -183,5 +187,5 @@ func (lw *lineWriter) member(m client.Member) {
 	lw.plain("name", m.Name)
 	lw.plain("status", m.Status)
 	lw.plain("launched", m.Launched)
-	lw.plain("registered", m.Joined)
+	lw.plain("joined", m.Joined)
 }

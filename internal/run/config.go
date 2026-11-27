@@ -19,22 +19,19 @@ const (
 	// DefaultMaxSays is the number of discussion launches each member has per finding.
 	DefaultMaxSays = 4
 	// DefaultProcessLimit is the limit for one member process.
-	// It is not a limit on the conversation. Interactive mode disables it.
+	// It is not a limit on the chat. A zero Config.Timeout disables it.
 	DefaultProcessLimit = 8 * time.Hour
-	// DefaultPermission is passed to every member launch.
+	// DefaultPermission is the permission New stores when Setup gives none. Every member launch takes the stored one.
 	DefaultPermission = "auto"
 	// DoneGrace is how long the sender of a stopping done may run before it is killed.
 	// It is not a setting. Other running members are stopped at once.
 	DoneGrace = 30 * time.Second
 )
 
-// Config is one run invocation.
-// A Set field is false when the caller omitted that setting.
-// Omitted settings are not compared on --conversation.
-// An omitted roster continues, and a launch needs the roster passed again.
-// Timeout, MaxTurns, MaxLaunches, MaxSays, Interactive, Verbose, Permission,
-// Address, and TokenFile are settings of this process. They are not stored and
-// they are not compared.
+// Config is the settings of one run process, for New and for Continue. None of them is stored with the chat, and a
+// continuation takes its own. A Set field is false when the caller omitted that setting, which then takes its default.
+//
+// Timeout limits one member process. Zero with TimeoutSet means no limit, and a negative one is refused.
 //
 // MaxSays is each member's discussion launches per finding. When the speaker
 // order finds nobody and the finding has not settled, the acting seat decides.
@@ -42,24 +39,12 @@ const (
 // MaxLaunches counts every member process this process starts, of any kind.
 // At the cap, and when a member failure leaves fewer live members than the
 // task's min_members, run starts no further launch, lets running members
-// finish, and returns an error with the conversation open. A stopping done
+// finish, and returns an error with the chat open. A stopping done
 // still closes it.
+//
+// Address and TokenFile name the bus. Each member process gets HOTSEAT_ADDRESS and, when TokenFile is set,
+// HOTSEAT_TOKEN_FILE as its absolute path against Dir.
 type Config struct {
-	Task    string
-	TaskSet bool
-
-	Agents    string
-	AgentsSet bool
-
-	Seat    string
-	SeatSet bool
-
-	Prompts    string
-	PromptsSet bool
-
-	Instructions    string
-	InstructionsSet bool
-
 	Timeout    time.Duration
 	TimeoutSet bool
 
@@ -72,40 +57,40 @@ type Config struct {
 	MaxSays    int
 	MaxSaysSet bool
 
-	Interactive    bool
-	InteractiveSet bool
-
 	// Verbose writes one event line per engine event to stderr, and forwards a
 	// successful start or tk call's stderr with each line prefixed by the tool name.
 	Verbose bool
 
-	Ticket    string
-	TicketSet bool
-
-	Conversation    string
-	ConversationSet bool
-
-	Address       string
-	TokenFile     string
-	TokenFileSet  bool
-	Permission    string
-	PermissionSet bool
+	Address      string
+	TokenFile    string
+	TokenFileSet bool
 
 	// Dir is the directory run was started in.
 	Dir string
 	// StartBin and TkBin are the programs to exec. Empty means start and tk.
 	StartBin string
 	TkBin    string
-	// Random mints conversation codes. Nil uses crypto/rand.
+	// Random mints chat codes. Nil uses crypto/rand.
 	Random io.Reader
 	// Clock reads the time elapsed is measured on. Nil uses time.Now.
 	Clock func() time.Time
 }
 
+// Setup is what New stores with the chat it creates, and what Continue launches from.
+// Agents is a space-separated roster of name=module:model and is required, as is Task.
+// An empty Seat is the first roster name in ASCII byte order, and an empty Permission is DefaultPermission.
+// Ticket, Prompts, and Instructions may be empty.
+type Setup struct {
+	Task         string
+	Agents       string
+	Seat         string
+	Ticket       string
+	Prompts      string
+	Instructions string
+	Permission   string
+}
+
 func (c Config) timeout() time.Duration {
-	if c.Interactive {
-		return 0
-	}
 	if c.TimeoutSet {
 		return c.Timeout
 	}
@@ -131,11 +116,4 @@ func (c Config) maxSays() int {
 		return c.MaxSays
 	}
 	return DefaultMaxSays
-}
-
-func (c Config) permission() string {
-	if c.PermissionSet || c.Permission != "" {
-		return c.Permission
-	}
-	return DefaultPermission
 }

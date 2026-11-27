@@ -70,3 +70,34 @@ func nullSeq(p *int64) any {
 	}
 	return *p
 }
+
+// wireRoster is one stored roster element.
+type wireRoster struct {
+	Name   string `json:"name"`
+	Module string `json:"module"`
+	Model  string `json:"model"`
+}
+
+func marshalRoster(roster []RosterEntry) (string, error) {
+	out := make([]wireRoster, len(roster))
+	for i, r := range roster {
+		out[i] = wireRoster(r)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func unmarshalRoster(raw string) ([]RosterEntry, error) {
+	var in []wireRoster
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		return nil, err
+	}
+	out := make([]RosterEntry, len(in))
+	for i, r := range in {
+		out[i] = RosterEntry(r)
+	}
+	return out, nil
+}

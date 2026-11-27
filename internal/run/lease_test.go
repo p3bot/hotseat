@@ -46,46 +46,46 @@ func (c *busClock) advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// leaseHeld reports whether conv has a live lease.
-func (h *harness) leaseHeld(conv string) bool {
+// leaseHeld reports whether the chat name has a live lease.
+func (h *harness) leaseHeld(name string) bool {
 	h.t.Helper()
-	res := h.leaseAs(conv, bus.LeaseGet, "")
+	res := h.leaseAs(name, bus.LeaseGet, "")
 	if res.Held == nil {
-		h.t.Fatalf("get %s: %+v", conv, res)
+		h.t.Fatalf("get %s: %+v", name, res)
 	}
 	return *res.Held
 }
 
-// awaitRenewed waits until conv's lease expires one time to live after the bus clock's now.
-func (h *harness) awaitRenewed(conv string, clock *busClock) {
+// awaitRenewed waits until the chat name's lease expires one time to live after the bus clock's now.
+func (h *harness) awaitRenewed(name string, clock *busClock) {
 	h.t.Helper()
 	want := clock.read().Add(bus.LeaseTTL).UTC().Format(time.RFC3339Nano)
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if res := h.leaseAs(conv, bus.LeaseGet, ""); res.Expires == want {
+		if res := h.leaseAs(name, bus.LeaseGet, ""); res.Expires == want {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	h.t.Fatalf("lease on %s was not renewed", conv)
+	h.t.Fatalf("lease on %s was not renewed", name)
 }
 
-// awaitClosed waits until conv is closed.
-func (h *harness) awaitClosed(conv string) {
+// awaitClosed waits until the chat name is closed.
+func (h *harness) awaitClosed(name string) {
 	h.t.Helper()
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if c, _ := h.conv(conv); c.Status == "closed" {
+		if c, _ := h.chat(name); c.Status == "closed" {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	h.t.Fatalf("%s did not close", conv)
+	h.t.Fatalf("%s did not close", name)
 }
 
-func (h *harness) noRecords(conv string) {
+func (h *harness) noRecords(name string) {
 	h.t.Helper()
-	r := h.recordsOf(conv)
+	r := h.recordsOf(name)
 	if len(r.sets)+len(r.groupings)+len(r.settles)+len(r.fixes)+len(r.halts) != 0 {
 		h.t.Fatalf("records %+v", r)
 	}
@@ -93,7 +93,7 @@ func (h *harness) noRecords(conv string) {
 
 func TestSecondRunAgainstALiveConductorWaitsOnceThenIsRefusedAndActsOnNothing(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation("alpha", "bravo")
+	h.keptChat("alpha", "bravo")
 	if res := h.leaseAs("kept", bus.LeaseAcquire, "live"); res.Outcome != bus.OutcomeOK {
 		t.Fatal(res.Reason)
 	}
@@ -105,7 +105,7 @@ func TestSecondRunAgainstALiveConductorWaitsOnceThenIsRefusedAndActsOnNothing(t 
 		return nil
 	}
 	before := len(h.messages("kept"))
-	out, _, err := h.runBounded(h.continueKept(agentsOf("alpha", "bravo")))
+	out, _, err := h.runBounded(h.continueKept())
 	if err == nil || !strings.Contains(err.Error(), bus.ReasonConductorHeld) {
 		t.Fatalf("err %v", err)
 	}
@@ -133,7 +133,7 @@ func TestSecondRunAgainstALiveConductorWaitsOnceThenIsRefusedAndActsOnNothing(t 
 
 func TestSignalDuringTheHeldLeaseWaitStopsTheRunWithNothingDone(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation("alpha", "bravo")
+	h.keptChat("alpha", "bravo")
 	if res := h.leaseAs("kept", bus.LeaseAcquire, "live"); res.Outcome != bus.OutcomeOK {
 		t.Fatal(res.Reason)
 	}
@@ -144,7 +144,7 @@ func TestSignalDuringTheHeldLeaseWaitStopsTheRunWithNothingDone(t *testing.T) {
 	}
 	cctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch := h.goRun(cctx, h.continueKept(agentsOf("alpha", "bravo")))
+	ch := h.goRun(cctx, h.continueKept())
 	select {
 	case <-waiting:
 	case res := <-ch:
@@ -169,8 +169,8 @@ func TestSignalDuringTheHeldLeaseWaitStopsTheRunWithNothingDone(t *testing.T) {
 func TestRunAcquiresOnceADeadConductorsLeaseRunsOut(t *testing.T) {
 	clock := newBusClock()
 	h := newHarnessClock(t, clock.read)
-	h.keptConversation("alpha", "bravo")
-	h.publish("kept", "alpha", kindDone, "finished", nil)
+	h.keptChat("alpha", "bravo")
+	h.send("kept", "alpha", kindDone, "finished", nil)
 	if res := h.leaseAs("kept", bus.LeaseAcquire, "killed-run"); res.Outcome != bus.OutcomeOK {
 		t.Fatal(res.Reason)
 	}
@@ -180,7 +180,7 @@ func TestRunAcquiresOnceADeadConductorsLeaseRunsOut(t *testing.T) {
 		clock.advance(d)
 		return nil
 	}
-	out, stderr, err := h.runBounded(h.continueKept(agentsOf("alpha", "bravo")))
+	out, stderr, err := h.runBounded(h.continueKept())
 	if err != nil {
 		t.Fatal(err, stderr)
 	}
@@ -190,8 +190,8 @@ func TestRunAcquiresOnceADeadConductorsLeaseRunsOut(t *testing.T) {
 	if out.outcome() != "done" {
 		t.Fatalf("out %s", out)
 	}
-	if conv, _ := h.conv("kept"); conv.Status != "closed" {
-		t.Fatalf("status %s", conv.Status)
+	if chat, _ := h.chat("kept"); chat.Status != "closed" {
+		t.Fatalf("status %s", chat.Status)
 	}
 	if h.leaseHeld("kept") {
 		t.Fatal("the run left its lease")
@@ -201,7 +201,7 @@ func TestRunAcquiresOnceADeadConductorsLeaseRunsOut(t *testing.T) {
 func TestCreatedRunHoldsTheLeaseUntilItExits(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
@@ -214,7 +214,7 @@ func TestCreatedRunHoldsTheLeaseUntilItExits(t *testing.T) {
 	if res := h.leaseAs(name, bus.LeaseAcquire, "second"); res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonConductorHeld {
 		t.Fatalf("second acquire %+v", res)
 	}
-	h.publish(name, "alpha", kindDone, "finished", nil)
+	h.send(name, "alpha", kindDone, "finished", nil)
 	h.release("alpha")
 	res := h.awaitRun(ch, 10*time.Second)
 	if res.err != nil {
@@ -226,9 +226,9 @@ func TestCreatedRunHoldsTheLeaseUntilItExits(t *testing.T) {
 }
 
 // memberPID is name's stored pid. The test fails when there is none.
-func (h *harness) memberPID(conv, name string) int {
+func (h *harness) memberPID(chat, name string) int {
 	h.t.Helper()
-	row := h.member(conv, name)
+	row := h.member(chat, name)
 	if row.PID == nil {
 		h.t.Fatalf("%s has no pid", name)
 	}
@@ -291,13 +291,9 @@ func (h *harness) await(ch <-chan struct{}, what string) {
 	}
 }
 
-// continueVia is cfg continuing conversation name with the base roster and seat, through the bus at addr.
-func (h *harness) continueVia(name, addr string) Config {
-	cfg := h.base()
-	cfg.Conversation = name
-	cfg.ConversationSet = true
-	cfg.TaskSet = false
-	cfg.TicketSet = false
+// continueVia continues chat name from what it stores, through the bus at addr.
+func (h *harness) continueVia(name, addr string) runArgs {
+	cfg := h.continuing(name)
 	cfg.Address = addr
 	return cfg
 }
@@ -307,7 +303,7 @@ func TestRunThatLosesItsLeaseLeavesItsMemberRunningAndTheNextHolderRecordsIt(t *
 	h := newHarnessClock(t, clock.read)
 	h.plan.Launch = map[string]runFile{"bravo": {Join: true}}
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	firstAddr, refused := h.refusedRenewTap()
 	cfg.Address = firstAddr
 	h.hold("alpha")
@@ -362,7 +358,7 @@ func TestRelaunchedMemberOutlivesTwoLostLeasesAndTheThirdHolderRecordsItsExit(t 
 		on(promptTurn, withRe(says(kindSay, "bravo"), "$re")),
 	}}}
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cctx, cancel := ctx()
 	defer cancel()
 	first := h.goRun(cctx, cfg)
@@ -371,7 +367,7 @@ func TestRelaunchedMemberOutlivesTwoLostLeasesAndTheThirdHolderRecordsItsExit(t 
 	h.awaitStatus(name, "bravo", statusExited)
 	boot := h.memberPID(name, "alpha")
 	h.hold("alpha")
-	h.publish(name, "bravo", kindTurn, "mode: parallel\nreview", []string{"alpha"})
+	h.send(name, "bravo", kindTurn, "mode: parallel\nreview", []string{"alpha"})
 	h.awaitStatus(name, "alpha", statusRunning)
 	pid := h.memberPID(name, "alpha")
 	if pid == boot {
@@ -408,7 +404,7 @@ func TestRelaunchedMemberOutlivesTwoLostLeasesAndTheThirdHolderRecordsItsExit(t 
 	if n := countBody(h.messages(name), classProcessExit); n != 0 {
 		t.Fatalf("an adopted relaunch was recorded as a process exit\n%+v", h.messages(name))
 	}
-	h.publish(name, "alpha", kindDone, "finished", nil)
+	h.send(name, "alpha", kindDone, "finished", nil)
 	got := h.awaitRun(third, 8*time.Second)
 	if got.err != nil {
 		t.Fatal(got.err, got.stderr)
@@ -428,7 +424,7 @@ func TestRelaunchedMemberOutlivesTwoLostLeasesAndTheThirdHolderRecordsItsExit(t 
 func TestContinuationAdoptsARelaunchAKilledRunLeftAndRecordsItExited(t *testing.T) {
 	// A bus clock an hour behind the host matches no host start time against a stored launch time.
 	h := newHarnessClock(t, func() time.Time { return time.Now().Add(-time.Hour) })
-	h.keptConversation("alpha", "bravo")
+	h.keptChat("alpha", "bravo")
 	h.setMember("kept", "alpha", statusLaunched, nil)
 	h.setMember("kept", "alpha", statusExited, nil)
 	h.setSession("kept", "alpha", "sess-alpha")
@@ -469,7 +465,7 @@ func TestContinuationAdoptsARelaunchAKilledRunLeftAndRecordsItExited(t *testing.
 	if n := countBody(h.messages("kept"), classProcessExit); n != 0 {
 		t.Fatalf("msgs %+v", h.messages("kept"))
 	}
-	h.publish("kept", "alpha", kindDone, "finished", nil)
+	h.send("kept", "alpha", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
@@ -487,7 +483,7 @@ func TestSignalWhileARunWaitsOnALostLeaseKillsItsLaunchedMembers(t *testing.T) {
 	clock := newBusClock()
 	h := newHarnessClock(t, clock.read)
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	addr, refused := h.refusedRenewTap()
 	cfg.Address = addr
 	h.hold("alpha")
@@ -523,7 +519,7 @@ func TestRefusedConductorWriteStopsARunThatMissedItsRenewals(t *testing.T) {
 	h := newHarnessClock(t, clock.read)
 	h.pace.renew = time.Hour
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
@@ -547,7 +543,7 @@ func TestDoneSenderExitingAfterTheTimeToLiveStillEndsDoneAndReleases(t *testing.
 	clock := newBusClock()
 	h := newHarnessClock(t, clock.read)
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.pace.grace = 10 * time.Second
 	h.hold("alpha")
 	cctx, cancel := ctx()
@@ -555,7 +551,7 @@ func TestDoneSenderExitingAfterTheTimeToLiveStillEndsDoneAndReleases(t *testing.
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
 	h.awaitStatus(name, "alpha", statusLaunched)
-	h.publish(name, "alpha", kindDone, "finished", nil)
+	h.send(name, "alpha", kindDone, "finished", nil)
 	h.awaitClosed(name)
 	for range 3 {
 		clock.advance(bus.LeaseTTL / 2)
@@ -584,14 +580,14 @@ func TestLeaseLostDuringTheDoneGraceEndsWithErrorNotDone(t *testing.T) {
 	h.pace.renew = time.Hour
 	h.pace.grace = 10 * time.Second
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
 	h.awaitStatus(name, "alpha", statusLaunched)
-	done := h.publish(name, "alpha", kindDone, "finished", nil)
+	done := h.send(name, "alpha", kindDone, "finished", nil)
 	h.awaitClosed(name)
 	clock.advance(bus.LeaseTTL)
 	h.release("alpha")
@@ -641,14 +637,14 @@ func TestHolderIsSentOnEveryConductorWriteAndStaysOffPromptsOutputAndTranscript(
 		return false
 	})
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cfg.Address = addr
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
 	h.awaitStatus(name, "alpha", statusExited)
-	h.publish(name, "alpha", kindDone, "finished", nil)
+	h.send(name, "alpha", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 10*time.Second)
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)

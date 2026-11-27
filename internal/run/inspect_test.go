@@ -23,11 +23,11 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
-func (h *harness) status(conv string) Status {
+func (h *harness) status(name string) Status {
 	h.t.Helper()
-	st, err := ReadStatus(context.Background(), h.addr, "", conv)
+	st, err := ReadStatus(context.Background(), h.addr, "", name)
 	if err != nil {
-		h.t.Fatalf("status %s: %v", conv, err)
+		h.t.Fatalf("status %s: %v", name, err)
 	}
 	return st
 }
@@ -35,12 +35,12 @@ func (h *harness) status(conv string) Status {
 func TestStatusStopResultEqualsTheStopResultRunPrinted(t *testing.T) {
 	cases := []struct {
 		name    string
-		setup   func(h *harness) Config
+		setup   func(h *harness) runArgs
 		outcome string
 	}{
 		{
 			name: "done",
-			setup: func(h *harness) Config {
+			setup: func(h *harness) runArgs {
 				bravoFinds(h, abcRoster...)
 				finishes(h)
 				return h.team("alpha", abcRoster...)
@@ -49,7 +49,7 @@ func TestStatusStopResultEqualsTheStopResultRunPrinted(t *testing.T) {
 		},
 		{
 			name: "deadlock",
-			setup: func(h *harness) Config {
+			setup: func(h *harness) runArgs {
 				disputed(h)
 				h.script("a3",
 					on(promptStall, says(kindDeadlock, "a1", "a2", "a3", "owner")),
@@ -63,7 +63,7 @@ func TestStatusStopResultEqualsTheStopResultRunPrinted(t *testing.T) {
 		},
 		{
 			name: "unsettled",
-			setup: func(h *harness) Config {
+			setup: func(h *harness) runArgs {
 				earlyDone(h)
 				return h.team("alpha", "alpha", "bravo")
 			},
@@ -71,7 +71,7 @@ func TestStatusStopResultEqualsTheStopResultRunPrinted(t *testing.T) {
 		},
 		{
 			name: "unfixed",
-			setup: func(h *harness) Config {
+			setup: func(h *harness) runArgs {
 				h.review("alpha", "bravo")
 				h.script("bravo", on(promptTurn, says(kindFinding, "alpha", "bravo"), says(kindSay, "alpha")), on(promptFix))
 				h.script("alpha", on(promptDiscussion, says(kindAgree, "alpha", "bravo")), on(promptFix, says(kindDone, "owner")))
@@ -108,14 +108,14 @@ func TestStatusStopResultEqualsTheStopResultRunPrinted(t *testing.T) {
 
 func TestStatusReportsTheRecordedDoneAfterTheBackupThatPostedItTimesOut(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation("alpha", "bravo")
+	h.keptChat("alpha", "bravo")
 	h.setMember("kept", "alpha", statusLaunched, nil)
 	h.setMember("kept", "alpha", statusTimedOut, nil)
 	h.setMember("kept", "bravo", statusLaunched, nil)
 	h.do("join", client.JoinRequest{Chat: "kept", Name: "bravo"})
 	h.setMember("kept", "bravo", statusExited, nil)
-	done := h.publish("kept", "bravo", kindDone, "yes", []string{"owner"})
-	out, _, err := h.runBounded(h.continueKept(""))
+	done := h.send("kept", "bravo", kindDone, "yes", []string{"owner"})
+	out, _, err := h.runBounded(h.continueKept())
 	if err != nil || out.outcome() != "done" {
 		t.Fatalf("err %v\n%s", err, out)
 	}
@@ -135,7 +135,7 @@ func TestStatusReportsTheRecordedDoneAfterTheBackupThatPostedItTimesOut(t *testi
 func TestStatusIsRunningWhileTheLeaseIsHeldThenIdleWithTheStopErrorOfTheRun(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cfg.MaxTurns, cfg.MaxTurnsSet = 1, true
 	cctx, cancel := ctx()
 	defer cancel()
@@ -153,8 +153,8 @@ func TestStatusIsRunningWhileTheLeaseIsHeldThenIdleWithTheStopErrorOfTheRun(t *t
 	if st.State != StateRunning || st.Since == "" || st.Expires == "" || st.Stop != nil || st.StopError != nil {
 		t.Fatalf("running %+v", st)
 	}
-	h.publish(name, "alpha", kindTurn, "nope", nil)
-	h.publish(name, "alpha", kindTurn, "again", nil)
+	h.send(name, "alpha", kindTurn, "nope", nil)
+	h.send(name, "alpha", kindTurn, "again", nil)
 	if err := <-errCh; err == nil || !strings.Contains(err.Error(), classTurnCap) {
 		t.Fatal(err)
 	}
@@ -176,8 +176,8 @@ func TestStatusIsRunningWhileTheLeaseIsHeldThenIdleWithTheStopErrorOfTheRun(t *t
 
 func TestStatusIsClosedOnlyWhenNoConductorHoldsTheLease(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation(abcRoster...)
-	if st := h.status("kept"); st.State != StateIdle || st.Binding.Name != "kept" || st.Binding.Seat != "alpha" || !slices.Equal(st.Binding.Roster, abcRoster) {
+	h.keptChat(abcRoster...)
+	if st := h.status("kept"); st.State != StateIdle || st.Binding.Name != "kept" || st.Binding.Seat != "alpha" || !slices.Equal(st.Binding.Roster, seeded(abcRoster...)) {
 		t.Fatalf("open %+v", st)
 	}
 	if res := h.do("close", client.CloseRequest{Chat: "kept"}); res.Outcome != bus.OutcomeOK {
@@ -194,13 +194,13 @@ func TestStatusIsClosedOnlyWhenNoConductorHoldsTheLease(t *testing.T) {
 
 func TestStatusCountsFindingsFromTheWholeLedgerAndNamesTheOneBeingWorkedOn(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation(abcRoster...)
-	turn := h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
-	f1 := h.publish("kept", "bravo", kindFinding, "one", abcRoster)
-	f2 := h.publish("kept", "charlie", kindFinding, "two", abcRoster)
-	dup := h.publish("kept", "charlie", kindFinding, "one again", abcRoster)
-	h.publish("kept", "bravo", kindSay, "found", []string{"alpha"})
-	h.publish("kept", "charlie", kindSay, "found", []string{"alpha"})
+	h.keptChat(abcRoster...)
+	turn := h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
+	f1 := h.send("kept", "bravo", kindFinding, "one", abcRoster)
+	f2 := h.send("kept", "charlie", kindFinding, "two", abcRoster)
+	dup := h.send("kept", "charlie", kindFinding, "one again", abcRoster)
+	h.send("kept", "bravo", kindSay, "found", []string{"alpha"})
+	h.send("kept", "charlie", kindSay, "found", []string{"alpha"})
 	h.closed(turn, f1, f2, dup)
 	h.record("kept", client.GroupingRecord{Chat: "kept", Turn: turn.Seq, Drops: []client.Drop{{Finding: dup.Seq, Kept: f1.Seq}}})
 	h.engineLease("kept")
@@ -221,7 +221,7 @@ func TestStatusCountsFindingsFromTheWholeLedgerAndNamesTheOneBeingWorkedOn(t *te
 	check("grouped", counts{2, 0, 0, 1}, f1.Seq)
 	h.settledOn(f1)
 	check("settled change awaiting its fixed", counts{2, 1, 0, 1}, f1.Seq)
-	fixed := h.publishRe("kept", "bravo", kindFixed, kindFixed, abcRoster, f1.Seq)
+	fixed := h.sendRe("kept", "bravo", kindFixed, kindFixed, abcRoster, f1.Seq)
 	check("fixed", counts{2, 1, 1, 1}, f2.Seq)
 	if st := h.status("kept"); st.Newest != fixed.Seq {
 		t.Fatalf("newest %d, want %d", st.Newest, fixed.Seq)
@@ -232,12 +232,12 @@ func TestStatusCountsFindingsFromTheWholeLedgerAndNamesTheOneBeingWorkedOn(t *te
 
 func TestStatusNamesNoFindingAfterAHaltOnAnEarlierOne(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation(abcRoster...)
-	turn := h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
-	f1 := h.publish("kept", "bravo", kindFinding, "one", abcRoster)
-	f2 := h.publish("kept", "charlie", kindFinding, "two", abcRoster)
-	h.publish("kept", "bravo", kindSay, "found", []string{"alpha"})
-	h.publish("kept", "charlie", kindSay, "found", []string{"alpha"})
+	h.keptChat(abcRoster...)
+	turn := h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
+	f1 := h.send("kept", "bravo", kindFinding, "one", abcRoster)
+	f2 := h.send("kept", "charlie", kindFinding, "two", abcRoster)
+	h.send("kept", "bravo", kindSay, "found", []string{"alpha"})
+	h.send("kept", "charlie", kindSay, "found", []string{"alpha"})
 	h.closed(turn, f1, f2)
 	h.record("kept", client.GroupingRecord{Chat: "kept", Turn: turn.Seq})
 	h.engineLease("kept")
@@ -252,15 +252,15 @@ func TestStatusNamesNoFindingAfterAHaltOnAnEarlierOne(t *testing.T) {
 
 func TestStatusCountsADismissalAsSettledAndNeverFixed(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation(abcRoster...)
-	turn := h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
-	f := h.publish("kept", "bravo", kindFinding, "one", abcRoster)
-	h.publish("kept", "bravo", kindSay, "found", []string{"alpha"})
+	h.keptChat(abcRoster...)
+	turn := h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
+	f := h.send("kept", "bravo", kindFinding, "one", abcRoster)
+	h.send("kept", "bravo", kindSay, "found", []string{"alpha"})
 	h.closed(turn, f)
 	h.record("kept", client.GroupingRecord{Chat: "kept", Turn: turn.Seq})
-	dismiss := h.publishRe("kept", "charlie", kindDismiss, kindDismiss, abcRoster, f.Seq)
+	dismiss := h.sendRe("kept", "charlie", kindDismiss, kindDismiss, abcRoster, f.Seq)
 	h.record("kept", client.SettleRecord{Chat: "kept", Finding: f.Seq, Proposal: dismiss.Seq, ProposalKind: kindDismiss})
-	h.publishRe("kept", "bravo", kindFixed, kindFixed, abcRoster, f.Seq)
+	h.sendRe("kept", "bravo", kindFixed, kindFixed, abcRoster, f.Seq)
 	h.engineLease("kept")
 	st := h.status("kept")
 	if st.Findings != 1 || st.Settled != 1 || st.Fixed != 0 || st.Discussing != nil {
@@ -270,7 +270,7 @@ func TestStatusCountsADismissalAsSettledAndNeverFixed(t *testing.T) {
 
 func TestStatusShowsOnlyAStopErrorNewerThanTheRecordedDone(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation(abcRoster...)
+	h.keptChat(abcRoster...)
 	stopError := func(class string) client.Message {
 		t.Helper()
 		res := h.do("send", client.SendRequest{Chat: "kept", From: fromRun, To: []string{fromOwner}, Body: class, TxID: class, Kind: kindError})
@@ -283,20 +283,20 @@ func TestStatusShowsOnlyAStopErrorNewerThanTheRecordedDone(t *testing.T) {
 	if st := h.status("kept"); st.StopError == nil || *st.StopError != (StopError{Class: stopBus, Seq: older.Seq}) {
 		t.Fatalf("no stop record: %+v", st.StopError)
 	}
-	done := h.publish("kept", "alpha", kindDone, "done", []string{"owner"})
+	done := h.send("kept", "alpha", kindDone, "done", []string{"owner"})
 	h.record("kept", client.StopRecord{Chat: "kept", Done: done.Seq})
 	st := h.status("kept")
 	if st.StopError != nil || st.Stop == nil || st.Stop.Done != done.Seq || st.Stop.Outcome != outcomeDone {
 		t.Fatalf("older than the done: stop %+v stop error %+v", st.Stop, st.StopError)
 	}
-	h.publish("kept", "alpha", kindError, stopSignal, []string{"owner"})
+	h.send("kept", "alpha", kindError, stopSignal, []string{"owner"})
 	newer := stopError(stopSignal)
 	if st := h.status("kept"); st.StopError == nil || *st.StopError != (StopError{Class: stopSignal, Seq: newer.Seq}) || st.Newest != newer.Seq {
 		t.Fatalf("newer than the done: %+v newest %d", st.StopError, st.Newest)
 	}
 }
 
-func TestStatusOfAMissingConversationIsTheRefusalOfItsFirstRead(t *testing.T) {
+func TestStatusOfAMissingChatIsTheRefusalOfItsFirstRead(t *testing.T) {
 	h := newHarness(t)
 	var mu sync.Mutex
 	var paths []string

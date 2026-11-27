@@ -31,10 +31,10 @@ func stopErrors(msgs []client.Message) []client.Message {
 	return out
 }
 
-// wantStopError fails unless conv holds exactly one stop error, from run to owner, whose body is class and whose re is re, or none for zero.
-func (h *harness) wantStopError(conv, class string, re int64) {
+// wantStopError fails unless the chat name holds exactly one stop error, from run to owner, whose body is class and whose re is re, or none for zero.
+func (h *harness) wantStopError(name, class string, re int64) {
 	h.t.Helper()
-	got := stopErrors(h.messages(conv))
+	got := stopErrors(h.messages(name))
 	if len(got) != 1 {
 		h.t.Fatalf("stop errors %+v, want one %q", got, class)
 	}
@@ -50,10 +50,10 @@ func (h *harness) wantStopError(conv, class string, re int64) {
 	}
 }
 
-// wantNoStopError fails when conv holds a stop error.
-func (h *harness) wantNoStopError(conv string) {
+// wantNoStopError fails when the chat name holds a stop error.
+func (h *harness) wantNoStopError(name string) {
 	h.t.Helper()
-	if got := stopErrors(h.messages(conv)); len(got) != 0 {
+	if got := stopErrors(h.messages(name)); len(got) != 0 {
 		h.t.Fatalf("stop errors %+v", got)
 	}
 }
@@ -72,8 +72,8 @@ func (h *harness) answerAll(path string, status int, raw string) string {
 	})
 }
 
-// handEngine is an engine on conv that has acquired its lease, built by hand so a test can feed noteHalt its causes.
-func (h *harness) handEngine(conv string) (*engine, context.CancelFunc) {
+// handEngine is an engine on the chat name that has acquired its lease, built by hand so a test can feed noteHalt its causes.
+func (h *harness) handEngine(name string) (*engine, context.CancelFunc) {
 	h.t.Helper()
 	root, signal := context.WithCancel(context.Background())
 	child, cancel := context.WithCancel(root)
@@ -86,9 +86,9 @@ func (h *harness) handEngine(conv string) (*engine, context.CancelFunc) {
 		held:     held,
 		loseHeld: loseHeld,
 		addr:     h.addr,
-		holder:   h.engineLease(conv),
+		holder:   h.engineLease(name),
 		leased:   true,
-		name:     conv,
+		name:     name,
 		stderr:   io.Discard,
 		reporter: discardReporter{},
 		events:   newEventLog(nil),
@@ -117,7 +117,7 @@ func TestRefusedMemberWriteStopsItsSiblingsAtOnceAndSaysStoppedByRefusalBeforeTh
 		return false
 	})
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cfg.Address = addr
 	cctx, cancel := ctx()
 	defer cancel()
@@ -126,7 +126,7 @@ func TestRefusedMemberWriteStopsItsSiblingsAtOnceAndSaysStoppedByRefusalBeforeTh
 	h.awaitStatus(name, "alpha", statusExited)
 	h.awaitStatus(name, "bravo", statusExited)
 	h.hold("alpha")
-	h.publish(name, "alpha", kindTurn, "mode: parallel\nreview", []string{"alpha", "bravo"})
+	h.send(name, "alpha", kindTurn, "mode: parallel\nreview", []string{"alpha", "bravo"})
 	// alpha is held until the test ends, so only the run can end it.
 	res := h.awaitRun(ch, 4*time.Second)
 	if res.err == nil || !refusedFor(res.err, bus.ReasonMemberMissing) || res.out.outcome() != "error" {
@@ -151,19 +151,19 @@ func TestFailedOrUnusableStartCallAfterTheLeaseSaysStoppedByCommand(t *testing.T
 		{"call failed", func(h *harness) {
 			h.plan.BodyExit = 1
 			if res := h.do("create", client.CreateRequest{
-				Name: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha", Directory: h.dir, Roster: []string{"alpha"},
+				Name: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha", Directory: h.dir, Roster: seeded("alpha"), Permission: DefaultPermission,
 			}); res.Outcome != bus.OutcomeOK {
 				h.t.Fatal(res.Reason)
 			}
 		}},
 		{"unusable output", func(h *harness) {
 			h.plan.MinMembers = "two\n"
-			h.keptConversation("alpha")
+			h.keptChat("alpha")
 		}},
-		{"instructions too large to publish", func(h *harness) {
+		{"instructions too large to send", func(h *harness) {
 			h.plan.Body = strings.Repeat("x", bus.DefaultMaxBody+1)
 			if res := h.do("create", client.CreateRequest{
-				Name: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha", Directory: h.dir, Roster: []string{"alpha"},
+				Name: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha", Directory: h.dir, Roster: seeded("alpha"), Permission: DefaultPermission,
 			}); res.Outcome != bus.OutcomeOK {
 				h.t.Fatal(res.Reason)
 			}
@@ -173,7 +173,7 @@ func TestFailedOrUnusableStartCallAfterTheLeaseSaysStoppedByCommand(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			tc.setup(h)
-			out, stderr, err := h.runBounded(h.continueKept(""))
+			out, stderr, err := h.runBounded(h.continueKept())
 			if err == nil || out.outcome() != "error" {
 				t.Fatalf("%v\n%s\n%s", err, out, stderr)
 			}
@@ -195,7 +195,7 @@ func TestUnavailableOrUnreachableBusDuringTheWatchSaysStoppedByBus(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			cfg := h.base()
-			cfg.TicketSet = false
+			cfg.Ticket = ""
 			cfg.Address = h.answerAll(bus.PathWait, tc.status, tc.raw)
 			out, stderr, err := h.runBounded(cfg)
 			if err == nil || out.outcome() != "error" {
@@ -209,7 +209,7 @@ func TestUnavailableOrUnreachableBusDuringTheWatchSaysStoppedByBus(t *testing.T)
 func TestInconsistentBusAnswerSaysStoppedByRun(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cfg.Address = h.answerAll(bus.PathWait, http.StatusOK, `{"outcome":"ok"}`)
 	out, stderr, err := h.runBounded(cfg)
 	if err == nil || out.outcome() != "error" {
@@ -221,7 +221,7 @@ func TestInconsistentBusAnswerSaysStoppedByRun(t *testing.T) {
 func TestSignalWhileMembersRunSaysStoppedBySignalNotACancelledCall(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.hold("alpha")
 	h.hold("bravo")
 	cctx, cancel := context.WithCancel(context.Background())
@@ -240,7 +240,7 @@ func TestSignalWhileMembersRunSaysStoppedBySignalNotACancelledCall(t *testing.T)
 
 func TestLostLeaseSaysStoppedByLeaseOnceAndLaterCausesDoNotReplaceIt(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation("alpha")
+	h.keptChat("alpha")
 	e, signal := h.handEngine("kept")
 	_ = e.loseLease(bus.ReasonLeaseNotHeld)
 	refused := &busError{op: "member alpha", outcome: bus.OutcomeRefused, reason: bus.ReasonLeaseWrite}
@@ -254,7 +254,7 @@ func TestLostLeaseSaysStoppedByLeaseOnceAndLaterCausesDoNotReplaceIt(t *testing.
 
 func TestSignalBeforeAnyCauseSaysStoppedBySignalWhateverTheError(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation("alpha")
+	h.keptChat("alpha")
 	e, signal := h.handEngine("kept")
 	signal()
 	_ = e.noteHalt(&busError{op: "member alpha", outcome: bus.OutcomeRefused, reason: bus.ReasonMemberMissing})
@@ -266,7 +266,7 @@ func TestLaunchCapWindDownThatAStoppingDoneClosesSaysNoStopAndExitsZero(t *testi
 	h.pace.grace = 300 * time.Millisecond
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cfg.MaxLaunches = 2
 	cfg.MaxLaunchesSet = true
 	for _, n := range []string{"alpha", "bravo", "charlie"} {
@@ -278,7 +278,7 @@ func TestLaunchCapWindDownThatAStoppingDoneClosesSaysNoStopAndExitsZero(t *testi
 	name := h.waitName()
 	h.awaitBody(name, classLaunchCap)
 	h.stillRunning(ch)
-	h.publish(name, "alpha", kindDone, "finished", nil)
+	h.send(name, "alpha", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
 	if res.err != nil || res.out.outcome() != "done" {
 		t.Fatalf("%v\n%s\n%s", res.err, res.out, res.stderr)
@@ -292,7 +292,7 @@ func TestLaunchCapHitByABootHandoffWithNothingInFlightNamesItsStoredErrorInTheSt
 		"alpha": {Exit: 1, Sleep: "500ms"},
 		"bravo": {Join: true},
 	}
-	// A slow launch cap publish leaves the wind-down without its error for a while after nothing is in flight.
+	// A slow launch cap send leaves the wind-down without its error for a while after nothing is in flight.
 	addr := h.proxy(func(_ http.ResponseWriter, path string, body []byte) bool {
 		if path == bus.PathSend && bytes.Contains(body, []byte(`"body":"`+classLaunchCap+`"`)) {
 			time.Sleep(300 * time.Millisecond)
@@ -300,7 +300,7 @@ func TestLaunchCapHitByABootHandoffWithNothingInFlightNamesItsStoredErrorInTheSt
 		return false
 	})
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	cfg.Address = addr
 	cfg.MaxLaunches = 2
 	cfg.MaxLaunchesSet = true

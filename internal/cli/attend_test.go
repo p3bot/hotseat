@@ -41,11 +41,11 @@ func TestAttendPrintsOwnerAskErrorAndDone(t *testing.T) {
 	})
 	before := memberRows(t, ctx, addr, "job")
 
-	publishAs(t, ctx, addr, "job", "alpha", "say", []string{"owner"}, "side-remark", "say-1")
-	publishAs(t, ctx, addr, "job", "alpha", "done", []string{"bob"}, "not-for-owner", "done-bob")
-	ask := publishAs(t, ctx, addr, "job", "alpha", "ask", []string{"owner", "bravo"}, "need a decision", "ask-1")
+	sendAs(t, ctx, addr, "job", "alpha", "say", []string{"owner"}, "side-remark", "say-1")
+	sendAs(t, ctx, addr, "job", "alpha", "done", []string{"bob"}, "not-for-owner", "done-bob")
+	ask := sendAs(t, ctx, addr, "job", "alpha", "ask", []string{"owner", "bravo"}, "need a decision", "ask-1")
 
-	proc := startAttend(t, "attend", "--address", addr, "--conversation", "job")
+	proc := startAttend(t, "chat", "attend", "job", "--address", addr)
 	got := proc.waitFor(t, "need a decision")
 	if strings.Contains(got, "side-remark") || strings.Contains(got, "not-for-owner") || strings.Contains(got, "kind: say") || strings.Contains(got, "kind: done") {
 		t.Fatalf("printed the span\n%s", got)
@@ -62,8 +62,8 @@ func TestAttendPrintsOwnerAskErrorAndDone(t *testing.T) {
 		t.Fatalf("to order\n%s", got)
 	}
 
-	publishAs(t, ctx, addr, "job", "alpha", "done", []string{"bob"}, "still-not-owner", "done-bob-2")
-	publishAs(t, ctx, addr, "job", "runner", "error", []string{"owner"}, "member timed out", "err-1")
+	sendAs(t, ctx, addr, "job", "alpha", "done", []string{"bob"}, "still-not-owner", "done-bob-2")
+	sendAs(t, ctx, addr, "job", "runner", "error", []string{"owner"}, "member timed out", "err-1")
 	got = proc.waitFor(t, "member timed out")
 	if strings.Contains(got, "still-not-owner") || strings.Contains(got, "not-for-owner") || strings.Contains(got, "side-remark") {
 		t.Fatalf("printed a join\n%s", got)
@@ -73,7 +73,7 @@ func TestAttendPrintsOwnerAskErrorAndDone(t *testing.T) {
 	}
 
 	body := "all done\nnow"
-	done := publishAs(t, ctx, addr, "job", "carol", "done", []string{"owner"}, body, "done-1")
+	done := sendAs(t, ctx, addr, "job", "carol", "done", []string{"owner"}, body, "done-1")
 	out := proc.wait(t)
 	if proc.err != nil || proc.stderr.Len() != 0 {
 		t.Fatalf("exit %v stderr %s\n%s", proc.err, proc.stderr.String(), out)
@@ -104,12 +104,12 @@ func TestAttendRestartsFromZeroUnlessCursorIsSet(t *testing.T) {
 	t.Cleanup(stop)
 	ctx := context.Background()
 	create(t, ctx, addr, "job")
-	publishAs(t, ctx, addr, "job", "alpha", "say", []string{"owner"}, "say-body", "say-1")
-	ask := publishAs(t, ctx, addr, "job", "alpha", "ask", []string{"owner"}, "ask-body", "ask-1")
-	publishAs(t, ctx, addr, "job", "runner", "error", []string{"owner"}, "error-body", "err-1")
-	done := publishAs(t, ctx, addr, "job", "alpha", "done", []string{"owner"}, "done-body", "done-1")
+	sendAs(t, ctx, addr, "job", "alpha", "say", []string{"owner"}, "say-body", "say-1")
+	ask := sendAs(t, ctx, addr, "job", "alpha", "ask", []string{"owner"}, "ask-body", "ask-1")
+	sendAs(t, ctx, addr, "job", "runner", "error", []string{"owner"}, "error-body", "err-1")
+	done := sendAs(t, ctx, addr, "job", "alpha", "done", []string{"owner"}, "done-body", "done-1")
 
-	args := []string{"attend", "--address", addr, "--conversation", "job"}
+	args := []string{"chat", "attend", "job", "--address", addr}
 	first, stderr, err := runCommand(t, args...)
 	if err != nil || stderr != "" {
 		t.Fatalf("first %v %s\n%s", err, stderr, first)
@@ -121,17 +121,17 @@ func TestAttendRestartsFromZeroUnlessCursorIsSet(t *testing.T) {
 	if err != nil || stderr != "" || second != first {
 		t.Fatalf("second %v %s\n%s\n%s", err, stderr, second, first)
 	}
-	third, stderr, err := runCommand(t, "attend", "--address", addr, "--conversation", "job", "--cursor", strconv.FormatInt(ask.Seq, 10))
+	third, stderr, err := runCommand(t, "chat", "attend", "job", "--address", addr, "--cursor", strconv.FormatInt(ask.Seq, 10))
 	if err != nil || stderr != "" || strings.Contains(third, "ask-body") || strings.Contains(third, "say-body") || !strings.Contains(third, "error-body") || !strings.Contains(third, "done-body") {
 		t.Fatalf("cursor %v %s\n%s", err, stderr, third)
 	}
-	proc := startAttend(t, "attend", "--address", addr, "--conversation", "job", "--cursor", strconv.FormatInt(done.Seq, 10))
-	publishAs(t, ctx, addr, "job", "alpha", "ask", []string{"owner"}, "later-ask", "ask-2")
+	proc := startAttend(t, "chat", "attend", "job", "--address", addr, "--cursor", strconv.FormatInt(done.Seq, 10))
+	sendAs(t, ctx, addr, "job", "alpha", "ask", []string{"owner"}, "later-ask", "ask-2")
 	later := proc.waitFor(t, "later-ask")
 	if strings.Contains(later, "done-body") || strings.Contains(later, "ask-body") || strings.Contains(later, "error-body") || strings.Contains(later, "say-body") {
 		t.Fatalf("cursor reprinted\n%s", later)
 	}
-	publishAs(t, ctx, addr, "job", "alpha", "done", []string{"owner"}, "later-done", "done-2")
+	sendAs(t, ctx, addr, "job", "alpha", "done", []string{"owner"}, "later-done", "done-2")
 	out := proc.wait(t)
 	if proc.err != nil || strings.Contains(out, "done-body") || !strings.Contains(out, "later-done") {
 		t.Fatalf("later %v\n%s", proc.err, out)
@@ -144,8 +144,8 @@ func TestAttendDoneToAllExitsZero(t *testing.T) {
 	t.Cleanup(stop)
 	ctx := context.Background()
 	create(t, ctx, addr, "job")
-	publishAs(t, ctx, addr, "job", "alpha", "done", []string{"all"}, "broadcast-done", "d1")
-	out, stderr, err := runCommand(t, "attend", "--address", addr, "--conversation", "job")
+	sendAs(t, ctx, addr, "job", "alpha", "done", []string{"all"}, "broadcast-done", "d1")
+	out, stderr, err := runCommand(t, "chat", "attend", "job", "--address", addr)
 	if err != nil || stderr != "" || !strings.Contains(out, "kind: done\n") || !strings.Contains(out, "to: all\n") || !strings.Contains(out, "broadcast-done") {
 		t.Fatalf("err %v stderr %s\n%s", err, stderr, out)
 	}
@@ -175,16 +175,15 @@ func TestAttendUsagePrintsNoStdout(t *testing.T) {
 	}()
 	addr := ln.Addr().String()
 	var stdout, stderr bytes.Buffer
-	err = execute(context.Background(), []string{"attend", "--address", addr}, &stdout, &stderr)
-	if err == nil || stdout.Len() != 0 || !strings.Contains(err.Error(), "conversation") {
+	err = execute(context.Background(), []string{"chat", "attend", "--address", addr}, &stdout, &stderr)
+	if err == nil || stdout.Len() != 0 || !strings.Contains(err.Error(), "<name>") {
 		t.Fatalf("err %v stdout %q stderr %q", err, stdout.String(), stderr.String())
 	}
-	t.Setenv("HOTSEAT_CONVERSATION", "job")
 	stdout.Reset()
 	stderr.Reset()
-	err = execute(context.Background(), []string{"attend", "--address", addr, "--conversation", ""}, &stdout, &stderr)
-	if err == nil || stdout.Len() != 0 || !strings.Contains(err.Error(), "conversation") {
-		t.Fatalf("empty flag err %v stdout %q stderr %q", err, stdout.String(), stderr.String())
+	err = execute(context.Background(), []string{"chat", "attend", "", "--address", addr}, &stdout, &stderr)
+	if err == nil || stdout.Len() != 0 || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty name err %v stdout %q stderr %q", err, stdout.String(), stderr.String())
 	}
 	select {
 	case <-accepted:
@@ -197,29 +196,28 @@ func TestAttendRefusedWaitExitsNonZero(t *testing.T) {
 	isolateAttend(t)
 	addr, stop := startBus(t)
 	t.Cleanup(stop)
-	stdout, stderr, err := runCommand(t, "attend", "--address", addr, "--conversation", "missing")
-	if !ReportedFailure(err) || stderr != "" || !strings.Contains(stdout, "outcome: refused\n") || !strings.Contains(stdout, "reason: "+bus.ReasonNotFound+"\n") {
+	stdout, stderr, err := runCommand(t, "chat", "attend", "missing", "--address", addr)
+	if code, ok := ReportedExit(err); !ok || code != ExitRefused || stderr != "" || !strings.Contains(stdout, "outcome: refused\n") || !strings.Contains(stdout, "reason: "+bus.ReasonNotFound+"\n") {
 		t.Fatalf("err %v stderr %q\n%s", err, stderr, stdout)
 	}
 }
 
-func TestAttendEnvSelectsConversationAndAddress(t *testing.T) {
+func TestAttendAddressFlagWinsOverTheVariable(t *testing.T) {
 	isolateAttend(t)
 	addr, stop := startBus(t)
 	t.Cleanup(stop)
 	ctx := context.Background()
 	create(t, ctx, addr, "job")
 	create(t, ctx, addr, "other")
-	publishAs(t, ctx, addr, "job", "alpha", "done", []string{"owner"}, "from-job", "j1")
-	publishAs(t, ctx, addr, "other", "alpha", "done", []string{"owner"}, "from-other", "o1")
+	sendAs(t, ctx, addr, "job", "alpha", "done", []string{"owner"}, "from-job", "j1")
+	sendAs(t, ctx, addr, "other", "alpha", "done", []string{"owner"}, "from-other", "o1")
 
-	t.Setenv("HOTSEAT_CONVERSATION", "other")
 	t.Setenv("HOTSEAT_ADDRESS", addr)
-	out, stderr, err := runCommand(t, "attend")
+	out, stderr, err := runCommand(t, "chat", "attend", "other")
 	if err != nil || stderr != "" || !strings.Contains(out, "from-other") || strings.Contains(out, "from-job") {
 		t.Fatalf("env %v %s\n%s", err, stderr, out)
 	}
-	out, stderr, err = runCommand(t, "attend", "--conversation", "job")
+	out, stderr, err = runCommand(t, "chat", "attend", "job")
 	if err != nil || stderr != "" || !strings.Contains(out, "from-job") || strings.Contains(out, "from-other") {
 		t.Fatalf("flag %v %s\n%s", err, stderr, out)
 	}
@@ -232,7 +230,7 @@ func TestAttendEnvSelectsConversationAndAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOTSEAT_ADDRESS", closed)
-	out, stderr, err = runCommand(t, "attend", "--address", addr, "--conversation", "job")
+	out, stderr, err = runCommand(t, "chat", "attend", "job", "--address", addr)
 	if err != nil || stderr != "" || !strings.Contains(out, "from-job") || strings.Contains(out, "connection_failure") {
 		t.Fatalf("address flag %v %s\n%s", err, stderr, out)
 	}
@@ -249,12 +247,11 @@ func TestAttendTokenIsNotPrinted(t *testing.T) {
 	t.Cleanup(stop)
 	ctx := context.Background()
 	create(t, ctx, addr, "job")
-	publishAs(t, ctx, addr, "job", "alpha", "ask", []string{"owner"}, "ask-body", "a1")
-	publishAs(t, ctx, addr, "job", "alpha", "done", []string{"owner"}, "done-body", "d1")
+	sendAs(t, ctx, addr, "job", "alpha", "ask", []string{"owner"}, "ask-body", "a1")
+	sendAs(t, ctx, addr, "job", "alpha", "done", []string{"owner"}, "done-body", "d1")
 	t.Setenv("HOTSEAT_TOKEN_FILE", path)
-	t.Setenv("HOTSEAT_CONVERSATION", "job")
 	t.Setenv("HOTSEAT_ADDRESS", addr)
-	out, stderr, err := runCommand(t, "attend")
+	out, stderr, err := runCommand(t, "chat", "attend", "job")
 	if err != nil || stderr != "" || strings.Contains(out+stderr, token) || !strings.Contains(out, "ask-body") {
 		t.Fatalf("env token %v %s\n%s", err, stderr, out)
 	}
@@ -266,15 +263,14 @@ func TestAttendTokenIsNotPrinted(t *testing.T) {
 	if err := ln.Close(); err != nil {
 		t.Fatal(err)
 	}
-	out, stderr, err = runCommand(t, "attend", "--address", closed, "--conversation", "job", "--token-file", path)
-	if !ReportedFailure(err) || stderr != "" || !strings.Contains(out, "outcome: connection_failure\n") || strings.Contains(out+stderr, token) {
+	out, stderr, err = runCommand(t, "chat", "attend", "job", "--address", closed, "--token-file", path)
+	if code, ok := ReportedExit(err); !ok || code != ExitUnavailable || stderr != "" || !strings.Contains(out, "outcome: connection_failure\n") || strings.Contains(out+stderr, token) {
 		t.Fatalf("failed call %v %s\n%s", err, stderr, out)
 	}
 }
 
 func isolateAttend(t *testing.T) {
 	t.Helper()
-	t.Setenv("HOTSEAT_CONVERSATION", "")
 	t.Setenv("HOTSEAT_ADDRESS", "")
 	t.Setenv("HOTSEAT_TOKEN_FILE", "")
 }
@@ -286,10 +282,10 @@ func runCommand(t *testing.T, args ...string) (string, string, error) {
 	return stdout.String(), stderr.String(), err
 }
 
-func publishAs(t *testing.T, ctx context.Context, addr, conv, from, kind string, to []string, body, key string) client.Message {
+func sendAs(t *testing.T, ctx context.Context, addr, chat, from, kind string, to []string, body, key string) client.Message {
 	t.Helper()
 	res, err := client.Do(ctx, addr, "send", "", client.SendRequest{
-		Chat: conv,
+		Chat: chat,
 		From: from,
 		To:   to,
 		Body: body,
@@ -297,7 +293,7 @@ func publishAs(t *testing.T, ctx context.Context, addr, conv, from, kind string,
 		Kind: kind,
 	})
 	if err != nil || res.Outcome != bus.OutcomeOK || res.Message == nil {
-		t.Fatalf("publish %s: %v %+v", key, err, res)
+		t.Fatalf("send %s: %v %+v", key, err, res)
 	}
 	return *res.Message
 }
@@ -305,26 +301,26 @@ func publishAs(t *testing.T, ctx context.Context, addr, conv, from, kind string,
 func createRoster(t *testing.T, ctx context.Context, addr, name, seat string) {
 	t.Helper()
 	res, err := client.Do(ctx, addr, "create", "", client.CreateRequest{
-		Name: name, Seat: seat, Roster: []string{seat},
+		Name: name, Seat: seat, Roster: []client.RosterEntry{{Name: seat}},
 	})
 	if err != nil || res.Outcome != bus.OutcomeOK {
 		t.Fatalf("create %s: %v %+v", name, err, res)
 	}
 }
 
-func memberRows(t *testing.T, ctx context.Context, addr, conv string) []client.Member {
+func memberRows(t *testing.T, ctx context.Context, addr, chat string) []client.Member {
 	t.Helper()
-	res, err := client.Do(ctx, addr, "members", "", client.MembersRequest{Chat: conv})
+	res, err := client.Do(ctx, addr, "members", "", client.MembersRequest{Chat: chat})
 	if err != nil || res.Outcome != bus.OutcomeOK || res.Members == nil {
 		t.Fatalf("members %v %+v", err, res)
 	}
 	return *res.Members
 }
 
-func transcript(t *testing.T, ctx context.Context, addr, conv string) []client.Message {
+func transcript(t *testing.T, ctx context.Context, addr, chat string) []client.Message {
 	t.Helper()
 	res, err := client.Do(ctx, addr, "read", "", client.ReadRequest{
-		Chat: conv, Cursor: 0, Limit: 50,
+		Chat: chat, Cursor: 0, Limit: 50,
 	})
 	if err != nil || res.Outcome != bus.OutcomeOK || res.Messages == nil {
 		t.Fatalf("read %v %+v", err, res)

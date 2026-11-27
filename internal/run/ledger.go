@@ -19,7 +19,7 @@ import (
 // ledgerKinds are the kinds a ledger reads. Stances other than propose and dismiss are never replayed.
 var ledgerKinds = []string{kindTurn, kindDone, kindSay, kindFinding, kindPropose, kindDismiss, kindAsk, kindFixed, kindError}
 
-// records are the decision records of one conversation that run has read or written.
+// records are the decision records of one chat that run has read or written.
 // A record is a fact that never changes, so each key is held once.
 type records struct {
 	sets      []client.Set
@@ -75,10 +75,10 @@ func groupingKey(g client.Grouping) int64 { return g.Turn }
 func settleKey(s client.Settle) int64     { return s.Finding }
 func fixKey(f client.Fix) int64           { return f.Finding }
 
-// haltKey is constant because a conversation holds at most one halt.
+// haltKey is constant because a chat holds at most one halt.
 func haltKey(client.Halt) int64 { return 0 }
 
-// stopKey is constant because a conversation holds at most one stop.
+// stopKey is constant because a chat holds at most one stop.
 func stopKey(client.Stop) int64 { return 0 }
 
 func appendNew[T any](list []T, key func(T) int64, items ...T) []T {
@@ -181,7 +181,7 @@ type ledger struct {
 	roster []string
 	// targets maps a turn sender to its follow-up target. A missing sender has no target.
 	targets map[string]string
-	// fixers are the seat and its backup. Either may publish the fixed of any settled change, as the finder may.
+	// fixers are the seat and its backup. Either may send the fixed of any settled change, as the finder may.
 	fixers []string
 
 	bySeq   map[int64]client.Message
@@ -199,7 +199,7 @@ type ledger struct {
 	found  []client.Message
 }
 
-// buildLedger is the ledger of one conversation from bus reads: the binding's roster and seat, the member rows, the
+// buildLedger is the ledger of one chat from bus reads: the binding's roster and seat, the member rows, the
 // transcript, and the decision records. Messages of kinds a ledger does not read are ignored.
 // A turn sender's follow-up target is itself while it is a roster member that has not timed out, and otherwise the
 // seat's backup. The backup is a fixer only while a settled change has no fix record.
@@ -477,7 +477,7 @@ func (l ledger) droppedOf(turn int64) []int64 {
 	return out
 }
 
-// unanswered lists each roster recipient of turn, in to order, that published no reply inside the set.
+// unanswered lists each roster recipient of turn, in to order, that sent no reply inside the set.
 func (l ledger) unanswered(turn client.Message) []string {
 	end := l.ends[turn.Seq]
 	var out []string
@@ -505,7 +505,7 @@ func (l ledger) settledOf(finding int64) (client.Settle, bool) {
 	return s, ok
 }
 
-// sender is the member that published the message at seq, or empty when the ledger does not hold it.
+// sender is the member that sent the message at seq, or empty when the ledger does not hold it.
 func (l ledger) sender(seq int64) string {
 	return l.bySeq[seq].From
 }
@@ -519,7 +519,7 @@ func (l ledger) fixOf(finding int64) (int64, bool) {
 }
 
 // creditable is the first fixed stored after the finding's settle, with re naming the finding, from the finder,
-// the seat, or the seat's backup. A fixed with no re is credited only inside the fix launch that published it.
+// the seat, or the seat's backup. A fixed with no re is credited only inside the fix launch that sent it.
 func (l ledger) creditable(finding int64) (int64, bool) {
 	s, ok := l.settled[finding]
 	if !ok {

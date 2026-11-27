@@ -146,7 +146,7 @@ func TestOpenListFollowsNewestMessage(t *testing.T) {
 	page, _ := newPage(t, addr, "")
 	created := busCall(t, addr, "", "create", client.CreateRequest{
 		Name: "alpha", Task: "tasks:review", Ticket: "foo-x234", Seat: "bravo", Directory: "/tmp/work",
-		Roster: []string{"bravo"},
+		Roster: []client.RosterEntry{{Name: "bravo"}},
 	})
 	if created.Outcome != bus.OutcomeOK {
 		t.Fatalf("create %+v", created)

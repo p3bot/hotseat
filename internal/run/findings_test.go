@@ -27,7 +27,7 @@ import (
 
 // Text that tells one launch kind from another in a member prompt.
 const (
-	promptBoot       = "Register with hotseat member register"
+	promptBoot       = "Join with hotseat chat join"
 	promptTurn       = "mode: "
 	promptFollow     = "The set has finished"
 	promptDiscussion = "This is a discussion launch"
@@ -37,7 +37,7 @@ const (
 	promptAggregate  = "This is an aggregate launch"
 )
 
-// script appends launch steps for name. Every scripted member registers on each launch.
+// script appends launch steps for name. Every scripted member joins on each launch.
 func (h *harness) script(name string, steps ...stepFile) {
 	if h.plan.Launch == nil {
 		h.plan.Launch = map[string]runFile{}
@@ -56,27 +56,23 @@ func says(kind string, to ...string) messageFile {
 	return messageFile{Kind: kind, To: to, Body: kind}
 }
 
-// withRe is m published with re, which the fake fills as messageFile.Re describes.
+// withRe is m sent with re, which the fake fills as messageFile.Re describes.
 func withRe(m messageFile, re string) messageFile {
 	m.Re = re
 	return m
 }
 
-// team is a fresh conversation with roster names, each on a fake module, and seat.
-func (h *harness) team(seat string, names ...string) Config {
+// team is a fresh chat with roster names, each on a fake module, and seat.
+func (h *harness) team(seat string, names ...string) runArgs {
 	cfg := h.base()
-	parts := make([]string, len(names))
-	for i, n := range names {
-		parts[i] = n + "=hotseat/grok:m"
-	}
-	cfg.Agents = strings.Join(parts, " ")
+	cfg.Agents = agentsOf(names...)
 	cfg.Seat = seat
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	return cfg
 }
 
-// play runs cfg to its end and returns the result and the only conversation's name.
-func (h *harness) play(cfg Config) (runResult, string) {
+// play runs cfg to its end and returns the result and the only chat's name.
+func (h *harness) play(cfg runArgs) (runResult, string) {
 	h.t.Helper()
 	cctx, cancel := ctx()
 	defer cancel()
@@ -192,10 +188,10 @@ func seqOf(m client.Message) string {
 
 var abcRoster = []string{"alpha", "bravo", "charlie"}
 
-// recordsOf is every decision record of conv.
-func (h *harness) recordsOf(conv string) records {
+// recordsOf is every decision record of the chat name.
+func (h *harness) recordsOf(name string) records {
 	h.t.Helper()
-	res := h.do("records", client.RecordsRequest{Chat: conv})
+	res := h.do("records", client.RecordsRequest{Chat: name})
 	if res.Outcome != bus.OutcomeOK {
 		h.t.Fatalf("records: %s", res.Reason)
 	}
@@ -204,10 +200,10 @@ func (h *harness) recordsOf(conv string) records {
 	return r
 }
 
-// record stores w, a record of conv, as an earlier run process would have.
-func (h *harness) record(conv string, w client.RecordWrite) {
+// record stores w, a record of the chat name, as an earlier run process would have.
+func (h *harness) record(name string, w client.RecordWrite) {
 	h.t.Helper()
-	h.conduct(conv, func(holder string) {
+	h.conduct(name, func(holder string) {
 		if res := h.do("record", client.RecordRequest{Holder: holder, Record: w}); res.Outcome != bus.OutcomeOK {
 			h.t.Fatalf("record %T: %s", w, res.Reason)
 		}
@@ -484,7 +480,7 @@ func TestDeadlockHaltsReportsAndExitsUnresolved(t *testing.T) {
 	}
 	// A deadlock is reported by the done and the exit status, not by an unsettled error.
 	wantErrors(t, msgs)
-	if c, _ := h.conv(name); c.Status != "closed" {
+	if c, _ := h.chat(name); c.Status != "closed" {
 		t.Fatalf("status %s", c.Status)
 	}
 }
@@ -513,10 +509,8 @@ func TestEarlyDoneWithAnOpenFindingExitsUnsettledAndAReplayMatches(t *testing.T)
 	}
 	unsettled := errLine("", classUnsettled, first(h.messages(name), "alpha", kindDone).Seq)
 	wantErrors(t, h.messages(name), unsettled)
-	for _, agents := range []string{"alpha=hotseat/grok:m bravo=hotseat/grok:m", ""} {
-		cfg := h.continueKept(agents)
-		cfg.Conversation = name
-		out, stderr, err := h.runBounded(cfg)
+	for range 2 {
+		out, stderr, err := h.runBounded(h.continuing(name))
 		if !errors.Is(err, ErrUnresolved) || !unresolved(out) || strings.Contains(stderr, "event=error") {
 			t.Fatalf("replay %v\n%s\n%s", err, out, stderr)
 		}
@@ -558,8 +552,7 @@ func TestFixedStoredAfterTheStoppingDoneDoesNotCount(t *testing.T) {
 	if !errors.Is(res.err, ErrUnresolved) || !res.out.stopIs(done.Seq, nil, []int64{f.Seq}) {
 		t.Fatalf("err %v\n%s", res.err, res.out)
 	}
-	cfg := h.continueKept("")
-	cfg.Conversation = name
+	cfg := h.continuing(name)
 	out, _, err := h.runBounded(cfg)
 	if !errors.Is(err, ErrUnresolved) || !out.stopIs(done.Seq, nil, []int64{f.Seq}) {
 		t.Fatalf("replay %v\n%s", err, out)
@@ -781,7 +774,7 @@ func TestTimedOutFinderHandsTheFixToTheSeatAndASecondMissStops(t *testing.T) {
 			if !strings.Contains(res.stderr, eventLine("error", "class", "no fix", "member", "alpha")) || countBody(msgs, "alpha\nno fix") != 1 {
 				t.Fatalf("no fix not reported\n%s", res.out)
 			}
-			if c, _ := h.conv(name); c.Status != "open" {
+			if c, _ := h.chat(name); c.Status != "open" {
 				t.Fatalf("status %s", c.Status)
 			}
 		})
@@ -789,7 +782,7 @@ func TestTimedOutFinderHandsTheFixToTheSeatAndASecondMissStops(t *testing.T) {
 }
 
 // stalled scripts a finding by bravo that stalls with charlie out of budget after one objection, under --max-says 1.
-func stalled(h *harness, names ...string) Config {
+func stalled(h *harness, names ...string) runArgs {
 	bravoFinds(h, names...)
 	h.script("charlie", on(promptDiscussion, says(kindObject, names...)))
 	h.script("alpha", on(promptDiscussion, says(kindAgree, names...)))
@@ -881,7 +874,7 @@ func TestSeatThatTimesOutInItsStallLaunchHandsTheStallToTheBackup(t *testing.T) 
 	}
 }
 
-func TestStallLaunchWithNoSingleDecisionStopsWithTheConversationOpen(t *testing.T) {
+func TestStallLaunchWithNoSingleDecisionStopsWithTheChatOpen(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		msgs []messageFile
@@ -902,7 +895,7 @@ func TestStallLaunchWithNoSingleDecisionStopsWithTheConversationOpen(t *testing.
 			}
 			msgs := h.messages(name)
 			wantErrors(t, msgs, "alpha\nno decision", protocolStopLine(t, msgs, "alpha\nno decision"))
-			if c, _ := h.conv(name); c.Status != "open" || len(h.recordsOf(name).halts) != 0 {
+			if c, _ := h.chat(name); c.Status != "open" || len(h.recordsOf(name).halts) != 0 {
 				t.Fatalf("status %s", c.Status)
 			}
 		})
@@ -931,7 +924,7 @@ func TestStallAndReportPromptsListEveryAskOfTheDiscussion(t *testing.T) {
 	}
 }
 
-func TestReportLaunchWithNoDoneStopsWithTheConversationOpen(t *testing.T) {
+func TestReportLaunchWithNoDoneStopsWithTheChatOpen(t *testing.T) {
 	h := newHarness(t)
 	cfg := stalled(h, abcRoster...)
 	h.script("alpha", on(promptStall, says(kindDeadlock, "alpha", "bravo", "charlie", "owner")), on(promptReport))
@@ -939,7 +932,7 @@ func TestReportLaunchWithNoDoneStopsWithTheConversationOpen(t *testing.T) {
 	if res.err == nil || res.err.Error() != classNoReport || !strings.Contains(res.stderr, eventLine("error", "class", "no report", "member", "alpha")) {
 		t.Fatalf("%v\n%s", res.err, res.out)
 	}
-	if c, _ := h.conv(name); c.Status != "open" {
+	if c, _ := h.chat(name); c.Status != "open" {
 		t.Fatalf("status %s", c.Status)
 	}
 	msgs := h.messages(name)
@@ -954,7 +947,7 @@ func TestFindingOutsideARunningSetIsReportedAndOpensNothing(t *testing.T) {
 	)
 	h.script("bravo", on(promptTurn, says(kindSay, "alpha")))
 	h.script("charlie", on(promptBoot, says(kindFinding, abcRoster...)))
-	// charlie publishes after alpha's turn exists and before bravo ends the set, so its finding lies in a set it is not a recipient of.
+	// charlie sends after alpha's turn exists and before bravo ends the set, so its finding lies in a set it is not a recipient of.
 	h.hold("charlie")
 	h.hold("bravo")
 	cctx, cancel := ctx()
@@ -988,10 +981,10 @@ func TestFindingOutsideARunningSetIsReportedAndOpensNothing(t *testing.T) {
 	}
 }
 
-// keptMembers creates kept with roster and seat alpha, each member registered and exited with a session.
+// keptMembers creates kept with roster and seat alpha, each member joined and exited with a session.
 func (h *harness) keptMembers(roster ...string) {
 	h.t.Helper()
-	h.keptConversation(roster...)
+	h.keptChat(roster...)
 	launched, exited := statusLaunched, statusExited
 	for _, name := range roster {
 		h.setMember("kept", name, launched, nil)
@@ -1002,20 +995,12 @@ func (h *harness) keptMembers(roster ...string) {
 	}
 }
 
-func agentsOf(names ...string) string {
-	parts := make([]string, len(names))
-	for i, n := range names {
-		parts[i] = n + "=hotseat/grok:m"
-	}
-	return strings.Join(parts, " ")
-}
-
 // reviewed stores alpha's review turn to bravo and charlie, bravo's finding, and both answers.
 func (h *harness) reviewed() (turn, finding client.Message) {
-	turn = h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
-	finding = h.publish("kept", "bravo", kindFinding, "foo", abcRoster)
-	h.publish("kept", "bravo", kindSay, "found one", []string{"alpha"})
-	h.publish("kept", "charlie", kindSay, "clean", []string{"alpha"})
+	turn = h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
+	finding = h.send("kept", "bravo", kindFinding, "foo", abcRoster)
+	h.send("kept", "bravo", kindSay, "found one", []string{"alpha"})
+	h.send("kept", "charlie", kindSay, "clean", []string{"alpha"})
 	return turn, finding
 }
 
@@ -1026,7 +1011,7 @@ func (h *harness) storedErr(member, class string, re int64, tx string) client.Me
 		Chat: "kept", From: fromRun, To: []string{fromOwner}, Body: errBody(member, class), TxID: tx, Kind: kindError, Re: &re,
 	})
 	if res.Outcome != bus.OutcomeOK || res.Message == nil {
-		h.t.Fatalf("publish error: %s", res.Reason)
+		h.t.Fatalf("send error: %s", res.Reason)
 	}
 	return *res.Message
 }
@@ -1052,14 +1037,14 @@ func (h *harness) playKept() runResult {
 	h.t.Helper()
 	cctx, cancel := ctx()
 	defer cancel()
-	return h.awaitRun(h.goRun(cctx, h.continueKept(agentsOf(abcRoster...))), 25*time.Second)
+	return h.awaitRun(h.goRun(cctx, h.continueKept()), 25*time.Second)
 }
 
 func TestContinueBeforeTheSetRecordFinishesTheSetBeforeTheSeatsLaterTurn(t *testing.T) {
 	h := newHarness(t)
 	h.keptMembers(abcRoster...)
 	turn, _ := h.reviewed()
-	h.publish("kept", "alpha", kindTurn, "mode: serial\nlater", []string{"charlie"})
+	h.send("kept", "alpha", kindTurn, "mode: serial\nlater", []string{"charlie"})
 	finishes(h)
 	res := h.playKept()
 	if res.err != nil || res.out.outcome() != "done" {
@@ -1082,9 +1067,9 @@ func TestContinueBeforeTheSetRecordFinishesTheSetBeforeTheSeatsLaterTurn(t *test
 func TestContinueWithoutRecordsOrFindingsSkipsAnAnsweredTurn(t *testing.T) {
 	h := newHarness(t)
 	h.keptMembers(abcRoster...)
-	h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
-	h.publish("kept", "bravo", kindSay, "clean", []string{"alpha"})
-	next := h.publish("kept", "alpha", kindTurn, "mode: serial\nnext", []string{"bravo"})
+	h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
+	h.send("kept", "bravo", kindSay, "clean", []string{"alpha"})
+	next := h.send("kept", "alpha", kindTurn, "mode: serial\nnext", []string{"bravo"})
 	h.script("bravo", on("next", says(kindSay, "alpha")))
 	h.script("alpha", on(promptFollow, says(kindDone, "owner")))
 	res := h.playKept()
@@ -1104,9 +1089,9 @@ func TestContinueMidDiscussionRestartsTheOpenFindingAndItsFollowUp(t *testing.T)
 	h.keptMembers(abcRoster...)
 	turn, f := h.reviewed()
 	h.closed(turn, f)
-	h.publish("kept", "charlie", kindAgree, "yes", abcRoster)
+	h.send("kept", "charlie", kindAgree, "yes", abcRoster)
 	// A turn posted in a stall launch is stored before the discussions end, so it is not the follow-up.
-	h.publish("kept", "alpha", kindTurn, "mode: serial\nlater", []string{"charlie"})
+	h.send("kept", "alpha", kindTurn, "mode: serial\nlater", []string{"charlie"})
 	finishes(h)
 	res := h.playKept()
 	if res.err != nil || res.out.outcome() != "done" {
@@ -1172,8 +1157,8 @@ func continueAfterSettle(t *testing.T, announced bool) {
 	if len(recs.fixes) != 1 || recs.fixes[0].Fixed != first(msgs, "bravo", kindFixed).Seq {
 		t.Fatalf("fixes %+v", recs.fixes)
 	}
-	// A further continuation finds the announcement stored and publishes no second copy.
-	out, _, err := h.runBounded(h.continueKept(agentsOf(abcRoster...)))
+	// A further continuation finds the announcement stored and sends no second copy.
+	out, _, err := h.runBounded(h.continueKept())
 	if err != nil || out.outcome() != "done" || len(ofKind(h.messages("kept"), kindSettled)) != 1 {
 		t.Fatalf("replay %v\n%s", err, out)
 	}
@@ -1261,8 +1246,8 @@ func TestFixIsWrittenOnlyForASettleThatIsNotADismiss(t *testing.T) {
 func TestContinueAfterANoReplyErrorBeforeTheSetRecordStoresNoSecondError(t *testing.T) {
 	h := newHarness(t)
 	h.keptMembers(abcRoster...)
-	turn := h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
-	h.publish("kept", "bravo", kindSay, "clean", []string{"alpha"})
+	turn := h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
+	h.send("kept", "bravo", kindSay, "clean", []string{"alpha"})
 	h.storedErr("charlie", classNoReply, turn.Seq, factTx(classNoReply, "charlie", seqOf(turn)))
 	h.script("charlie", on(promptTurn))
 	h.script("alpha", on(promptFollow, says(kindDone, "owner")))
@@ -1308,14 +1293,14 @@ func TestContinueWaitsForALeftoverFixAndCreditsItsFixedWithReInsteadOfLaunching(
 			finishes(h)
 			cctx, cancel := ctx()
 			defer cancel()
-			ch := h.goRun(cctx, h.continueKept(agentsOf(abcRoster...)))
+			ch := h.goRun(cctx, h.continueKept())
 			time.Sleep(300 * time.Millisecond)
 			h.stillRunning(ch)
 			if n := h.launchCount(); n != 0 {
 				t.Fatalf("launched %d while the leftover ran", n)
 			}
-			h.publish("kept", name, kindAgree, "late", abcRoster)
-			fixed := h.publishRe("kept", name, kindFixed, "applied", abcRoster, f.Seq)
+			h.send("kept", name, kindAgree, "late", abcRoster)
+			fixed := h.sendRe("kept", name, kindFixed, "applied", abcRoster, f.Seq)
 			stop()
 			res := h.awaitRun(ch, 20*time.Second)
 			if res.err != nil || res.out.outcome() != "done" {
@@ -1367,9 +1352,9 @@ func TestContinueLaunchesTheFixAgainWhenNoStoredFixedIsCreditable(t *testing.T) 
 func (h *harness) strayFixed(name string, f client.Message, withRe bool) client.Message {
 	h.t.Helper()
 	if withRe {
-		return h.publishRe("kept", name, kindFixed, "applied", abcRoster, f.Seq)
+		return h.sendRe("kept", name, kindFixed, "applied", abcRoster, f.Seq)
 	}
-	return h.publish("kept", name, kindFixed, "applied", abcRoster)
+	return h.send("kept", name, kindFixed, "applied", abcRoster)
 }
 
 func TestContinueOnAStoredDoneAnnouncesASettleACrashLeftUnannounced(t *testing.T) {
@@ -1378,8 +1363,8 @@ func TestContinueOnAStoredDoneAnnouncesASettleACrashLeftUnannounced(t *testing.T
 	turn, f := h.reviewed()
 	h.closed(turn, f)
 	h.settledOn(f)
-	h.publish("kept", "alpha", kindDone, "stop", []string{"owner"})
-	if _, _, err := h.runBounded(h.continueKept(agentsOf(abcRoster...))); !errors.Is(err, ErrUnresolved) {
+	h.send("kept", "alpha", kindDone, "stop", []string{"owner"})
+	if _, _, err := h.runBounded(h.continueKept()); !errors.Is(err, ErrUnresolved) {
 		t.Fatal(err)
 	}
 	msgs := h.messages("kept")
@@ -1408,8 +1393,8 @@ func TestStrayFixedLeavesTheSettledChangeUnfixedAtTheStop(t *testing.T) {
 			h.closed(turn, f)
 			h.settledOn(f)
 			h.strayFixed(tc.from, f, tc.withRe)
-			done := h.publish("kept", "alpha", kindDone, "early", []string{"owner"})
-			out, stderr, err := h.runBounded(h.continueKept(agentsOf(abcRoster...)))
+			done := h.send("kept", "alpha", kindDone, "early", []string{"owner"})
+			out, stderr, err := h.runBounded(h.continueKept())
 			if !errors.Is(err, ErrUnresolved) || !out.stopIs(done.Seq, nil, []int64{f.Seq}) || out.outcome() != outcomeUnsettled {
 				t.Fatalf("%v\n%s", err, out)
 			}
@@ -1423,41 +1408,32 @@ func TestStrayFixedLeavesTheSettledChangeUnfixedAtTheStop(t *testing.T) {
 	}
 }
 
-func TestResumeWithoutRosterWritesOnlyTheStopRecordAndAnnouncesNothing(t *testing.T) {
+func TestContinueOfANamesOnlyRosterWritesNoRecordAndAnnouncesNothing(t *testing.T) {
 	h := newHarness(t)
-	h.keptMembers(abcRoster...)
+	h.keptChatAs([]client.RosterEntry{{Name: "alpha"}, {Name: "bravo"}, {Name: "charlie"}}, DefaultPermission)
 	turn, f := h.reviewed()
 	h.closed(turn, f)
 	h.settledOn(f)
-	before := h.recordsOf("kept")
-	cctx, cancel := ctx()
-	defer cancel()
-	ch := h.goRun(cctx, h.continueKept(""))
-	time.Sleep(300 * time.Millisecond)
-	h.stillRunning(ch)
-	if n := len(ofKind(h.messages("kept"), kindSettled)) + h.launchCount(); n != 0 {
-		t.Fatalf("a resume with no roster announced or launched: %+v", h.calls())
-	}
-	done := h.publish("kept", "alpha", kindDone, "early", []string{"owner"})
-	if res := h.awaitRun(ch, 10*time.Second); !errors.Is(res.err, ErrUnresolved) {
+	before, msgs := h.recordsOf("kept"), len(h.messages("kept"))
+	res := h.awaitRun(h.goRun(t.Context(), h.continueKept()), 8*time.Second)
+	if res.err == nil || !strings.Contains(res.err.Error(), "no module and model for alpha, bravo, charlie") || !res.out.silent() {
 		t.Fatalf("%v\n%s", res.err, res.out)
 	}
-	before.stops = []client.Stop{{Done: done.Seq}}
-	if after := h.recordsOf("kept"); fmt.Sprint(after) != fmt.Sprint(before) || len(ofKind(h.messages("kept"), kindSettled)) != 0 {
-		t.Fatalf("records %+v, want %+v", after, before)
+	if after := h.recordsOf("kept"); fmt.Sprint(after) != fmt.Sprint(before) || len(h.messages("kept")) != msgs || h.launchCount() != 0 {
+		t.Fatalf("records %+v, want %+v; calls %+v", after, before, h.calls())
 	}
 }
 
 func TestContinueJudgesAStrayFromATurnLaunchedWhileALeftoverRuns(t *testing.T) {
 	h := newHarness(t)
 	h.keptMembers(abcRoster...)
-	h.publish("kept", "alpha", kindTurn, "mode: serial\ncheck", []string{"charlie"})
+	h.send("kept", "alpha", kindTurn, "mode: serial\ncheck", []string{"charlie"})
 	stop := h.leftover("alpha")
 	h.script("charlie", on(promptTurn, says(kindAgree, abcRoster...), says(kindSay, "alpha")))
 	h.script("alpha", on(promptFollow, says(kindDone, "owner")))
 	cctx, cancel := ctx()
 	defer cancel()
-	ch := h.goRun(cctx, h.continueKept(agentsOf(abcRoster...)))
+	ch := h.goRun(cctx, h.continueKept())
 	deadline := time.Now().Add(8 * time.Second)
 	for first(h.messages("kept"), "charlie", kindSay).Seq == 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
@@ -1477,7 +1453,7 @@ func TestContinueAfterAHaltRecordReportsAgainAndNothingElse(t *testing.T) {
 	h.keptMembers(abcRoster...)
 	turn, f := h.reviewed()
 	h.closed(turn, f)
-	ask := h.publish("kept", "charlie", kindAsk, "which one?", []string{"owner"})
+	ask := h.send("kept", "charlie", kindAsk, "which one?", []string{"owner"})
 	h.record("kept", client.HaltRecord{Chat: "kept", Finding: f.Seq})
 	h.script("alpha", stepFile{On: promptReport, Send: []messageFile{{Kind: kindDone, To: []string{"owner"}, Body: "outcome: hold\nreport"}}})
 	res := h.playKept()
@@ -1498,7 +1474,7 @@ func TestRejectedMemberDeadlockBeforeARestartDoesNotEndTheRun(t *testing.T) {
 	h.keptMembers(abcRoster...)
 	turn, f := h.reviewed()
 	h.closed(turn, f)
-	dl := h.publish("kept", "charlie", kindDeadlock, "stop", []string{"alpha", "bravo", "charlie", "owner"})
+	dl := h.send("kept", "charlie", kindDeadlock, "stop", []string{"alpha", "bravo", "charlie", "owner"})
 	h.storedErr("charlie", classBadDeadlock, dl.Seq, "random")
 	finishes(h)
 	res := h.playKept()
@@ -1517,12 +1493,12 @@ func TestContinueDoesNotReportAStoredBadFindingAgain(t *testing.T) {
 		t.Run(fmt.Sprintf("stored %v", stored), func(t *testing.T) {
 			h := newHarness(t)
 			h.keptMembers(abcRoster...)
-			h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
-			bad := h.publish("kept", "charlie", kindFinding, "not mine", abcRoster)
+			h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo"})
+			bad := h.send("kept", "charlie", kindFinding, "not mine", abcRoster)
 			if stored {
 				h.storedErr("charlie", classBadFinding, bad.Seq, "bad finding/charlie/"+seqOf(bad))
 			}
-			h.publish("kept", "bravo", kindSay, "clean", []string{"alpha"})
+			h.send("kept", "bravo", kindSay, "clean", []string{"alpha"})
 			h.script("alpha", on(promptFollow, says(kindDone, "owner")))
 			res := h.playKept()
 			if res.err != nil {
@@ -1536,34 +1512,21 @@ func TestContinueDoesNotReportAStoredBadFindingAgain(t *testing.T) {
 	}
 }
 
-func TestResumeWithoutRosterOpensNothingAndReportsTheStoredDone(t *testing.T) {
+func TestContinueOfANamesOnlyRosterLeavesAStoredDoneUnjudged(t *testing.T) {
 	h := newHarness(t)
-	h.keptMembers(abcRoster...)
-	_, f := h.reviewed()
-	cctx, cancel := ctx()
-	defer cancel()
-	ch := h.goRun(cctx, h.continueKept(""))
-	time.Sleep(300 * time.Millisecond)
-	h.stillRunning(ch)
-	if recs := h.recordsOf("kept"); len(recs.sets)+h.launchCount() != 0 {
-		t.Fatalf("a resume with no roster wrote a record or launched: %+v %+v", recs, h.calls())
+	h.keptChatAs([]client.RosterEntry{{Name: "alpha"}, {Name: "bravo"}, {Name: "charlie"}}, DefaultPermission)
+	h.reviewed()
+	h.send("kept", "alpha", kindDone, "early", []string{"owner"})
+	msgs := len(h.messages("kept"))
+	out, _, err := h.runBounded(h.continueKept())
+	if err == nil || errors.Is(err, ErrUnresolved) || !out.silent() {
+		t.Fatalf("%v\n%s", err, out)
 	}
-	h.publish("kept", "alpha", kindDone, "early", []string{"owner"})
-	res := h.awaitRun(ch, 10*time.Second)
-	done := first(h.messages("kept"), "alpha", kindDone)
-	unresolved := func(out *recorder) bool {
-		return out.stopIs(done.Seq, []int64{f.Seq}, nil) && out.outcome() == outcomeUnsettled
+	if recs := h.recordsOf("kept"); len(recs.sets)+len(recs.stops) != 0 || len(h.messages("kept")) != msgs || h.launchCount() != 0 {
+		t.Fatalf("records %+v calls %+v", recs, h.calls())
 	}
-	if !errors.Is(res.err, ErrUnresolved) || !unresolved(res.out) || !strings.Contains(res.stderr, eventLine("error", "class", classUnsettled, "seq", done.Seq)) {
-		t.Fatalf("%v\n%s\n%s", res.err, res.out, res.stderr)
-	}
-	out, _, err := h.runBounded(h.continueKept(""))
-	if !errors.Is(err, ErrUnresolved) || !unresolved(out) {
-		t.Fatalf("replay %v\n%s", err, out)
-	}
-	wantErrors(t, h.messages("kept"), errLine("", classUnsettled, first(h.messages("kept"), "alpha", kindDone).Seq))
-	if h.launchCount() != 0 {
-		t.Fatalf("calls %+v", h.calls())
+	if chat, _ := h.chat("kept"); chat.Status == "closed" {
+		t.Fatal("closed")
 	}
 }
 
@@ -1597,7 +1560,7 @@ func TestSeatTimeoutDuringDiscussionsHoldsTheHandoffAndTheBackupDecidesTheStall(
 	}
 }
 
-func TestLaunchCapStopsADiscussionWithTheConversationOpen(t *testing.T) {
+func TestLaunchCapStopsADiscussionWithTheChatOpen(t *testing.T) {
 	h := newHarness(t)
 	bravoFinds(h, abcRoster...)
 	cfg := h.team("alpha", abcRoster...)
@@ -1612,7 +1575,7 @@ func TestLaunchCapStopsADiscussionWithTheConversationOpen(t *testing.T) {
 		t.Fatalf("launches %d msgs %+v", h.launchCount(), msgs)
 	}
 	wantErrors(t, msgs, classLaunchCap, protocolStopLine(t, msgs, classLaunchCap))
-	if c, _ := h.conv(name); c.Status != "open" {
+	if c, _ := h.chat(name); c.Status != "open" {
 		t.Fatalf("status %s", c.Status)
 	}
 }
@@ -1631,7 +1594,7 @@ func TestMemberLostBelowTheMinimumStopsADiscussion(t *testing.T) {
 		t.Fatalf("calls %+v", h.calls())
 	}
 	wantErrors(t, msgs, errLine("alpha", classProcessExit, 0), classBelowMinimum, protocolStopLine(t, msgs, classBelowMinimum))
-	if c, _ := h.conv(name); c.Status != "open" {
+	if c, _ := h.chat(name); c.Status != "open" {
 		t.Fatalf("status %s", c.Status)
 	}
 }
@@ -1685,7 +1648,7 @@ func TestFailedDiscussionLaunchReportsOnlyAnInvalidStance(t *testing.T) {
 
 func TestHaltWhileAFindingIsJudgedReturnsTheHaltError(t *testing.T) {
 	h := newHarness(t)
-	res := h.do("create", client.CreateRequest{Name: "kept", Seat: "alpha", Roster: []string{"alpha", "bravo"}})
+	res := h.do("create", client.CreateRequest{Name: "kept", Seat: "alpha", Roster: seeded("alpha", "bravo"), Permission: DefaultPermission})
 	if res.Outcome != bus.OutcomeOK {
 		t.Fatal(res.Reason)
 	}
@@ -1713,7 +1676,7 @@ func TestHaltWhileAFindingIsJudgedReturnsTheHaltError(t *testing.T) {
 
 func TestLedgerBuildReadsOnlyNewMessagesAndTheMemberRowsOnce(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation(abcRoster...)
+	h.keptChat(abcRoster...)
 	launched := statusLaunched
 	h.setMember("kept", "bravo", launched, nil)
 	h.do("join", client.JoinRequest{Chat: "kept", Name: "bravo"})
@@ -1721,9 +1684,9 @@ func TestLedgerBuildReadsOnlyNewMessagesAndTheMemberRowsOnce(t *testing.T) {
 	if res := h.setMember("kept", "alpha", statusTimedOut, nil); res.Outcome != bus.OutcomeOK {
 		t.Fatal(res.Reason)
 	}
-	h.publish("kept", "alpha", kindTurn, "mode: serial\nfirst", []string{"bravo"})
-	h.publish("kept", "owner", kindTurn, "mode: serial\nsecond", []string{"bravo"})
-	h.publish("kept", "charlie", kindTurn, "mode: serial\nthird", []string{"bravo"})
+	h.send("kept", "alpha", kindTurn, "mode: serial\nfirst", []string{"bravo"})
+	h.send("kept", "owner", kindTurn, "mode: serial\nsecond", []string{"bravo"})
+	h.send("kept", "charlie", kindTurn, "mode: serial\nthird", []string{"bravo"})
 	var mu sync.Mutex
 	var cursors []int64
 	members := 0
@@ -1767,7 +1730,7 @@ func TestLedgerBuildReadsOnlyNewMessagesAndTheMemberRowsOnce(t *testing.T) {
 		t.Fatalf("reads %v member calls %d targets %v", reads, calls, l.targets)
 	}
 	last := l.msgs[len(l.msgs)-1].Seq
-	later := h.publish("kept", "charlie", kindTurn, "mode: serial\nfourth", []string{"bravo"})
+	later := h.send("kept", "charlie", kindTurn, "mode: serial\nfourth", []string{"bravo"})
 	l, reads, calls = build()
 	if slices.Compare(reads, []int64{last}) != 0 || calls != 1 || len(l.msgs) != 4 || l.msgs[3].Seq != later.Seq {
 		t.Fatalf("reads %v member calls %d msgs %+v", reads, calls, l.msgs)
@@ -1942,11 +1905,11 @@ func TestGroupingDropsComeOnlyFromAnAcceptedAggregate(t *testing.T) {
 func TestContinueAfterASetRecordWithoutAGroupingAggregatesAgain(t *testing.T) {
 	h := newHarness(t)
 	h.keptMembers(abcRoster...)
-	turn := h.publish("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
-	kept := h.publish("kept", "bravo", kindFinding, "foo", abcRoster)
-	dup := h.publish("kept", "charlie", kindFinding, "foo again", abcRoster)
-	h.publish("kept", "bravo", kindSay, "found one", []string{"alpha"})
-	h.publish("kept", "charlie", kindSay, "found one", []string{"alpha"})
+	turn := h.send("kept", "alpha", kindTurn, "mode: parallel\nreview", []string{"bravo", "charlie"})
+	kept := h.send("kept", "bravo", kindFinding, "foo", abcRoster)
+	dup := h.send("kept", "charlie", kindFinding, "foo again", abcRoster)
+	h.send("kept", "bravo", kindSay, "found one", []string{"alpha"})
+	h.send("kept", "charlie", kindSay, "found one", []string{"alpha"})
 	h.closed(turn, kept, dup)
 	h.script("alpha", on(promptAggregate, messageFile{Kind: kindAggregate, To: abcRoster, Body: "$line:findings"}))
 	finishes(h)
@@ -1970,7 +1933,7 @@ func TestContinueAfterASetRecordWithoutAGroupingAggregatesAgain(t *testing.T) {
 	wantErrors(t, msgs)
 }
 
-func TestRecipientThatPublishesNothingIsReportedAndNamedInTheFollowUp(t *testing.T) {
+func TestRecipientThatSendsNothingIsReportedAndNamedInTheFollowUp(t *testing.T) {
 	h := newHarness(t)
 	h.review("alpha", "alpha", "bravo", "charlie")
 	h.script("alpha",

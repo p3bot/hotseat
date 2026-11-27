@@ -66,43 +66,43 @@ no
 	}
 }
 
-func TestPublishReIsStoredAndReadPrintsIt(t *testing.T) {
+func TestSendReIsStoredAndReadPrintsIt(t *testing.T) {
 	bin := buildBinary(t)
 	addr, stop := startBus(t)
 	defer stop()
-	runBinOK(t, bin, nil, "create", "--address", addr, "--name", "job")
-	first := runBinOK(t, bin, nil, "publish", "--address", addr, "--conversation", "job",
+	runBinOK(t, bin, nil, "chat", "create", "job", "--address", addr)
+	first := runBinOK(t, bin, nil, "chat", "send", "job", "--address", addr,
 		"--from", "alice", "--kind", "say", "--to", "bob", "--body", "question", "--txid", "q1")
 	if first.Message == nil || first.Message.Re != nil {
 		t.Fatalf("first %+v", first.Message)
 	}
 	seq := fmt.Sprint(first.Message.Seq)
-	reply := runBinOK(t, bin, nil, "publish", "--address", addr, "--conversation", "job",
+	reply := runBinOK(t, bin, nil, "chat", "send", "job", "--address", addr,
 		"--from", "bob", "--kind", "say", "--to", "alice", "--body", "answer", "--txid", "a1", "--re", seq)
 	if reply.Message == nil || reply.Message.Re == nil || *reply.Message.Re != first.Message.Seq {
 		t.Fatalf("reply %+v", reply.Message)
 	}
 
-	read := runBinOK(t, bin, nil, "read", "--address", addr, "--conversation", "job", "--cursor", "0", "--limit", "10")
+	read := runBinOK(t, bin, nil, "chat", "read", "job", "--address", addr, "--cursor", "0", "--limit", "10")
 	msgs := *read.Messages
 	if len(msgs) != 2 || msgs[0].Re != nil || msgs[1].Re == nil || *msgs[1].Re != first.Message.Seq {
 		t.Fatalf("read %+v", msgs)
 	}
-	_, raw := runClient(t, context.Background(), "read", "--address", addr, "--conversation", "job", "--cursor", "0", "--limit", "10")
+	_, raw := runClient(t, context.Background(), "chat", "read", "job", "--address", addr, "--cursor", "0", "--limit", "10")
 	if strings.Count(raw, "\nre: ") != 1 || !strings.Contains(raw, "kind: say\nre: "+seq+"\nto: alice\n") {
 		t.Fatalf("read text\n%s", raw)
 	}
 }
 
-func TestPublishReRefusalsNameTheRule(t *testing.T) {
+func TestSendReRefusalsNameTheRule(t *testing.T) {
 	addr, stop := startBus(t)
 	defer stop()
 	ctx := context.Background()
 	create(t, ctx, addr, "job")
 	create(t, ctx, addr, "other")
-	publish(t, ctx, addr, "job", "alice", []string{"bob"}, "one", "k1")
-	publish(t, ctx, addr, "other", "alice", []string{"bob"}, "two", "k2")
-	publish(t, ctx, addr, "job", "alice", []string{"bob"}, "three", "k3")
+	sendChat(t, ctx, addr, "job", "alice", []string{"bob"}, "one", "k1")
+	sendChat(t, ctx, addr, "other", "alice", []string{"bob"}, "two", "k2")
+	sendChat(t, ctx, addr, "job", "alice", []string{"bob"}, "three", "k3")
 	cases := []struct {
 		re     string
 		reason string
@@ -114,7 +114,7 @@ func TestPublishReRefusalsNameTheRule(t *testing.T) {
 		{"4", bus.ReasonReTarget},
 	}
 	for _, tc := range cases {
-		res, raw := runClient(t, ctx, "publish", "--address", addr, "--conversation", "job",
+		res, raw := runClient(t, ctx, "chat", "send", "job", "--address", addr,
 			"--from", "alice", "--kind", "say", "--to", "bob", "--body", "reply", "--txid", "r"+tc.re, "--re", tc.re)
 		if res.Outcome != bus.OutcomeRefused || res.Reason != tc.reason {
 			t.Fatalf("re %s:\n%s", tc.re, raw)
@@ -125,7 +125,7 @@ func TestPublishReRefusalsNameTheRule(t *testing.T) {
 	}
 
 	replay := func(re ...string) client.Result {
-		args := []string{"publish", "--address", addr, "--conversation", "job",
+		args := []string{"chat", "send", "job", "--address", addr,
 			"--from", "alice", "--kind", "say", "--to", "bob", "--body", "three", "--txid", "k3"}
 		if len(re) == 1 {
 			args = append(args, "--re", re[0])
@@ -141,7 +141,7 @@ func TestPublishReRefusalsNameTheRule(t *testing.T) {
 	}
 }
 
-func TestPublishWithoutReSendsNoRe(t *testing.T) {
+func TestSendWithoutReSendsNoRe(t *testing.T) {
 	var mu sync.Mutex
 	var got [][]byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +154,7 @@ func TestPublishWithoutReSendsNoRe(t *testing.T) {
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
 	ctx := context.Background()
-	base := []string{"publish", "--address", addr, "--conversation", "job", "--from", "alice", "--kind", "say", "--body", "x", "--txid", "1"}
+	base := []string{"chat", "send", "job", "--address", addr, "--from", "alice", "--kind", "say", "--body", "x", "--txid", "1"}
 	runClient(t, ctx, base...)
 	runClient(t, ctx, append(base, "--re", "0")...)
 	mu.Lock()
@@ -174,15 +174,15 @@ func TestAttendPrintsTheReLine(t *testing.T) {
 	t.Cleanup(stop)
 	ctx := context.Background()
 	createRoster(t, ctx, addr, "job", "alpha")
-	turn := publishAs(t, ctx, addr, "job", "owner", "turn", []string{"alpha"}, "go", "turn-1")
-	proc := startAttend(t, "attend", "--address", addr, "--conversation", "job")
+	turn := sendAs(t, ctx, addr, "job", "owner", "turn", []string{"alpha"}, "go", "turn-1")
+	proc := startAttend(t, "chat", "attend", "job", "--address", addr)
 	re := turn.Seq
 	res, err := client.Do(ctx, addr, "send", "", client.SendRequest{
 		Chat: "job", From: "alpha", To: []string{"owner"},
 		Body: "finished", TxID: "done-1", Kind: "done", Re: &re,
 	})
 	if err != nil || res.Outcome != bus.OutcomeOK {
-		t.Fatalf("publish %v %+v", err, res)
+		t.Fatalf("send %v %+v", err, res)
 	}
 	out := proc.wait(t)
 	if proc.err != nil {

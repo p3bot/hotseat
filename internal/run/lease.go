@@ -34,7 +34,7 @@ type pace struct {
 	grace time.Duration
 	// renew is the lease renewal interval.
 	renew time.Duration
-	// sleep is the single wait on a conversation another conductor holds.
+	// sleep is the single wait on a chat another conductor holds.
 	sleep func(ctx context.Context, d time.Duration) error
 }
 
@@ -62,7 +62,7 @@ func mintHolder() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
-// acquire takes the conversation lease and starts its renewal. With wait set, a conversation
+// acquire takes the chat lease and starts its renewal. With wait set, a chat
 // another conductor holds is waited on once, for what is left on that lease: a dead holder's
 // lease runs out and the second acquire succeeds, and a live holder's renewal refuses it again.
 func (e *engine) acquire(wait bool) error {

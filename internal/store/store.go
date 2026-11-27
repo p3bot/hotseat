@@ -65,7 +65,7 @@ const (
 	MemberTimedOut = "timed-out"
 )
 
-const chatColumns = `name, status, task, ticket, seat, directory, prompts, custom, roster`
+const chatColumns = `name, status, task, ticket, seat, directory, prompts, custom, roster, permission`
 
 const messageColumns = `seq, time, sender, recipients, body, txid, kind, re`
 
@@ -83,7 +83,8 @@ var schemaStmts = []string{
   directory TEXT NOT NULL,
   prompts TEXT NOT NULL,
   custom TEXT NOT NULL,
-  roster TEXT NOT NULL
+  roster TEXT NOT NULL,
+  permission TEXT NOT NULL
 ) STRICT`,
 	`CREATE TABLE IF NOT EXISTS messages (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -230,15 +231,33 @@ var (
 )
 
 // Binding is the chat row beside the name and status.
-// Prompts and Roster keep the caller's order.
+// Prompts and Roster keep the caller's order. Permission is the one member launches take.
 type Binding struct {
-	Task      string
-	Ticket    string
-	Seat      string
-	Directory string
-	Prompts   []string
-	Custom    string
-	Roster    []string
+	Task       string
+	Ticket     string
+	Seat       string
+	Directory  string
+	Prompts    []string
+	Custom     string
+	Roster     []RosterEntry
+	Permission string
+}
+
+// RosterEntry is one roster member. Name is the only field the store and bus read. Module and Model are stored and
+// returned as given, and either may be empty.
+type RosterEntry struct {
+	Name   string
+	Module string
+	Model  string
+}
+
+// RosterNames is the names of roster, in order.
+func RosterNames(roster []RosterEntry) []string {
+	names := make([]string, len(roster))
+	for i, r := range roster {
+		names[i] = r.Name
+	}
+	return names
 }
 
 // Chat is a name, its status, and its binding.
@@ -471,7 +490,7 @@ func (s *Store) Create(ctx context.Context, name string, b Binding) (Chat, bool,
 	if err != nil {
 		return Chat{}, false, err
 	}
-	roster, err := marshalTo(b.Roster)
+	roster, err := marshalRoster(b.Roster)
 	if err != nil {
 		return Chat{}, false, err
 	}
@@ -480,9 +499,9 @@ func (s *Store) Create(ctx context.Context, name string, b Binding) (Chat, bool,
 	err = s.withTx(ctx, true, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO chats (
-				name, status, task, ticket, seat, directory, prompts, custom, roster
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			name, StatusOpen, b.Task, b.Ticket, b.Seat, b.Directory, prompts, b.Custom, roster)
+				name, status, task, ticket, seat, directory, prompts, custom, roster, permission
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			name, StatusOpen, b.Task, b.Ticket, b.Seat, b.Directory, prompts, b.Custom, roster, b.Permission)
 		if err == nil {
 			chat = Chat{Name: name, Status: StatusOpen, Binding: b}
 			return nil
@@ -851,7 +870,7 @@ func (s *Store) withTx(ctx context.Context, write bool, fn func(*sql.Tx) error) 
 
 func normalizeBinding(b Binding) Binding {
 	b.Prompts = copyTo(b.Prompts)
-	b.Roster = copyTo(b.Roster)
+	b.Roster = append([]RosterEntry{}, b.Roster...)
 	return b
 }
 
@@ -872,7 +891,7 @@ func scanChat(row rowScanner) (Chat, error) {
 	var c Chat
 	var prompts, roster string
 	if err := row.Scan(
-		&c.Name, &c.Status, &c.Task, &c.Ticket, &c.Seat, &c.Directory, &prompts, &c.Custom, &roster,
+		&c.Name, &c.Status, &c.Task, &c.Ticket, &c.Seat, &c.Directory, &prompts, &c.Custom, &roster, &c.Permission,
 	); err != nil {
 		return Chat{}, err
 	}
@@ -885,7 +904,7 @@ func finishChat(c Chat, prompts, roster string) (Chat, error) {
 	if err != nil {
 		return Chat{}, fmt.Errorf("chat %s prompts: %w", c.Name, err)
 	}
-	c.Roster, err = unmarshalTo(roster)
+	c.Roster, err = unmarshalRoster(roster)
 	if err != nil {
 		return Chat{}, fmt.Errorf("chat %s roster: %w", c.Name, err)
 	}
@@ -915,7 +934,7 @@ func shapeMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 			return false, err
 		}
 	}
-	for _, col := range []string{"task", "ticket", "seat", "directory", "prompts", "custom", "roster"} {
+	for _, col := range []string{"task", "ticket", "seat", "directory", "prompts", "custom", "roster", "permission"} {
 		ok, err := columnExists(ctx, tx, "chats", col)
 		if err != nil || !ok {
 			return false, err

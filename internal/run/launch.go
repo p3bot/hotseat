@@ -91,7 +91,7 @@ func (e *engine) launchForTurn(name string, turn client.Message, prompt string) 
 	return err
 }
 
-// answered reports whether name published an answer to turn after it.
+// answered reports whether name sent an answer to turn after it.
 func (e *engine) answered(name string, turn client.Message) (bool, error) {
 	msgs, err := e.readFrom(turn.Seq)
 	if err != nil {
@@ -125,12 +125,9 @@ func concerns(m client.Message, seq int64) bool {
 // launchUnless runs one member process under its slot and reports whether it started one. seq is the message the launch
 // concerns. skip, when set, is checked inside the slot. A skipped launch writes no member row and no event.
 func (e *engine) launchUnless(name string, kind launchKind, seq int64, prompt string, skip func() (bool, error)) (bool, error) {
-	if !e.canLaunch() {
-		return false, nil
-	}
 	a, ok := e.agent(name)
-	if !ok || a.module == "" || a.model == "" {
-		return false, errors.New("roster is required to launch")
+	if !ok {
+		return false, fmt.Errorf("%s is not in the roster", name)
 	}
 	sl := e.slot(name)
 	sl.mu.Lock()
@@ -160,7 +157,7 @@ func (e *engine) launchUnless(name string, kind launchKind, seq int64, prompt st
 	cmd.Stdout = &stdout
 	started, err := e.startUnlessStopping(cmd)
 	if errors.Is(err, errLaunchCap) {
-		return false, e.publishWind(classLaunchCap)
+		return false, e.sendWind(classLaunchCap)
 	}
 	if err != nil || !started {
 		return false, err
@@ -260,6 +257,23 @@ func (e *engine) show(err error) error {
 	return werr
 }
 
+// memberEnv is base with HOTSEAT_ADDRESS set to addr and HOTSEAT_TOKEN_FILE set to tokenFile, or removed when
+// tokenFile is empty, so a member's chat commands reach the bus this run calls. start passes it to the agent.
+func memberEnv(base []string, addr, tokenFile string) []string {
+	env := make([]string, 0, len(base)+2)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, envAddress+"=") || strings.HasPrefix(kv, envTokenFile+"=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, envAddress+"="+addr)
+	if tokenFile != "" {
+		env = append(env, envTokenFile+"="+tokenFile)
+	}
+	return env
+}
+
 func (e *engine) agentCmd(ctx context.Context, a agent, prompt string) *exec.Cmd {
 	args := []string{
 		"--quiet",
@@ -276,6 +290,7 @@ func (e *engine) agentCmd(ctx context.Context, a agent, prompt string) *exec.Cmd
 	}
 	cmd := exec.CommandContext(ctx, e.startBin, args...)
 	cmd.Dir = e.dir
+	cmd.Env = e.memberEnv
 	cmd.Stdin = strings.NewReader(prompt)
 	// Stdout is the session JSON and is parsed apart from this stream.
 	cmd.Stderr = e.stderr
@@ -407,8 +422,8 @@ func (e *engine) recordTimeout(name, class string) error {
 	return e.timeout(name, class, false)
 }
 
-// timeout writes timed-out, publishes the error, and notes a handoff when name was acting.
-// With floor set, the wind-down is decided before the publish and the handoff, so nothing they wake can launch past it.
+// timeout writes timed-out, sends the error, and notes a handoff when name was acting.
+// With floor set, the wind-down is decided before the send and the handoff, so nothing they wake can launch past it.
 func (e *engine) timeout(name, class string, floor bool) error {
 	// The acting check has to see the old status. A failed read still records the death.
 	acting, actErr := e.isActing(name)
@@ -416,12 +431,12 @@ func (e *engine) timeout(name, class string, floor bool) error {
 		return err
 	}
 	below := floor && e.windBelowMinimum()
-	seq, err := e.publishErr(name, class)
+	seq, err := e.sendErr(name, class)
 	if err != nil {
 		return err
 	}
 	if below {
-		if err := e.publishWind(classBelowMinimum); err != nil {
+		if err := e.sendWind(classBelowMinimum); err != nil {
 			return err
 		}
 	}
@@ -491,35 +506,35 @@ func mintTx() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
-// publishErr publishes an error that names no message, under a random transaction id, and returns the stored seq.
-func (e *engine) publishErr(member, class string) (int64, error) {
+// sendErr sends an error that names no message, under a random transaction id, and returns the stored seq.
+func (e *engine) sendErr(member, class string) (int64, error) {
 	seq, _, err := e.storeErr(member, class, 0, "")
 	return seq, err
 }
 
-// haltProtocol publishes the halting protocol error class and stops the run on it.
+// haltProtocol sends the halting protocol error class and stops the run on it.
 func (e *engine) haltProtocol(member, class string) error {
-	seq, err := e.publishErr(member, class)
+	seq, err := e.sendErr(member, class)
 	if err != nil {
 		return err
 	}
 	return e.noteHalt(&protocolStop{class: class, seq: seq})
 }
 
-// protocolErr publishes a finding-protocol error about the message at re, under a random transaction id.
+// protocolErr sends a finding-protocol error about the message at re, under a random transaction id.
 func (e *engine) protocolErr(member, class string, re int64) error {
 	_, _, err := e.storeErr(member, class, re, "")
 	return err
 }
 
-// factErr publishes a finding-protocol error under tx, a transaction id derived from its fact.
+// factErr sends a finding-protocol error under tx, a transaction id derived from its fact.
 // A continuation that meets the same fact again gets the stored error back.
 func (e *engine) factErr(member, class string, re int64, tx string) error {
 	_, _, err := e.storeErr(member, class, re, tx)
 	return err
 }
 
-// storeErr publishes an error from run to owner and returns its seq and whether the bus stored a new message.
+// storeErr sends an error from run to owner and returns its seq and whether the bus stored a new message.
 // re is the message it concerns, or zero. An empty tx mints a random transaction id.
 // Each newly stored error writes one error event, so a fact met again on a continuation writes none.
 func (e *engine) storeErr(member, class string, re int64, tx string) (int64, bool, error) {
@@ -530,7 +545,7 @@ func (e *engine) storeErr(member, class string, re int64, tx string) (int64, boo
 	return seq, fresh, err
 }
 
-// errEvent writes the event of an error run published: its class, the member, and the message it concerns.
+// errEvent writes the event of an error run sent: its class, the member, and the message it concerns.
 func (e *engine) errEvent(member, class string, re int64) {
 	args := []any{"class", class}
 	if member != "" {
@@ -555,7 +570,7 @@ func factTx(class string, parts ...string) string {
 	return strings.Join(append([]string{class}, parts...), "/")
 }
 
-// post is one message run publishes. A zero re publishes none, and an empty tx mints a random transaction id.
+// post is one message run sends. A zero re sends none, and an empty tx mints a random transaction id.
 type post struct {
 	kind string
 	from string
@@ -565,7 +580,7 @@ type post struct {
 	tx   string
 }
 
-// send publishes p and returns the stored seq and whether the bus stored a new message.
+// send sends p and returns the stored seq and whether the bus stored a new message.
 // A replay of a stored attempt is success and not new.
 func (e *engine) send(p post) (int64, bool, error) {
 	tx := p.tx
@@ -592,7 +607,7 @@ func (e *engine) send(p post) (int64, bool, error) {
 		return 0, false, err
 	}
 	if res.Message == nil {
-		return 0, false, fmt.Errorf("publish %s: ok with no message", p.kind)
+		return 0, false, fmt.Errorf("send %s: ok with no message", p.kind)
 	}
 	return res.Message.Seq, res.AlreadyStored == nil || !*res.AlreadyStored, nil
 }

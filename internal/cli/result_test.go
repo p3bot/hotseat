@@ -41,7 +41,7 @@ func TestWriteResultLayout(t *testing.T) {
 	}
 	const want = `outcome: ok
 already_stored: false
-conversation:
+chat:
 name: job
 status: open
 message:
@@ -66,7 +66,7 @@ hello
 		t.Fatalf("parsed %+v", got)
 	}
 	if got.Chat.Name != "job" || got.Chat.Status != "open" {
-		t.Fatalf("conversation %+v", got.Chat)
+		t.Fatalf("chat %+v", got.Chat)
 	}
 	if got.Message.Seq != 1 || got.Message.From != "alice" || got.Message.Body != "hello" || got.Message.TxID != "1" {
 		t.Fatalf("message %+v", got.Message)
@@ -85,14 +85,14 @@ func TestWriteResultFramesAwkwardText(t *testing.T) {
 		{Seq: 3, Time: "t", From: "alice", To: []string{}, Body: "outcome: ok", TxID: "field"},
 		{Seq: 4, Time: "t\n2", From: "alice", To: []string{"bob"}, Body: "one\noutcome: ok\n", TxID: "a\nb"},
 	}
-	convs := []client.Chat{}
+	chats := []client.Chat{}
 	res := client.Result{
 		Outcome:        "ok",
 		Reason:         "line\nkey: value",
 		AlreadyExisted: &existed,
 		MatchSeq:       &seq,
 		Messages:       &msgs,
-		Chats:          &convs,
+		Chats:          &chats,
 	}
 	var buf bytes.Buffer
 	if err := writeResult(&buf, res); err != nil {
@@ -240,16 +240,20 @@ func parseResult(raw []byte) (client.Result, error) {
 	if err != nil {
 		return res, err
 	}
-	if ok, err := c.ifHeader("conversation"); err != nil {
+	res.More, err = c.optionalBool("more")
+	if err != nil {
+		return res, err
+	}
+	if ok, err := c.ifHeader("chat"); err != nil {
 		return res, err
 	} else if ok {
-		conv, err := c.conversation()
+		chat, err := c.chatBinding()
 		if err != nil {
 			return res, err
 		}
-		res.Chat = &conv
+		res.Chat = &chat
 	}
-	if ok, err := c.ifHeader("conversations"); err != nil {
+	if ok, err := c.ifHeader("chats"); err != nil {
 		return res, err
 	} else if ok {
 		list := []client.Chat{}
@@ -264,11 +268,11 @@ func parseResult(raw []byte) (client.Result, error) {
 			if f.key != "name" {
 				break
 			}
-			conv, err := c.conversation()
+			chat, err := c.chatBinding()
 			if err != nil {
 				return res, err
 			}
-			list = append(list, conv)
+			list = append(list, chat)
 		}
 		res.Chats = &list
 	}
@@ -356,56 +360,58 @@ type textField struct {
 	framed bool
 }
 
-func (c *textCursor) conversation() (client.Chat, error) {
+func (c *textCursor) chatBinding() (client.Chat, error) {
 	name, err := c.value("name")
 	if err != nil {
 		return client.Chat{}, err
 	}
-	conv := client.Chat{Name: name}
+	chat := client.Chat{Name: name}
 	if c.i < len(c.raw) {
 		f, err := c.peek()
 		if err != nil {
-			return conv, err
+			return chat, err
 		}
 		if f.key == "status" {
 			status, err := c.value("status")
 			if err != nil {
-				return conv, err
+				return chat, err
 			}
-			conv.Status = status
+			chat.Status = status
 		}
 	}
 	for c.i < len(c.raw) {
 		f, err := c.peek()
 		if err != nil {
-			return conv, err
+			return chat, err
 		}
 		switch f.key {
-		case "task", "ticket", "seat", "directory", "custom", "prompts", "roster":
+		case "task", "ticket", "seat", "directory", "custom", "prompts", "roster", "permission":
 			if _, err := c.next(); err != nil {
-				return conv, err
+				return chat, err
 			}
 			switch f.key {
 			case "task":
-				conv.Task = f.value
+				chat.Task = f.value
 			case "ticket":
-				conv.Ticket = f.value
+				chat.Ticket = f.value
 			case "seat":
-				conv.Seat = f.value
+				chat.Seat = f.value
 			case "directory":
-				conv.Directory = f.value
+				chat.Directory = f.value
 			case "custom":
-				conv.Custom = f.value
+				chat.Custom = f.value
 			case "prompts":
-				conv.Prompts = append(conv.Prompts, f.value)
+				chat.Prompts = append(chat.Prompts, f.value)
 			case "roster":
-				conv.Roster = append(conv.Roster, f.value)
+				chat.Roster = append(chat.Roster, rosterLine(f.value))
+			case "permission":
+				chat.Permission = f.value
 			}
 		default:
-			return conv, nil
+			return chat, nil
 		}
 	}
-	return conv, nil
+	return chat, nil
 }
 
 func (c *textCursor) memberFields() (client.Member, error) {
@@ -423,7 +429,7 @@ func (c *textCursor) memberFields() (client.Member, error) {
 	if err != nil {
 		return m, err
 	}
-	m.Joined, err = c.value("registered")
+	m.Joined, err = c.value("joined")
 	if err != nil {
 		return m, err
 	}
@@ -660,4 +666,14 @@ func (c *textCursor) take(n int) (string, error) {
 	}
 	c.i++
 	return s, nil
+}
+
+// rosterLine reads a roster line back: name=module:model, or name alone.
+func rosterLine(v string) client.RosterEntry {
+	name, rest, ok := strings.Cut(v, "=")
+	if !ok {
+		return client.RosterEntry{Name: v}
+	}
+	module, model, _ := strings.Cut(rest, ":")
+	return client.RosterEntry{Name: name, Module: module, Model: model}
 }

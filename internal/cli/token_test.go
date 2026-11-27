@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -129,7 +130,7 @@ func TestTokenConfigurationDoesNotListen(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			storeDir := filepath.Join(root, "store")
-			args := []string{"bus", "start", "--store", storeDir, "--listen", tt.listen}
+			args := []string{"bus", "start", "--store", storeDir, "--address", tt.listen}
 			if tt.file != "" {
 				path := filepath.Join(root, "nope")
 				if tt.file != "missing" {
@@ -281,7 +282,7 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 		defer cancel()
 		_ = stopBus(ctx, storeDir)
 	})
-	started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", listenAddr, "--token-file", tokenPath)
+	started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", listenAddr, "--token-file", tokenPath)
 	if started.code != 0 {
 		t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 	}
@@ -333,54 +334,52 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 	}
 	assertBytesOmit(t, record, secrets)
 
-	refused := runBin(t, bin, secrets, "create", "--address", dialAddr, "--name", "job")
+	refused := runBin(t, bin, secrets, "chat", "create", "job", "--address", dialAddr)
 	if refused.Outcome != bus.OutcomeRefused || refused.Reason != bus.ReasonTokenRequired {
 		t.Fatalf("create without token %+v", refused)
 	}
-	bad := runBin(t, bin, secrets, "create", "--address", dialAddr, "--token-file", wrongPath, "--name", "job")
+	bad := runBin(t, bin, secrets, "chat", "create", "job", "--address", dialAddr, "--token-file", wrongPath)
 	if bad.Outcome != bus.OutcomeRefused || bad.Reason != bus.ReasonTokenRejected {
 		t.Fatalf("wrong token %+v", bad)
 	}
-	empty := runBin(t, bin, secrets, "list", "--address", dialAddr, "--token-file", tokenPath)
+	empty := runBin(t, bin, secrets, "chat", "list", "--address", dialAddr, "--token-file", tokenPath)
 	if empty.Outcome != bus.OutcomeOK || empty.Chats == nil || len(*empty.Chats) != 0 {
 		t.Fatalf("list %+v", empty.Chats)
 	}
 
-	created := runBin(t, bin, secrets, "create", "--address", dialAddr, "--token-file", tokenPath, "--name", "job")
+	created := runBin(t, bin, secrets, "chat", "create", "job", "--address", dialAddr, "--token-file", tokenPath)
 	if created.Outcome != bus.OutcomeOK || created.Chat == nil || created.Chat.Name != "job" {
 		t.Fatalf("create %+v", created.Chat)
 	}
-	missed := runBin(t, bin, secrets, "publish", "--address", dialAddr, "--token-file", wrongPath,
-		"--conversation", "job", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "one", "--txid", "k1")
+	missed := runBin(t, bin, secrets, "chat", "send", "job", "--address", dialAddr, "--token-file", wrongPath, "--from", "alice", "--kind", "say", "--to", "bob", "--body", "one", "--txid", "k1")
 	if missed.Outcome != bus.OutcomeRefused || missed.Reason != bus.ReasonTokenRejected {
-		t.Fatalf("publish wrong %+v", missed)
+		t.Fatalf("send wrong %+v", missed)
 	}
-	none := runBin(t, bin, secrets, "read", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--cursor", "0", "--limit", "10")
+	none := runBin(t, bin, secrets, "chat", "read", "job", "--address", dialAddr, "--token-file", tokenPath, "--cursor", "0", "--limit", "10")
 	if none.Outcome != bus.OutcomeOK || none.Messages == nil || len(*none.Messages) != 0 {
 		t.Fatalf("read %+v", none.Messages)
 	}
-	alice := runBin(t, bin, secrets, "publish", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "one", "--txid", "k1")
-	carol := runBin(t, bin, secrets, "publish", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--from", "carol", "--kind", "say", "--to", "bob", "--body", "two", "--txid", "k2")
+	alice := runBin(t, bin, secrets, "chat", "send", "job", "--address", dialAddr, "--token-file", tokenPath, "--from", "alice", "--kind", "say", "--to", "bob", "--body", "one", "--txid", "k1")
+	carol := runBin(t, bin, secrets, "chat", "send", "job", "--address", dialAddr, "--token-file", tokenPath, "--from", "carol", "--kind", "say", "--to", "bob", "--body", "two", "--txid", "k2")
 	if alice.Message == nil || alice.Message.From != "alice" || carol.Message == nil || carol.Message.From != "carol" {
 		t.Fatalf("from %v %v", alice.Message, carol.Message)
 	}
-	read := runBin(t, bin, secrets, "read", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--cursor", "0", "--limit", "10")
+	read := runBin(t, bin, secrets, "chat", "read", "job", "--address", dialAddr, "--token-file", tokenPath, "--cursor", "0", "--limit", "10")
 	if read.Messages == nil || len(*read.Messages) != 2 || (*read.Messages)[0].From != "alice" || (*read.Messages)[1].From != "carol" {
 		t.Fatalf("transcript %+v", read.Messages)
 	}
 
 	wctx, cancelWait := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelWait()
-	bare := exec.CommandContext(wctx, bin, "wait", "--address", dialAddr, "--conversation", "job", "--cursor", "0", "--name", "bob", "--deadline", "30s")
+	bare := exec.CommandContext(wctx, bin, "chat", "wait", "job", "--address", dialAddr, "--cursor", "0", "--to", "bob", "--deadline", "30s")
 	var bareOut, bareErr bytes.Buffer
 	bare.Stdout = &bareOut
 	bare.Stderr = &bareErr
 	if err := bare.Run(); err != nil {
-		t.Fatalf("wait without token: %v", err)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != ExitRefused {
+			t.Fatalf("wait without token: %v", err)
+		}
 	}
 	bareRes := parseStdout(t, bareOut.Bytes())
 	if bareRes.Outcome != bus.OutcomeRefused || bareRes.Reason != bus.ReasonTokenRequired {
@@ -390,18 +389,16 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 		t.Fatal("wait output contains the token")
 	}
 
-	waited := runBin(t, bin, secrets, "wait", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--cursor", "0", "--name", "bob", "--deadline", "5s")
+	waited := runBin(t, bin, secrets, "chat", "wait", "job", "--address", dialAddr, "--token-file", tokenPath, "--cursor", "0", "--to", "bob", "--deadline", "5s")
 	if waited.Outcome != bus.OutcomeOK || waited.MatchSeq == nil || waited.Messages == nil || len(*waited.Messages) == 0 {
 		t.Fatalf("wait %+v", waited)
 	}
-	open := runBin(t, bin, secrets, "close", "--address", dialAddr, "--conversation", "job")
+	open := runBin(t, bin, secrets, "chat", "close", "job", "--address", dialAddr)
 	if open.Outcome != bus.OutcomeRefused || open.Reason != bus.ReasonTokenRequired {
 		t.Fatalf("close without token %+v", open)
 	}
 
-	parked := exec.Command(bin, "wait", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--cursor", "99", "--name", "zed", "--deadline", "30s")
+	parked := exec.Command(bin, "chat", "wait", "job", "--address", dialAddr, "--token-file", tokenPath, "--cursor", "99", "--to", "zed", "--deadline", "30s")
 	assertArgsOmit(t, parked.Args, secrets)
 	if err := parked.Start(); err != nil {
 		t.Fatal(err)
@@ -413,13 +410,11 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 	_ = parked.Process.Kill()
 	_ = parked.Wait()
 
-	dave := runBin(t, bin, secrets, "publish", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--from", "dave", "--kind", "say", "--to", "bob", "--body", "from-bin", "--txid", "bin-1")
+	dave := runBin(t, bin, secrets, "chat", "send", "job", "--address", dialAddr, "--token-file", tokenPath, "--from", "dave", "--kind", "say", "--to", "bob", "--body", "from-bin", "--txid", "bin-1")
 	if dave.Outcome != bus.OutcomeOK || dave.Message == nil || dave.Message.From != "dave" || dave.Message.Body != "from-bin" {
 		t.Fatalf("dave %+v", dave.Message)
 	}
-	page := runBin(t, bin, secrets, "read", "--address", dialAddr, "--token-file", tokenPath,
-		"--conversation", "job", "--cursor", "0", "--limit", "10")
+	page := runBin(t, bin, secrets, "chat", "read", "job", "--address", dialAddr, "--token-file", tokenPath, "--cursor", "0", "--limit", "10")
 	sawDave := false
 	if page.Messages != nil {
 		for _, m := range *page.Messages {
@@ -429,14 +424,14 @@ func TestNonLoopbackClientUsesTokenFile(t *testing.T) {
 		}
 	}
 	if !sawDave {
-		t.Fatal("binary read missed the publish")
+		t.Fatal("binary read missed the send")
 	}
 
-	shut := runBin(t, bin, secrets, "close", "--address", dialAddr, "--token-file", tokenPath, "--conversation", "job")
+	shut := runBin(t, bin, secrets, "chat", "close", "job", "--address", dialAddr, "--token-file", tokenPath)
 	if shut.Outcome != bus.OutcomeOK || shut.Chat == nil || shut.Chat.Status != "closed" {
 		t.Fatalf("close %+v", shut.Chat)
 	}
-	final := runBin(t, bin, secrets, "list", "--address", dialAddr, "--token-file", tokenPath)
+	final := runBin(t, bin, secrets, "chat", "list", "--address", dialAddr, "--token-file", tokenPath)
 	if final.Chats == nil || len(*final.Chats) != 1 || (*final.Chats)[0].Status != "closed" {
 		t.Fatalf("final %+v", final.Chats)
 	}
@@ -494,7 +489,14 @@ func runBin(t *testing.T, bin string, secrets []string, args ...string) client.R
 		}
 	}
 	if err != nil {
-		t.Fatalf("%v: %v\n%s", args, err, out)
+		var exit *exec.ExitError
+		code := 0
+		if errors.As(err, &exit) {
+			code = exit.ExitCode()
+		}
+		if code != ExitRefused && code != ExitTimeout && code != ExitUnavailable {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
 	}
 	return parseStdout(t, stdout.Bytes())
 }

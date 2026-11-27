@@ -26,14 +26,14 @@ type runResult struct {
 	ended  time.Time
 }
 
-func (h *harness) goRun(ctx context.Context, cfg Config) <-chan runResult {
+func (h *harness) goRun(ctx context.Context, cfg runArgs) <-chan runResult {
 	h.t.Helper()
 	ch := make(chan runResult, 1)
 	h.save()
 	go func() {
 		out := &recorder{}
 		var stderr lockedBuffer
-		err := executePaced(ctx, cfg, h.pace, out, &stderr)
+		err := cfg.execute(ctx, h.pace, out, &stderr)
 		ch <- runResult{out: out, stderr: stderr.String(), err: err, ended: time.Now()}
 	}()
 	return ch
@@ -50,22 +50,22 @@ func (h *harness) awaitRun(ch <-chan runResult, limit time.Duration) runResult {
 	}
 }
 
-func (h *harness) awaitStatus(conv, name, status string) {
+func (h *harness) awaitStatus(chat, name, status string) {
 	h.t.Helper()
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if h.memberStatus(conv, name) == status {
+		if h.memberStatus(chat, name) == status {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	h.t.Fatalf("%s is %s, not %s", name, h.memberStatus(conv, name), status)
+	h.t.Fatalf("%s is %s, not %s", name, h.memberStatus(chat, name), status)
 }
 
-func (h *harness) session(conv, name string) string {
+func (h *harness) session(chat, name string) string {
 	h.t.Helper()
 	n := name
-	res := h.do("session", client.SessionRequest{Chat: conv, Name: &n})
+	res := h.do("session", client.SessionRequest{Chat: chat, Name: &n})
 	if res.Outcome != bus.OutcomeOK || res.Session == nil {
 		h.t.Fatalf("session %s %s", name, res.Reason)
 	}
@@ -80,7 +80,7 @@ func exitLine(name string, code string) string {
 func TestDoneSenderThatExitsInTheGraceIsExitedWithItsSession(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.pace.grace = 10 * time.Second
 	h.hold("alpha")
 	cctx, cancel := ctx()
@@ -88,7 +88,7 @@ func TestDoneSenderThatExitsInTheGraceIsExitedWithItsSession(t *testing.T) {
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
 	h.awaitStatus(name, "alpha", statusLaunched)
-	h.publish(name, "alpha", "done", "finished", nil)
+	h.send(name, "alpha", "done", "finished", nil)
 	time.Sleep(300 * time.Millisecond)
 	h.release("alpha")
 	released := time.Now()
@@ -116,7 +116,7 @@ func TestDoneSenderThatExitsInTheGraceIsExitedWithItsSession(t *testing.T) {
 func TestDoneSenderThatHangsIsKilledAtTheEndOfTheGrace(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.pace.grace = 500 * time.Millisecond
 	h.hold("alpha")
 	cctx, cancel := ctx()
@@ -124,14 +124,14 @@ func TestDoneSenderThatHangsIsKilledAtTheEndOfTheGrace(t *testing.T) {
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
 	h.awaitStatus(name, "alpha", statusLaunched)
-	// Taken before the publish, so the grace cannot start before it.
-	published := time.Now()
-	h.publish(name, "alpha", "done", "finished", nil)
+	// Taken before the send, so the grace cannot start before it.
+	sent := time.Now()
+	h.send(name, "alpha", "done", "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
 	if res.err != nil {
 		t.Fatal(res.err, res.stderr)
 	}
-	if took := res.ended.Sub(published); took < h.pace.grace || took > 4*time.Second {
+	if took := res.ended.Sub(sent); took < h.pace.grace || took > 4*time.Second {
 		t.Fatalf("run returned %s after done", took)
 	}
 	if got := h.memberStatus(name, "alpha"); got != statusTimedOut {
@@ -149,7 +149,7 @@ func TestMemberDueAfterTheDoneSenderInASerialTurnIsNotLaunched(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.pace.grace = 10 * time.Second
 	cctx, cancel := ctx()
 	defer cancel()
@@ -159,9 +159,9 @@ func TestMemberDueAfterTheDoneSenderInASerialTurnIsNotLaunched(t *testing.T) {
 		h.awaitStatus(name, n, statusExited)
 	}
 	h.hold("alpha")
-	h.publish(name, "charlie", "turn", "mode: serial\nreview", []string{"alpha", "bravo"})
+	h.send(name, "charlie", "turn", "mode: serial\nreview", []string{"alpha", "bravo"})
 	h.awaitStatus(name, "alpha", statusRunning)
-	h.publish(name, "alpha", "done", "finished", nil)
+	h.send(name, "alpha", "done", "finished", nil)
 	time.Sleep(500 * time.Millisecond)
 	h.release("alpha")
 	res := h.awaitRun(ch, 8*time.Second)
@@ -192,7 +192,7 @@ func TestOtherRunningMemberIsStoppedWithoutWaitingForTheDoneSender(t *testing.T)
 	h := newHarness(t)
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.pace.grace = 10 * time.Second
 	cctx, cancel := ctx()
 	defer cancel()
@@ -203,13 +203,13 @@ func TestOtherRunningMemberIsStoppedWithoutWaitingForTheDoneSender(t *testing.T)
 	}
 	h.hold("alpha")
 	h.hold("bravo")
-	h.publish(name, "charlie", "turn", "mode: parallel\nreview", []string{"alpha", "bravo"})
+	h.send(name, "charlie", "turn", "mode: parallel\nreview", []string{"alpha", "bravo"})
 	h.awaitStatus(name, "alpha", statusRunning)
 	h.awaitStatus(name, "bravo", statusRunning)
-	h.publish(name, "alpha", "done", "finished", nil)
-	published := time.Now()
+	h.send(name, "alpha", "done", "finished", nil)
+	sent := time.Now()
 	h.awaitStatus(name, "bravo", statusTimedOut)
-	if took := time.Since(published); took > 3*time.Second {
+	if took := time.Since(sent); took > 3*time.Second {
 		t.Fatalf("bravo stopped %s after done", took)
 	}
 	if got := h.memberStatus(name, "alpha"); got != statusRunning {
@@ -238,7 +238,7 @@ func TestBackupActingAsSeatGetsTheDoneGrace(t *testing.T) {
 		"bravo": {Join: true},
 	}
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.pace.grace = 10 * time.Second
 	h.hold("bravo")
 	cctx, cancel := ctx()
@@ -253,7 +253,7 @@ func TestBackupActingAsSeatGetsTheDoneGrace(t *testing.T) {
 	if h.memberStatus(name, "alpha") != statusTimedOut {
 		t.Fatalf("alpha %s", h.memberStatus(name, "alpha"))
 	}
-	h.publish(name, "bravo", "done", "finished", nil)
+	h.send(name, "bravo", "done", "finished", nil)
 	time.Sleep(300 * time.Millisecond)
 	h.release("bravo")
 	released := time.Now()
@@ -302,12 +302,12 @@ func TestLeftoverDoneSenderThatExitsInTheGraceFollowsTheShutdownRule(t *testing.
 			live := int64(pid)
 			res := h.do("create", client.CreateRequest{
 				Name: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha",
-				Directory: h.dir, Roster: []string{"alpha"},
+				Directory: h.dir, Roster: seeded("alpha"), Permission: DefaultPermission,
 			})
 			if res.Outcome != bus.OutcomeOK {
 				t.Fatal(res.Reason)
 			}
-			h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha"})
+			h.send("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha"})
 			launched := statusLaunched
 			h.setMember("kept", "alpha", launched, &live)
 			if tc.session {
@@ -315,13 +315,8 @@ func TestLeftoverDoneSenderThatExitsInTheGraceFollowsTheShutdownRule(t *testing.
 				s := "sess-alpha"
 				h.setSession("kept", n, s)
 			}
-			h.publish("kept", "alpha", "done", "yes", nil)
-			cfg := h.base()
-			cfg.Conversation = "kept"
-			cfg.ConversationSet = true
-			cfg.TaskSet = false
-			cfg.TicketSet = false
-			cfg.AgentsSet = false
+			h.send("kept", "alpha", "done", "yes", nil)
+			cfg := h.continuing("kept")
 			h.pace.grace = 10 * time.Second
 			start := time.Now()
 			out, stderr, err := h.run(context.Background(), cfg)
@@ -354,7 +349,7 @@ func TestLeftoverDoneSenderThatExitsInTheGraceFollowsTheShutdownRule(t *testing.
 func TestCancelledCallerEndsTheDoneGraceAtOnce(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.pace.grace = 20 * time.Second
 	h.hold("alpha")
 	cctx, cancel := ctx()
@@ -366,7 +361,7 @@ func TestCancelledCallerEndsTheDoneGraceAtOnce(t *testing.T) {
 	if row.PID == nil {
 		t.Fatal("alpha has no pid")
 	}
-	h.publish(name, "alpha", "done", "finished", nil)
+	h.send(name, "alpha", "done", "finished", nil)
 	time.Sleep(300 * time.Millisecond)
 	cancel()
 	cancelled := time.Now()
@@ -379,27 +374,27 @@ func TestCancelledCallerEndsTheDoneGraceAtOnce(t *testing.T) {
 	}
 }
 
-// closingEngine returns an engine on conversation kept with roster alpha and bravo, seat alpha, as drive would hold it.
+// closingEngine returns an engine on chat kept with roster alpha and bravo, seat alpha, as drive would hold it.
 func (h *harness) closingEngine() (*engine, *lockedBuffer) {
 	h.t.Helper()
 	h.save()
 	res := h.do("create", client.CreateRequest{
 		Name: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha",
-		Directory: h.dir, Roster: []string{"alpha", "bravo"},
+		Directory: h.dir, Roster: seeded("alpha", "bravo"), Permission: DefaultPermission,
 	})
 	if res.Outcome != bus.OutcomeOK {
 		h.t.Fatal(res.Reason)
 	}
-	h.publish("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
+	h.send("kept", "owner", kindInstructions, "Review\n\nseat: alpha\n", []string{"alpha", "bravo"})
 	var stderr lockedBuffer
 	cfg := h.base()
 	cfg.Verbose = true
-	e, err := newEngine(context.Background(), cfg, h.pace, discardReporter{}, &stderr)
+	e, err := newEngine(context.Background(), cfg.Config, h.pace, discardReporter{}, &stderr)
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	h.t.Cleanup(e.cancel)
-	e.roster, err = parseAgents(e.cfg.Agents)
+	e.roster, err = parseAgents(cfg.Agents)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -444,7 +439,7 @@ func TestLaunchThatFindsTheRunClosingStartsNothing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			e, stderr := h.closingEngine()
-			done := h.publish("kept", "alpha", kindDone, "done", []string{"owner"})
+			done := h.send("kept", "alpha", kindDone, "done", []string{"owner"})
 			if err := e.finishDone(done); err != errDone {
 				t.Fatalf("finishDone %v", err)
 			}
@@ -459,7 +454,7 @@ func TestLaunchThatFindsTheRunClosingStartsNothing(t *testing.T) {
 func TestDoneSeenDuringLaunchSetupStartsNothing(t *testing.T) {
 	h := newHarness(t)
 	e, stderr := h.closingEngine()
-	done := h.publish("kept", "alpha", kindDone, "done", []string{"owner"})
+	done := h.send("kept", "alpha", kindDone, "done", []string{"owner"})
 	started, err := e.launchUnless("bravo", launchFollow, 1, e.followPrompt("bravo", 0, nil, nil), func() (bool, error) {
 		if err := e.finishDone(done); err != errDone {
 			return false, err
@@ -483,7 +478,7 @@ func TestLaunchAfterTheRunStoppedWithoutDoneStartsNothing(t *testing.T) {
 	h.noLaunchOf(stderr, "bravo")
 }
 
-func TestLeftoverThatExitsWhileTheRunClosesPublishesNoError(t *testing.T) {
+func TestLeftoverThatExitsWhileTheRunClosesSendsNoError(t *testing.T) {
 	h := newHarness(t)
 	e, _ := h.closingEngine()
 	dead := exec.Command("sleep", "0")
@@ -521,7 +516,7 @@ func TestDoneSenderThatFailsInTheGraceHandsOffToNobody(t *testing.T) {
 	h := newHarness(t)
 	h.plan.Launch = map[string]runFile{"alpha": {Exit: 1}}
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.pace.grace = 10 * time.Second
 	h.hold("alpha")
 	cctx, cancel := ctx()
@@ -529,7 +524,7 @@ func TestDoneSenderThatFailsInTheGraceHandsOffToNobody(t *testing.T) {
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
 	h.awaitStatus(name, "alpha", statusLaunched)
-	h.publish(name, "alpha", "done", "finished", nil)
+	h.send(name, "alpha", "done", "finished", nil)
 	time.Sleep(300 * time.Millisecond)
 	h.release("alpha")
 	res := h.awaitRun(ch, 8*time.Second)

@@ -16,7 +16,7 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
-// Stop classes are the body of the one error a run that held its lease publishes to owner when it stops on an error.
+// Stop classes are the body of the one error a run that held its lease sends to owner when it stops on an error.
 const (
 	stopProtocol = "stopped by protocol"
 	stopRefusal  = "stopped by refusal"
@@ -29,7 +29,7 @@ const (
 
 var stopClasses = []string{stopProtocol, stopRefusal, stopCommand, stopBus, stopLease, stopSignal, stopRun}
 
-// isStopError reports whether m is laid out as the stop error a run publishes: an error from run to owner alone whose
+// isStopError reports whether m is laid out as the stop error a run sends: an error from run to owner alone whose
 // body is a stop class. The sender is caller-supplied, so this is a reading of the transcript, not proof of a run.
 func isStopError(m client.Message) bool {
 	return m.Kind == kindError && m.From == fromRun && slices.Equal(m.To, []string{fromOwner}) && slices.Contains(stopClasses, m.Body)
@@ -72,7 +72,7 @@ func unusable(err error) error {
 }
 
 // rosterRefusal refuses a roster smaller than the task's min_members. It is the same check on create and on a
-// continuation, and it changes nothing in the conversation, so it is a refusal of the request and not an error stop.
+// continuation, and it changes nothing in the chat, so it is a refusal of the request and not an error stop.
 type rosterRefusal struct {
 	have int
 	task string
@@ -83,7 +83,7 @@ func (e *rosterRefusal) Error() string {
 	return fmt.Sprintf("roster has %d members and task %s requires %d", e.have, e.task, e.want)
 }
 
-// protocolStop is a halting protocol error run published. seq is that error message.
+// protocolStop is a halting protocol error run sent. seq is that error message.
 type protocolStop struct {
 	class string
 	seq   int64
@@ -144,7 +144,7 @@ func (e *engine) stopClass(err error) (string, int64) {
 	return stopCause(err)
 }
 
-// sayStop publishes the stop error of class, naming re, once the lease was acquired. The publish carries no holder and
+// sayStop sends the stop error of class, naming re, once the lease was acquired. The send carries no holder and
 // is bounded on its own clock, so a signal or a lost lease does not prevent it. A stored stop error writes its error
 // event. A failure is reported on stderr, because the run already stops.
 func (e *engine) sayStop(class string, re int64) {
@@ -153,7 +153,7 @@ func (e *engine) sayStop(class string, re int64) {
 	}
 	tx, err := mintTx()
 	if err != nil {
-		_ = e.show(fmt.Errorf("publish %s: %w", class, err))
+		_ = e.show(fmt.Errorf("send %s: %w", class, err))
 		return
 	}
 	req := client.SendRequest{
@@ -171,7 +171,7 @@ func (e *engine) sayStop(class string, re int64) {
 	defer cancel()
 	res, err := client.Do(ctx, e.addr, "send", e.token, req)
 	if err == nil && res.Outcome != bus.OutcomeOK {
-		err = &busError{op: "publish " + class, outcome: res.Outcome, reason: res.Reason}
+		err = &busError{op: "send " + class, outcome: res.Outcome, reason: res.Reason}
 	}
 	if err != nil {
 		_ = e.show(err)

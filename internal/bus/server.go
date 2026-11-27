@@ -237,14 +237,15 @@ func opName(path string) string {
 func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		Name      *string         `json:"name"`
-		Task      string          `json:"task"`
-		Ticket    string          `json:"ticket"`
-		Seat      string          `json:"seat"`
-		Directory string          `json:"directory"`
-		Prompts   json.RawMessage `json:"prompts"`
-		Custom    string          `json:"custom"`
-		Roster    json.RawMessage `json:"roster"`
+		Name       *string         `json:"name"`
+		Task       string          `json:"task"`
+		Ticket     string          `json:"ticket"`
+		Seat       string          `json:"seat"`
+		Directory  string          `json:"directory"`
+		Prompts    json.RawMessage `json:"prompts"`
+		Custom     string          `json:"custom"`
+		Roster     json.RawMessage `json:"roster"`
+		Permission string          `json:"permission"`
 	}
 	if !s.decode(w, r, "create", "", start, &req) {
 		return
@@ -266,13 +267,14 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.svc.Create(r.Context(), *req.Name, store.Binding{
-		Task:      req.Task,
-		Ticket:    req.Ticket,
-		Seat:      req.Seat,
-		Directory: req.Directory,
-		Prompts:   prompts,
-		Custom:    req.Custom,
-		Roster:    roster,
+		Task:       req.Task,
+		Ticket:     req.Ticket,
+		Seat:       req.Seat,
+		Directory:  req.Directory,
+		Prompts:    prompts,
+		Custom:     req.Custom,
+		Roster:     roster,
+		Permission: req.Permission,
 	})
 	s.finish(w, "create", *req.Name, start, res, err)
 }
@@ -744,15 +746,23 @@ type wireMessage struct {
 }
 
 type wireChat struct {
-	Name      string   `json:"name"`
-	Status    string   `json:"status"`
-	Task      string   `json:"task"`
-	Ticket    string   `json:"ticket"`
-	Seat      string   `json:"seat"`
-	Directory string   `json:"directory"`
-	Prompts   []string `json:"prompts"`
-	Custom    string   `json:"custom"`
-	Roster    []string `json:"roster"`
+	Name       string       `json:"name"`
+	Status     string       `json:"status"`
+	Task       string       `json:"task"`
+	Ticket     string       `json:"ticket"`
+	Seat       string       `json:"seat"`
+	Directory  string       `json:"directory"`
+	Prompts    []string     `json:"prompts"`
+	Custom     string       `json:"custom"`
+	Roster     []wireRoster `json:"roster"`
+	Permission string       `json:"permission"`
+}
+
+// wireRoster is one roster element. module and model are always present, empty when not given.
+type wireRoster struct {
+	Name   string `json:"name"`
+	Module string `json:"module"`
+	Model  string `json:"model"`
 }
 
 type wireMemberPublic struct {
@@ -853,20 +863,21 @@ func toWireChat(c store.Chat) wireChat {
 	if prompts == nil {
 		prompts = []string{}
 	}
-	roster := c.Roster
-	if roster == nil {
-		roster = []string{}
+	roster := make([]wireRoster, len(c.Roster))
+	for i, r := range c.Roster {
+		roster[i] = wireRoster(r)
 	}
 	return wireChat{
-		Name:      c.Name,
-		Status:    c.Status,
-		Task:      c.Task,
-		Ticket:    c.Ticket,
-		Seat:      c.Seat,
-		Directory: c.Directory,
-		Prompts:   prompts,
-		Custom:    c.Custom,
-		Roster:    roster,
+		Name:       c.Name,
+		Status:     c.Status,
+		Task:       c.Task,
+		Ticket:     c.Ticket,
+		Seat:       c.Seat,
+		Directory:  c.Directory,
+		Prompts:    prompts,
+		Custom:     c.Custom,
+		Roster:     roster,
+		Permission: c.Permission,
 	}
 }
 

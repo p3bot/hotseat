@@ -15,19 +15,19 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
-// States of a conversation as Status reports it.
+// States of a chat as Status reports it.
 const (
 	StateRunning = "running"
 	StateIdle    = "idle"
 	StateClosed  = "closed"
 )
 
-// Status is what the bus says about one conversation, read by ReadStatus.
+// Status is what the bus says about one chat, read by ReadStatus.
 // It holds no session id, pid, start token, lease holder, token, or decision record.
 type Status struct {
-	// Binding is the conversation as /list returned it.
+	// Binding is the chat as /list returned it.
 	Binding client.Chat
-	// State is StateRunning while a conductor holds the lease, else StateClosed once the conversation is closed,
+	// State is StateRunning while a conductor holds the lease, else StateClosed once the chat is closed,
 	// else StateIdle. It is a fact, not a judgement of how a run ended.
 	State string
 	// Since and Expires are the lease's times, set only while State is StateRunning.
@@ -72,10 +72,10 @@ type StopError struct {
 	Seq   int64
 }
 
-// ReadStatus reads one conversation from a running bus and interprets it. It makes only read calls, in the order
+// ReadStatus reads one chat from a running bus and interprets it. It makes only read calls, in the order
 // lease get, list, members, records, and read to the end, and writes nothing. A call that answers other than ok,
 // including a connection failure, returns an error that FailedCall reports.
-func ReadStatus(ctx context.Context, address, token, conversation string) (Status, error) {
+func ReadStatus(ctx context.Context, address, token, chat string) (Status, error) {
 	var call caller = func(ctx context.Context, op string, body any) (client.Result, error) {
 		res, err := client.Do(ctx, address, op, token, body)
 		if err != nil {
@@ -83,7 +83,7 @@ func ReadStatus(ctx context.Context, address, token, conversation string) (Statu
 		}
 		return res, outcomeErr(op, body, res)
 	}
-	lease, err := call(ctx, "lease", client.LeaseRequest{Chat: conversation, Lease: bus.LeaseGet})
+	lease, err := call(ctx, "lease", client.LeaseRequest{Chat: chat, Lease: bus.LeaseGet})
 	if err != nil {
 		return Status{}, err
 	}
@@ -94,20 +94,20 @@ func ReadStatus(ctx context.Context, address, token, conversation string) (Statu
 	if err != nil {
 		return Status{}, err
 	}
-	binding, ok := pickBinding(list, conversation)
+	binding, ok := pickBinding(list, chat)
 	if !ok {
-		return Status{}, fmt.Errorf("list: no conversation %s", conversation)
+		return Status{}, fmt.Errorf("list: no chat %s", chat)
 	}
-	rows, err := readMembers(ctx, call, conversation)
+	rows, err := readMembers(ctx, call, chat)
 	if err != nil {
 		return Status{}, err
 	}
 	// Records first: a record's references and after are stored seqs, so the transcript read next holds them all.
-	recRes, err := call(ctx, "records", client.RecordsRequest{Chat: conversation})
+	recRes, err := call(ctx, "records", client.RecordsRequest{Chat: chat})
 	if err != nil {
 		return Status{}, err
 	}
-	msgs, _, err := readAll(ctx, call, conversation, 0, nil)
+	msgs, _, err := readAll(ctx, call, chat, 0, nil)
 	if err != nil {
 		return Status{}, err
 	}
@@ -128,7 +128,7 @@ func ReadStatus(ctx context.Context, address, token, conversation string) (Statu
 	for _, m := range msgs {
 		st.Newest = max(st.Newest, m.Seq)
 	}
-	l := buildLedger(binding.Roster, binding.Seat, rows, msgs, recs)
+	l := buildLedger(client.RosterNames(binding.Roster), binding.Seat, rows, msgs, recs)
 	st.countFindings(l)
 	if seq, ok := l.underWay(); ok && st.State == StateRunning {
 		st.Discussing = &seq
@@ -163,9 +163,9 @@ func pickBinding(res client.Result, name string) (client.Chat, bool) {
 	if res.Chats == nil {
 		return client.Chat{}, false
 	}
-	for _, conv := range *res.Chats {
-		if conv.Name == name {
-			return conv, true
+	for _, chat := range *res.Chats {
+		if chat.Name == name {
+			return chat, true
 		}
 	}
 	return client.Chat{}, false

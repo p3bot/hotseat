@@ -105,7 +105,7 @@ func TestRelativeHomeCreatesNothing(t *testing.T) {
 	t.Setenv("HOME", "rel")
 	t.Setenv("XDG_DATA_HOME", "")
 	addr := freeAddr(t)
-	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--listen", addr})
+	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--address", addr})
 	if err == nil || !strings.Contains(err.Error(), "not absolute") {
 		t.Fatalf("err = %v", err)
 	}
@@ -132,7 +132,7 @@ func TestOmittedStoreDoesNotCreateDirectoryWhenTokenMissing(t *testing.T) {
 	t.Setenv("HOME", home)
 	data := filepath.Join(t.TempDir(), "data")
 	t.Setenv("XDG_DATA_HOME", data)
-	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--listen", "192.0.2.1:9"})
+	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--address", "192.0.2.1:9"})
 	if err == nil || !strings.Contains(err.Error(), "requires a token file") {
 		t.Fatalf("err = %v", err)
 	}
@@ -168,7 +168,7 @@ func TestOmittedStoreUsesDataHome(t *testing.T) {
 				t.Errorf("close: %v", err)
 			}
 		}()
-		err = ExecuteArgs(context.Background(), []string{"bus", "start", "--listen", ln.Addr().String()})
+		err = ExecuteArgs(context.Background(), []string{"bus", "start", "--address", ln.Addr().String()})
 		if err == nil || !strings.Contains(err.Error(), "listen on") {
 			t.Fatalf("err = %v", err)
 		}
@@ -317,7 +317,7 @@ func TestNonLoopbackDoesNotListenOrCreateStore(t *testing.T) {
 	root := t.TempDir()
 	storeDir := filepath.Join(root, "store")
 	err := ExecuteArgs(context.Background(), []string{
-		"bus", "start", "--store", storeDir, "--listen", "192.0.2.1:9",
+		"bus", "start", "--store", storeDir, "--address", "192.0.2.1:9",
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires a token file") {
 		t.Fatalf("err = %v", err)
@@ -396,12 +396,12 @@ func TestFlagDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listen, err := busCmd.Flags().GetString("listen")
+	startAddress, err := busCmd.Flags().GetString("address")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if listen != bus.DefaultListen {
-		t.Fatalf("listen default = %s", listen)
+	if startAddress != bus.DefaultListen {
+		t.Fatalf("start address default = %s", startAddress)
 	}
 	maxBody, err := busCmd.Flags().GetInt("max-body")
 	if err != nil {
@@ -436,7 +436,7 @@ func TestFlagDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stop.Flags().Lookup("listen") != nil || stop.Flags().Lookup("debug") != nil || stop.Flags().Lookup("token-file") != nil {
+	if stop.Flags().Lookup("listen") != nil || stop.Flags().Lookup("debug") != nil || stop.Flags().Lookup("token-file") != nil || stop.Flags().Lookup("address") != nil {
 		t.Fatal("stop accepts a serve flag")
 	}
 	if stop.Flags().Lookup("store") == nil {
@@ -807,7 +807,7 @@ func TestStartRefusesTakenAddressWithoutStore(t *testing.T) {
 	}
 	defer ln.Close()
 	storeDir := filepath.Join(t.TempDir(), "store")
-	err = ExecuteArgs(context.Background(), []string{"bus", "start", "--store", storeDir, "--listen", ln.Addr().String()})
+	err = ExecuteArgs(context.Background(), []string{"bus", "start", "--store", storeDir, "--address", ln.Addr().String()})
 	if err == nil || !strings.Contains(err.Error(), "listen on") {
 		t.Fatalf("err = %v", err)
 	}
@@ -818,7 +818,7 @@ func TestStartRefusesTakenAddressWithoutStore(t *testing.T) {
 
 func TestStartRefusesPagePortThatDoesNotFit(t *testing.T) {
 	storeDir := filepath.Join(t.TempDir(), "store")
-	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--store", storeDir, "--listen", "127.0.0.1:65535"})
+	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--store", storeDir, "--address", "127.0.0.1:65535"})
 	if err == nil || !strings.Contains(err.Error(), "does not fit") {
 		t.Fatalf("err = %v", err)
 	}
@@ -835,7 +835,7 @@ func TestStartRefusesTakenPageWithoutStore(t *testing.T) {
 		}
 	}()
 	storeDir := filepath.Join(t.TempDir(), "store")
-	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--store", storeDir, "--listen", busAddr})
+	err := ExecuteArgs(context.Background(), []string{"bus", "start", "--store", storeDir, "--address", busAddr})
 	if err == nil || !strings.Contains(err.Error(), "page listen on "+pageLn.Addr().String()) {
 		t.Fatalf("err = %v", err)
 	}
@@ -914,7 +914,7 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatalf("status created the store: %v", statErr)
 		}
 		refused := runBinCmd(t, bin, "bus", "status", "--address", "127.0.0.1:1")
-		if refused.code != 1 || !strings.Contains(refused.stdout, "health: connection_failure") || !strings.Contains(refused.stdout, "127.0.0.1:1") || strings.Contains(refused.stdout, "pid:") || strings.Contains(refused.stdout, "store:") {
+		if refused.code != ExitUnavailable || !strings.Contains(refused.stdout, "health: connection_failure") || !strings.Contains(refused.stdout, "127.0.0.1:1") || strings.Contains(refused.stdout, "pid:") || strings.Contains(refused.stdout, "store:") {
 			t.Fatalf("status %d\n%s%s", refused.code, refused.stdout, refused.stderr)
 		}
 		stopped := runBinCmd(t, bin, "bus", "stop", "--store", missing)
@@ -940,7 +940,7 @@ func TestDetachedBus(t *testing.T) {
 		})
 		addr := freeBusPageAddr(t)
 		other := freeBusPageAddr(t)
-		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", addr)
+		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", addr)
 		if started.code != 0 {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 		}
@@ -958,7 +958,7 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatal("daemon exited")
 		}
 		for _, args := range [][]string{
-			{"--listen", "not-an-address"},
+			{"--address", "not-an-address"},
 			{"--token-file", filepath.Join(t.TempDir(), "missing")},
 			{"--max-body", "0"},
 		} {
@@ -1003,7 +1003,7 @@ func TestDetachedBus(t *testing.T) {
 		if countBuses(storeDir) != 1 {
 			t.Fatalf("buses %d", countBuses(storeDir))
 		}
-		created := callClient(t, bin, "create", "--address", addr, "--name", "job")
+		created := callClient(t, bin, "chat", "create", "job", "--address", addr)
 		if created.Outcome != bus.OutcomeOK {
 			t.Fatalf("create %+v", created)
 		}
@@ -1011,7 +1011,7 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatalf("page %s", body)
 		}
 
-		again := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", other, "--debug", "--token-file", tokenPath)
+		again := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", other, "--debug", "--token-file", tokenPath)
 		if again.code != 0 {
 			t.Fatalf("second start %d\n%s%s", again.code, again.stdout, again.stderr)
 		}
@@ -1068,10 +1068,10 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatalf("second stop %d\n%s", againStop.code, againStop.stderr)
 		}
 		down := runBinCmd(t, bin, "bus", "status", "--address", addr)
-		if down.code != 1 || !strings.Contains(down.stdout, "health: connection_failure") || !strings.Contains(down.stdout, addr) || strings.Contains(down.stdout, "pid:") {
+		if down.code != ExitUnavailable || !strings.Contains(down.stdout, "health: connection_failure") || !strings.Contains(down.stdout, addr) || strings.Contains(down.stdout, "pid:") {
 			t.Fatalf("status %d\n%s%s", down.code, down.stdout, down.stderr)
 		}
-		missed := callClient(t, bin, "create", "--address", addr, "--name", "next")
+		missed := callClient(t, bin, "chat", "create", "next", "--address", addr)
 		if missed.Outcome != client.OutcomeConnectionFailure {
 			t.Fatalf("create after stop %+v", missed)
 		}
@@ -1080,7 +1080,7 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatal("log lost the first run")
 		}
 
-		debugged := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", addr, "--debug")
+		debugged := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", addr, "--debug")
 		if debugged.code != 0 {
 			t.Fatalf("debug start %d\n%s%s", debugged.code, debugged.stdout, debugged.stderr)
 		}
@@ -1111,7 +1111,7 @@ func TestDetachedBus(t *testing.T) {
 		deadline := time.Now().Add(3 * time.Second)
 		for {
 			dead := runBinCmd(t, bin, "bus", "status", "--address", addr)
-			if dead.code == 1 && strings.Contains(dead.stdout, "health: connection_failure") && !strings.Contains(dead.stdout, "pid:") {
+			if dead.code == ExitUnavailable && strings.Contains(dead.stdout, "health: connection_failure") && !strings.Contains(dead.stdout, "pid:") {
 				break
 			}
 			if time.Now().After(deadline) {
@@ -1119,7 +1119,7 @@ func TestDetachedBus(t *testing.T) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		revived := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", addr)
+		revived := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", addr)
 		if revived.code != 0 {
 			t.Fatalf("restart %d\n%s%s", revived.code, revived.stdout, revived.stderr)
 		}
@@ -1127,7 +1127,7 @@ func TestDetachedBus(t *testing.T) {
 		if revivedPID == debugPID || revivedListen != addr || !pidAlive(revivedPID) {
 			t.Fatalf("revived pid %d listen %s", revivedPID, revivedListen)
 		}
-		if callClient(t, bin, "create", "--address", addr, "--name", "revived").Outcome != bus.OutcomeOK {
+		if callClient(t, bin, "chat", "create", "revived", "--address", addr).Outcome != bus.OutcomeOK {
 			t.Fatal("create after restart failed")
 		}
 	})
@@ -1148,7 +1148,7 @@ func TestDetachedBus(t *testing.T) {
 			_ = stopBus(ctx, real)
 		})
 		addr := freeBusPageAddr(t)
-		started := runBinCmd(t, bin, "bus", "start", "--store", link, "--listen", addr)
+		started := runBinCmd(t, bin, "bus", "start", "--store", link, "--address", addr)
 		if started.code != 0 {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 		}
@@ -1164,7 +1164,7 @@ func TestDetachedBus(t *testing.T) {
 		if health != "pass" || statusPID != pid || statusListen != addr || !sameFile(statusStore, real) {
 			t.Fatalf("status %s pid %d listen %s store %s", health, statusPID, statusListen, statusStore)
 		}
-		again := runBinCmd(t, bin, "bus", "start", "--store", real, "--listen", freeBusPageAddr(t))
+		again := runBinCmd(t, bin, "bus", "start", "--store", real, "--address", freeBusPageAddr(t))
 		if again.code != 0 {
 			t.Fatalf("second start %d\n%s%s", again.code, again.stdout, again.stderr)
 		}
@@ -1184,7 +1184,7 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatalf("lock held %v %v", held, err)
 		}
 		down := runBinCmd(t, bin, "bus", "status", "--address", addr)
-		if down.code != 1 || !strings.Contains(down.stdout, "health: connection_failure") || strings.Contains(down.stdout, "pid:") {
+		if down.code != ExitUnavailable || !strings.Contains(down.stdout, "health: connection_failure") || strings.Contains(down.stdout, "pid:") {
 			t.Fatalf("status after stop %d\n%s%s", down.code, down.stdout, down.stderr)
 		}
 	})
@@ -1200,7 +1200,7 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatal(err)
 		}
 		addr := freeBusPageAddr(t)
-		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", addr)
+		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", addr)
 		if started.code == 0 || !strings.Contains(started.stderr, "held") {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 		}
@@ -1232,7 +1232,7 @@ func TestDetachedBus(t *testing.T) {
 		if err != nil || class != bus.ListenLoopback || bind == requested {
 			t.Fatalf("resolve %s class %v err %v", bind, class, err)
 		}
-		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", requested)
+		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", requested)
 		if started.code != 0 {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 		}
@@ -1257,7 +1257,7 @@ func TestDetachedBus(t *testing.T) {
 			_ = stopBus(ctx, storeDir)
 		})
 		addr := freeBusPageAddr(t)
-		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", addr)
+		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", addr)
 		if started.code != 0 {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 		}
@@ -1273,7 +1273,7 @@ func TestDetachedBus(t *testing.T) {
 		if health != "pass" || statusPID != pid || statusListen != listen || !sameFile(statusStore, storeDir) {
 			t.Fatalf("status %s pid %d listen %s store %s", health, statusPID, statusListen, statusStore)
 		}
-		again := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", freeBusPageAddr(t))
+		again := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", freeBusPageAddr(t))
 		if again.code != 0 {
 			t.Fatalf("second start %d\n%s%s", again.code, again.stdout, again.stderr)
 		}
@@ -1293,7 +1293,7 @@ func TestDetachedBus(t *testing.T) {
 			t.Fatalf("lock held %v %v", held, err)
 		}
 		down := runBinCmd(t, bin, "bus", "status", "--address", addr)
-		if down.code != 1 || !strings.Contains(down.stdout, "health: connection_failure") || strings.Contains(down.stdout, "pid:") {
+		if down.code != ExitUnavailable || !strings.Contains(down.stdout, "health: connection_failure") || strings.Contains(down.stdout, "pid:") {
 			t.Fatalf("status after stop %d\n%s%s", down.code, down.stdout, down.stderr)
 		}
 	})
@@ -1312,7 +1312,7 @@ func TestDetachedBus(t *testing.T) {
 			defer cancel()
 			_ = stopBus(ctx, storeDir)
 		})
-		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", bus.DefaultListen)
+		started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", bus.DefaultListen)
 		if started.code != 0 {
 			t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 		}
@@ -1375,7 +1375,7 @@ func TestStatusReport(t *testing.T) {
 		_ = stopBus(ctx, storeDir)
 	})
 	busAddr := freeBusPageAddr(t)
-	started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--listen", busAddr)
+	started := runBinCmd(t, bin, "bus", "start", "--store", storeDir, "--address", busAddr)
 	if started.code != 0 {
 		t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 	}
@@ -1390,7 +1390,7 @@ func TestStatusReport(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	err = execute(context.Background(), []string{"bus", "status", "--address", "127.0.0.1:1"}, &stdout, &stderr)
-	if !ReportedFailure(err) || stderr.Len() != 0 || !strings.Contains(stdout.String(), "health: connection_failure") {
+	if code, ok := ReportedExit(err); !ok || code != ExitUnavailable || stderr.Len() != 0 || !strings.Contains(stdout.String(), "health: connection_failure") {
 		t.Fatalf("err %v\n%s%s", err, stdout.String(), stderr.String())
 	}
 }
@@ -1531,7 +1531,7 @@ func startManaged(t *testing.T, bin string, env []string, storeDir, addr string)
 		defer cancel()
 		_ = stopBus(ctx, storeDir)
 	})
-	started := runBinEnv(t, bin, env, "bus", "start", "--store", storeDir, "--listen", addr)
+	started := runBinEnv(t, bin, env, "bus", "start", "--store", storeDir, "--address", addr)
 	if started.code != 0 {
 		t.Fatalf("start %d\n%s%s", started.code, started.stdout, started.stderr)
 	}
@@ -1594,6 +1594,13 @@ func runBinEnv(t *testing.T, bin string, env []string, args ...string) cmdResult
 func TestMain(m *testing.M) {
 	if os.Getenv("HOTSEAT_FAKE_SERVE") == "1" {
 		os.Exit(fakeServeListen())
+	}
+	// A caller's bus variables would redirect every command that omits the flag.
+	for _, name := range []string{envAddress, envTokenFile} {
+		if err := os.Unsetenv(name); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 	os.Exit(m.Run())
 }
@@ -1696,7 +1703,9 @@ func waitOtherNetServe(t *testing.T, own os.FileInfo, addr string) (int, bool) {
 func callClient(t *testing.T, bin string, args ...string) client.Result {
 	t.Helper()
 	got := runBinCmd(t, bin, args...)
-	if got.code != 0 {
+	switch got.code {
+	case 0, ExitRefused, ExitTimeout, ExitUnavailable:
+	default:
 		t.Fatalf("%v exit %d\n%s%s", args, got.code, got.stdout, got.stderr)
 	}
 	return parseStdout(t, []byte(got.stdout))

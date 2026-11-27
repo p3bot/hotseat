@@ -47,7 +47,7 @@ func TestNonCommandDoesNotDialOrCreateStore(t *testing.T) {
 		}
 	}()
 
-	for _, args := range [][]string{nil, {"nope"}, {"create"}, {"publish"}, {"read"}, {"wait"}, {"close"}} {
+	for _, args := range [][]string{nil, {"nope"}, {"chat"}, {"member"}} {
 		err := execute(context.Background(), args, io.Discard, io.Discard)
 		if err == nil {
 			t.Fatalf("%v succeeded", args)
@@ -93,24 +93,24 @@ func TestClientCommandsExit(t *testing.T) {
 		}
 	}
 	base := []string{"--address", addr}
-	run(append([]string{"create"}, append(base, "--name", "job")...)...)
-	run(append([]string{"publish"}, append(base, "--conversation", "job", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "hello", "--txid", "1")...)...)
-	run(append([]string{"read"}, append(base, "--conversation", "job", "--cursor", "0", "--limit", "10")...)...)
-	run(append([]string{"wait"}, append(base, "--conversation", "job", "--cursor", "0")...)...)
-	run(append([]string{"list"}, base...)...)
-	run(append([]string{"close"}, append(base, "--conversation", "job")...)...)
+	run(append([]string{"chat", "create", "job"}, base...)...)
+	run(append([]string{"chat", "send", "job"}, append(base, "--from", "alice", "--kind", "say", "--to", "bob", "--body", "hello", "--txid", "1")...)...)
+	run(append([]string{"chat", "read", "job"}, append(base, "--cursor", "0", "--limit", "10")...)...)
+	run(append([]string{"chat", "wait", "job"}, append(base, "--cursor", "0")...)...)
+	run(append([]string{"chat", "list"}, base...)...)
+	run(append([]string{"chat", "close", "job"}, base...)...)
 	assertEmptyDir(t, dir)
 	assertEmptyDir(t, home)
 }
 
-func TestPublishRetryAndNoTokenFile(t *testing.T) {
+func TestSendRetryAndNoTokenFile(t *testing.T) {
 	addr, stop := startBus(t)
 	defer stop()
 	wd, home := isolateHome(t)
 	ctx := context.Background()
 	args := []string{
+		"chat", "send", "dup",
 		"--address", addr,
-		"--conversation", "dup",
 		"--from", "alice", "--kind", "say",
 		"--to", "carol",
 		"--to", "bob",
@@ -118,7 +118,7 @@ func TestPublishRetryAndNoTokenFile(t *testing.T) {
 		"--txid", "caller-key-1",
 	}
 	create(t, ctx, addr, "dup")
-	first, raw := runClient(t, ctx, append([]string{"publish"}, args...)...)
+	first, raw := runClient(t, ctx, args...)
 	if first.Outcome != bus.OutcomeOK || first.AlreadyStored == nil || *first.AlreadyStored {
 		t.Fatalf("first %s", raw)
 	}
@@ -131,7 +131,7 @@ func TestPublishRetryAndNoTokenFile(t *testing.T) {
 	if !bytes.Contains([]byte(raw), []byte(`<b>`)) {
 		t.Fatalf("stdout escaped the body: %s", raw)
 	}
-	second, _ := runClient(t, ctx, append([]string{"publish"}, args...)...)
+	second, _ := runClient(t, ctx, args...)
 	if second.Outcome != bus.OutcomeOK || second.AlreadyStored == nil || !*second.AlreadyStored {
 		t.Fatalf("second %+v", second)
 	}
@@ -146,37 +146,37 @@ func TestPublishRetryAndNoTokenFile(t *testing.T) {
 	assertEmptyDir(t, home)
 }
 
-func TestPublishMintsWhenOmittedAndReusesAPassedID(t *testing.T) {
+func TestSendMintsWhenOmittedAndReusesAPassedID(t *testing.T) {
 	addr, stop := startBus(t)
 	defer stop()
 	ctx := context.Background()
 	create(t, ctx, addr, "mint")
-	base := []string{"publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "same"}
-	first, id1, _ := runPublish(t, ctx, base...)
-	second, id2, _ := runPublish(t, ctx, base...)
+	base := []string{"chat", "send", "mint", "--address", addr, "--from", "alice", "--kind", "say", "--to", "bob", "--body", "same"}
+	first, id1, _ := runSend(t, ctx, base...)
+	second, id2, _ := runSend(t, ctx, base...)
 	if first.Outcome != bus.OutcomeOK || first.AlreadyStored == nil || *first.AlreadyStored || first.Message == nil || first.Message.TxID != id1 {
 		t.Fatalf("first %+v id %s", first, id1)
 	}
 	if second.Outcome != bus.OutcomeOK || second.AlreadyStored == nil || *second.AlreadyStored || second.Message == nil || second.Message.TxID != id2 || id1 == id2 || second.Message.Seq == first.Message.Seq {
 		t.Fatalf("second %+v ids %s %s", second, id1, id2)
 	}
-	passed, id, _ := runPublish(t, ctx, append(append([]string{}, base...), "--txid", "1")...)
+	passed, id, _ := runSend(t, ctx, append(append([]string{}, base...), "--txid", "1")...)
 	if id != "1" || passed.Outcome != bus.OutcomeOK || passed.Message == nil || passed.Message.Seq != 3 || passed.Message.TxID != "1" {
 		t.Fatalf("passed %+v id %q", passed, id)
 	}
-	retry, id, _ := runPublish(t, ctx, append(append([]string{}, base...), "--txid", "1")...)
+	retry, id, _ := runSend(t, ctx, append(append([]string{}, base...), "--txid", "1")...)
 	if id != "1" || retry.Outcome != bus.OutcomeOK || retry.AlreadyStored == nil || !*retry.AlreadyStored || retry.Message == nil || retry.Message.Seq != 3 {
 		t.Fatalf("retry %+v id %q", retry, id)
 	}
-	conflict, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "other", "--txid", "1")
+	conflict, id, _ := runSend(t, ctx, "chat", "send", "mint", "--address", addr, "--from", "alice", "--kind", "say", "--to", "bob", "--body", "other", "--txid", "1")
 	if id != "1" || conflict.Outcome != bus.OutcomeRefused || conflict.Reason != bus.ReasonKeyConflict {
 		t.Fatalf("conflict %+v id %q", conflict, id)
 	}
-	bob, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "bob", "--kind", "say", "--body", "same", "--txid", "1")
+	bob, id, _ := runSend(t, ctx, "chat", "send", "mint", "--address", addr, "--from", "bob", "--kind", "say", "--body", "same", "--txid", "1")
 	if id != "1" || bob.Outcome != bus.OutcomeOK || bob.AlreadyStored == nil || *bob.AlreadyStored || bob.Message == nil || bob.Message.From != "bob" || bob.Message.TxID != "1" {
 		t.Fatalf("bob %+v id %q", bob, id)
 	}
-	empty, id, _ := runPublish(t, ctx, "publish", "--address", addr, "--conversation", "mint", "--from", "alice", "--kind", "say", "--body", "nope", "--txid", "")
+	empty, id, _ := runSend(t, ctx, "chat", "send", "mint", "--address", addr, "--from", "alice", "--kind", "say", "--body", "nope", "--txid", "")
 	if id != "" || empty.Outcome != bus.OutcomeRefused || empty.Reason != bus.ReasonKeyRequired {
 		t.Fatalf("empty id %q %+v", id, empty)
 	}
@@ -186,7 +186,7 @@ func TestPublishMintsWhenOmittedAndReusesAPassedID(t *testing.T) {
 	}
 }
 
-func TestDroppedPublishRetriesThePrintedID(t *testing.T) {
+func TestDroppedSendRetriesThePrintedID(t *testing.T) {
 	busAddr, stop := startBus(t)
 	defer stop()
 	ctx := context.Background()
@@ -249,7 +249,7 @@ func TestDroppedPublishRetriesThePrintedID(t *testing.T) {
 
 	stderr := &orderWriter{note: note}
 	var stdout bytes.Buffer
-	args := []string{"publish", "--address", ln.Addr().String(), "--conversation", "drop", "--from", "alice", "--kind", "say", "--body", "once"}
+	args := []string{"chat", "send", "drop", "--address", ln.Addr().String(), "--from", "alice", "--kind", "say", "--body", "once"}
 	if err := execute(ctx, args, &stdout, stderr); err != nil {
 		t.Fatalf("%v\n%s", err, stderr.buf.String())
 	}
@@ -284,8 +284,8 @@ func TestWaitCursorIsNotStored(t *testing.T) {
 	wd, home := isolateHome(t)
 	ctx := context.Background()
 	create(t, ctx, addr, "seen")
-	publish(t, ctx, addr, "seen", "alice", []string{"bob"}, "hello", "k")
-	args := []string{"wait", "--address", addr, "--conversation", "seen", "--cursor", "0"}
+	sendChat(t, ctx, addr, "seen", "alice", []string{"bob"}, "hello", "k")
+	args := []string{"chat", "wait", "seen", "--address", addr, "--cursor", "0"}
 	first, raw1 := runClient(t, ctx, args...)
 	_, raw2 := runClient(t, ctx, args...)
 	if raw1 != raw2 {
@@ -303,11 +303,11 @@ func TestNamedUnnamedWaitAndTimeout(t *testing.T) {
 	defer stop()
 	ctx := context.Background()
 	create(t, ctx, addr, "wake")
-	publish(t, ctx, addr, "wake", "alice", []string{"carol"}, "skip", "k1")
-	publish(t, ctx, addr, "wake", "alice", []string{"bob"}, "hit", "k2")
-	publish(t, ctx, addr, "wake", "alice", []string{"bob"}, "later", "k3")
+	sendChat(t, ctx, addr, "wake", "alice", []string{"carol"}, "skip", "k1")
+	sendChat(t, ctx, addr, "wake", "alice", []string{"bob"}, "hit", "k2")
+	sendChat(t, ctx, addr, "wake", "alice", []string{"bob"}, "later", "k3")
 
-	named, _ := runClient(t, ctx, "wait", "--address", addr, "--conversation", "wake", "--cursor", "0", "--name", "bob")
+	named, _ := runClient(t, ctx, "chat", "wait", "wake", "--address", addr, "--cursor", "0", "--to", "bob")
 	if named.Outcome != bus.OutcomeOK || named.MatchSeq == nil || *named.MatchSeq != 2 {
 		t.Fatalf("named %+v", named)
 	}
@@ -315,19 +315,19 @@ func TestNamedUnnamedWaitAndTimeout(t *testing.T) {
 	if len(bodies) != 2 || bodies[0] != "skip" || bodies[1] != "hit" {
 		t.Fatalf("named messages %v", bodies)
 	}
-	again, _ := runClient(t, ctx, "wait", "--address", addr, "--conversation", "wake", "--cursor", "0", "--name", "bob")
+	again, _ := runClient(t, ctx, "chat", "wait", "wake", "--address", addr, "--cursor", "0", "--to", "bob")
 	if again.MatchSeq == nil || *again.MatchSeq != 2 || len(messageBodies(t, again)) != 2 {
 		t.Fatalf("repeat %+v", again)
 	}
 
-	unnamed, _ := runClient(t, ctx, "wait", "--address", addr, "--conversation", "wake", "--cursor", "0")
+	unnamed, _ := runClient(t, ctx, "chat", "wait", "wake", "--address", addr, "--cursor", "0")
 	one := messageBodies(t, unnamed)
 	if unnamed.Outcome != bus.OutcomeOK || len(one) != 1 || one[0] != "skip" {
 		t.Fatalf("unnamed %+v", unnamed)
 	}
 
 	create(t, ctx, addr, "quiet")
-	timed, raw := runClient(t, ctx, "wait", "--address", addr, "--conversation", "quiet", "--cursor", "0", "--deadline", "0s")
+	timed, raw := runClient(t, ctx, "chat", "wait", "quiet", "--address", addr, "--cursor", "0", "--deadline", "0s")
 	if timed.Outcome != bus.OutcomeTimeout || timed.Messages != nil || strings.Contains(raw, "message") {
 		t.Fatalf("timeout %+v raw %s", timed, raw)
 	}
@@ -338,13 +338,13 @@ func TestReadPageAndName(t *testing.T) {
 	defer stop()
 	ctx := context.Background()
 	create(t, ctx, addr, "page")
-	publish(t, ctx, addr, "page", "alice", []string{"carol"}, "one", "k1")
-	publish(t, ctx, addr, "page", "alice", []string{"bob"}, "two", "k2")
-	publish(t, ctx, addr, "page", "bob", nil, "three", "k3")
-	publish(t, ctx, addr, "page", "alice", []string{"all"}, "four", "k4")
-	publish(t, ctx, addr, "page", "alice", []string{"bob", "carol"}, "five", "k5")
+	sendChat(t, ctx, addr, "page", "alice", []string{"carol"}, "one", "k1")
+	sendChat(t, ctx, addr, "page", "alice", []string{"bob"}, "two", "k2")
+	sendChat(t, ctx, addr, "page", "bob", nil, "three", "k3")
+	sendChat(t, ctx, addr, "page", "alice", []string{"all"}, "four", "k4")
+	sendChat(t, ctx, addr, "page", "alice", []string{"bob", "carol"}, "five", "k5")
 
-	page, _ := runClient(t, ctx, "read", "--address", addr, "--conversation", "page", "--cursor", "0", "--limit", "2")
+	page, _ := runClient(t, ctx, "chat", "read", "page", "--address", addr, "--cursor", "0", "--limit", "2")
 	if page.Outcome != bus.OutcomeOK {
 		t.Fatalf("page %+v", page)
 	}
@@ -368,7 +368,7 @@ func TestReadPageAndName(t *testing.T) {
 		t.Fatalf("empty to = %v", rest[0].To)
 	}
 
-	named, _ := runClient(t, ctx, "read", "--address", addr, "--conversation", "page", "--cursor", "0", "--limit", "10", "--name", "bob")
+	named, _ := runClient(t, ctx, "chat", "read", "page", "--address", addr, "--cursor", "0", "--limit", "10", "--to", "bob")
 	nb := messageBodies(t, named)
 	if len(nb) != 3 || nb[0] != "two" || nb[1] != "four" || nb[2] != "five" {
 		t.Fatalf("named %v", nb)
@@ -380,10 +380,10 @@ func TestClosedNamedWaitReturnsTail(t *testing.T) {
 	defer stop()
 	ctx := context.Background()
 	create(t, ctx, addr, "tail")
-	publish(t, ctx, addr, "tail", "alice", []string{"bob"}, "hit", "k1")
-	publish(t, ctx, addr, "tail", "alice", []string{"carol"}, "rest", "k2")
+	sendChat(t, ctx, addr, "tail", "alice", []string{"bob"}, "hit", "k1")
+	sendChat(t, ctx, addr, "tail", "alice", []string{"carol"}, "rest", "k2")
 	before := readAll(t, ctx, addr, "tail", 0)
-	closed, _ := runClient(t, ctx, "close", "--address", addr, "--conversation", "tail")
+	closed, _ := runClient(t, ctx, "chat", "close", "tail", "--address", addr)
 	if closed.Outcome != bus.OutcomeOK || closed.Chat == nil || closed.Chat.Status != "closed" {
 		t.Fatalf("close %+v", closed)
 	}
@@ -394,17 +394,17 @@ func TestClosedNamedWaitReturnsTail(t *testing.T) {
 	if len(after) != len(before) {
 		t.Fatalf("close changed the transcript %d -> %d", len(before), len(after))
 	}
-	res, raw := runClient(t, ctx, "wait", "--address", addr, "--conversation", "tail", "--cursor", "1", "--name", "bob", "--deadline", "0s")
+	res, raw := runClient(t, ctx, "chat", "wait", "tail", "--address", addr, "--cursor", "1", "--to", "bob", "--deadline", "0s")
 	if res.Outcome != bus.OutcomeTimeout || res.MatchSeq != nil {
 		t.Fatalf("wait %s", raw)
 	}
-	pub, raw := runClient(t, ctx, "publish", "--address", addr, "--conversation", "tail", "--from", "alice", "--kind", "say", "--to", "bob", "--body", "later", "--txid", "k3")
-	if pub.Outcome != bus.OutcomeOK || pub.Chat == nil || pub.Chat.Status != "closed" || pub.Message == nil || pub.Message.Body != "later" {
-		t.Fatalf("publish %s", raw)
+	sent, raw := runClient(t, ctx, "chat", "send", "tail", "--address", addr, "--from", "alice", "--kind", "say", "--to", "bob", "--body", "later", "--txid", "k3")
+	if sent.Outcome != bus.OutcomeOK || sent.Chat == nil || sent.Chat.Status != "closed" || sent.Message == nil || sent.Message.Body != "later" {
+		t.Fatalf("send %s", raw)
 	}
-	afterPub := readAll(t, ctx, addr, "tail", 0)
-	if len(afterPub) != len(before)+1 || afterPub[len(afterPub)-1].Body != "later" {
-		t.Fatalf("transcript %d", len(afterPub))
+	afterSend := readAll(t, ctx, addr, "tail", 0)
+	if len(afterSend) != len(before)+1 || afterSend[len(afterSend)-1].Body != "later" {
+		t.Fatalf("transcript %d", len(afterSend))
 	}
 }
 
@@ -413,17 +413,17 @@ func TestRefusedNamesTheRule(t *testing.T) {
 	defer stop()
 	ctx := context.Background()
 	create(t, ctx, addr, "once")
-	again, _ := runClient(t, ctx, "create", "--address", addr, "--name", "once")
+	again, _ := runClient(t, ctx, "chat", "create", "once", "--address", addr)
 	if again.Outcome != bus.OutcomeOK || again.AlreadyExisted == nil || !*again.AlreadyExisted || again.Chat == nil || again.Chat.Status != "open" {
 		t.Fatalf("create %+v", again)
 	}
 	create(t, ctx, addr, "shut")
-	runClient(t, ctx, "close", "--address", addr, "--conversation", "shut")
-	pub, _ := runClient(t, ctx, "publish", "--address", addr, "--conversation", "shut", "--from", "alice", "--kind", "say", "--body", "nope", "--txid", "k")
-	if pub.Outcome != bus.OutcomeOK || pub.Chat == nil || pub.Chat.Status != "closed" || pub.Message == nil || pub.Message.Body != "nope" {
-		t.Fatalf("publish %+v", pub)
+	runClient(t, ctx, "chat", "close", "shut", "--address", addr)
+	sent, _ := runClient(t, ctx, "chat", "send", "shut", "--address", addr, "--from", "alice", "--kind", "say", "--body", "nope", "--txid", "k")
+	if sent.Outcome != bus.OutcomeOK || sent.Chat == nil || sent.Chat.Status != "closed" || sent.Message == nil || sent.Message.Body != "nope" {
+		t.Fatalf("send %+v", sent)
 	}
-	empty, _ := runClient(t, ctx, "read", "--address", addr, "--conversation", "shut", "--cursor", "0", "--limit", "5", "--name", "")
+	empty, _ := runClient(t, ctx, "chat", "read", "shut", "--address", addr, "--cursor", "0", "--limit", "5", "--to", "")
 	if empty.Outcome != bus.OutcomeRefused || empty.Reason != bus.ReasonBadName {
 		t.Fatalf("empty name %+v", empty)
 	}
@@ -438,7 +438,7 @@ func TestNoListenerIsConnectionFailure(t *testing.T) {
 	if err := ln.Close(); err != nil {
 		t.Fatal(err)
 	}
-	res, raw := runClient(t, context.Background(), "list", "--address", addr)
+	res, raw := runClient(t, context.Background(), "chat", "list", "--address", addr)
 	if res.Outcome != client.OutcomeConnectionFailure || !strings.Contains(res.Reason, "connection failed: "+addr+":") || !strings.Contains(res.Reason, "refused") {
 		t.Fatalf("result %s", raw)
 	}
@@ -458,7 +458,7 @@ func TestStoppingBusDuringWaitIsNotTimeout(t *testing.T) {
 	go func() {
 		var stdout, stderr bytes.Buffer
 		err := execute(ctx, []string{
-			"wait", "--address", addr, "--conversation", "block", "--cursor", "0", "--name", "bob", "--deadline", "30s",
+			"chat", "wait", "block", "--address", addr, "--cursor", "0", "--to", "bob", "--deadline", "30s",
 		}, &stdout, &stderr)
 		if err == nil && stderr.Len() != 0 {
 			err = errString(stderr.String())
@@ -471,8 +471,8 @@ func TestStoppingBusDuringWaitIsNotTimeout(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
-			t.Fatal(err)
+		if code, ok := ReportedExit(err); !ok || code != ExitUnavailable {
+			t.Fatalf("exit %v", err)
 		}
 		raw := <-outCh
 		res := parseStdout(t, []byte(raw))
@@ -490,7 +490,7 @@ func TestInterruptParkedWaitExits130(t *testing.T) {
 	defer stop()
 	create(t, context.Background(), addr, "block")
 
-	cmd := exec.Command(bin, "wait", "--address", addr, "--conversation", "block", "--cursor", "0", "--name", "bob", "--deadline", "30s")
+	cmd := exec.Command(bin, "chat", "wait", "block", "--address", addr, "--cursor", "0", "--to", "bob", "--deadline", "30s")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -529,17 +529,17 @@ func TestDefaultAddressIsTheLocalBus(t *testing.T) {
 	}
 	stop := startBusOn(t, bus.DefaultListen)
 	defer stop()
-	res, raw := runClient(t, context.Background(), "create", "--name", "job")
+	res, raw := runClient(t, context.Background(), "chat", "create", "job")
 	if res.Outcome != bus.OutcomeOK || res.Chat == nil || res.Chat.Name != "job" || res.Chat.Status != "open" {
 		t.Fatalf("create %s", raw)
 	}
-	cmd := newCreateCmd()
-	addr, err := cmd.Flags().GetString("address")
+	cmd, _, err := newRoot().Find([]string{"chat", "create"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if addr != bus.DefaultListen {
-		t.Fatalf("address default %s", addr)
+	flag := cmd.InheritedFlags().Lookup("address")
+	if flag == nil || flag.DefValue != bus.DefaultListen {
+		t.Fatalf("address flag %+v", flag)
 	}
 }
 
@@ -560,10 +560,10 @@ func TestUnsetNameAndDeadlineAreOmitted(t *testing.T) {
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
 	ctx := context.Background()
-	runClient(t, ctx, "read", "--address", addr, "--conversation", "job", "--cursor", "0", "--limit", "5")
-	runClient(t, ctx, "read", "--address", addr, "--conversation", "job", "--cursor", "0", "--limit", "5", "--name", "")
-	runClient(t, ctx, "wait", "--address", addr, "--conversation", "job", "--cursor", "4")
-	runClient(t, ctx, "wait", "--address", addr, "--conversation", "job", "--cursor", "4", "--name", "bob", "--deadline", "30s")
+	runClient(t, ctx, "chat", "read", "job", "--address", addr, "--cursor", "0", "--limit", "5")
+	runClient(t, ctx, "chat", "read", "job", "--address", addr, "--cursor", "0", "--limit", "5", "--to", "")
+	runClient(t, ctx, "chat", "wait", "job", "--address", addr, "--cursor", "4")
+	runClient(t, ctx, "chat", "wait", "job", "--address", addr, "--cursor", "4", "--to", "bob", "--deadline", "30s")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -581,19 +581,18 @@ func TestUnsetNameAndDeadlineAreOmitted(t *testing.T) {
 	assertString(t, got[3], "deadline", "30s")
 }
 
-func TestPublishBodyFileAndStdinCarryTheBusMaximum(t *testing.T) {
+func TestSendBodyFileAndStdinCarryTheBusMaximum(t *testing.T) {
 	bin := buildBinary(t)
 	addr, stop := startBus(t)
 	defer stop()
-	runBinOK(t, bin, nil, "create", "--address", addr, "--name", "big")
+	runBinOK(t, bin, nil, "chat", "create", "big", "--address", addr)
 
 	fileBody := strings.Repeat("a", bus.DefaultMaxBody)
 	file := filepath.Join(t.TempDir(), "body")
 	if err := os.WriteFile(file, []byte(fileBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fromFile := runBinOK(t, bin, nil, "publish", "--address", addr,
-		"--conversation", "big", "--from", "alice", "--kind", "say", "--body-file", file, "--txid", "file")
+	fromFile := runBinOK(t, bin, nil, "chat", "send", "big", "--address", addr, "--from", "alice", "--kind", "say", "--body-file", file, "--txid", "file")
 	if fromFile.Message == nil || fromFile.Message.Body != fileBody {
 		n := 0
 		if fromFile.Message != nil {
@@ -603,8 +602,7 @@ func TestPublishBodyFileAndStdinCarryTheBusMaximum(t *testing.T) {
 	}
 
 	piped := strings.Repeat("b", bus.DefaultMaxBody)
-	fromStdin := runBinOK(t, bin, strings.NewReader(piped), "publish", "--address", addr,
-		"--conversation", "big", "--from", "alice", "--kind", "say", "--body-file", "-", "--txid", "pipe")
+	fromStdin := runBinOK(t, bin, strings.NewReader(piped), "chat", "send", "big", "--address", addr, "--from", "alice", "--kind", "say", "--body-file", "-", "--txid", "pipe")
 	if fromStdin.Message == nil || fromStdin.Message.Body != piped {
 		n := 0
 		if fromStdin.Message != nil {
@@ -623,8 +621,7 @@ func TestOversizeBodyFileIsRefused(t *testing.T) {
 	if err := os.WriteFile(file, bytes.Repeat([]byte("c"), bus.DefaultMaxBody+1), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "big", "--from", "alice", "--kind", "say", "--body-file", file, "--txid", "over")
+	res, _ := runClient(t, ctx, "chat", "send", "big", "--address", addr, "--from", "alice", "--kind", "say", "--body-file", file, "--txid", "over")
 	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonBodySize {
 		t.Fatalf("outcome %s reason %s", res.Outcome, res.Reason)
 	}
@@ -635,8 +632,7 @@ func TestLiteralHyphenBodyIsNotStdin(t *testing.T) {
 	defer stop()
 	ctx := context.Background()
 	create(t, ctx, addr, "hyphen")
-	res, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "hyphen", "--from", "alice", "--kind", "say", "--body=-", "--txid", "dash")
+	res, _ := runClient(t, ctx, "chat", "send", "hyphen", "--address", addr, "--from", "alice", "--kind", "say", "--body=-", "--txid", "dash")
 	if res.Outcome != bus.OutcomeOK || res.Message == nil || res.Message.Body != "-" {
 		got := ""
 		if res.Message != nil {
@@ -646,7 +642,7 @@ func TestLiteralHyphenBodyIsNotStdin(t *testing.T) {
 	}
 }
 
-func TestPublishBodyChoiceDoesNotDial(t *testing.T) {
+func TestSendBodyChoiceDoesNotDial(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -661,7 +657,7 @@ func TestPublishBodyChoiceDoesNotDial(t *testing.T) {
 		}
 	}()
 	addr := ln.Addr().String()
-	base := []string{"publish", "--address", addr, "--conversation", "job", "--from", "alice", "--kind", "say", "--txid", "k"}
+	base := []string{"chat", "send", "job", "--address", addr, "--from", "alice", "--kind", "say", "--txid", "k"}
 	assertNoTxID := func(args []string) {
 		t.Helper()
 		var stderr bytes.Buffer
@@ -675,8 +671,8 @@ func TestPublishBodyChoiceDoesNotDial(t *testing.T) {
 	assertNoTxID(base)
 	assertNoTxID(append(append([]string{}, base...), "--body", "hi", "--body-file", "note.txt"))
 	assertNoTxID(append(append([]string{}, base...), "--body-file", filepath.Join(t.TempDir(), "absent")))
-	assertNoTxID([]string{"publish", "--address", addr, "--from", "alice", "--kind", "say", "--body", "hi"})
-	assertNoTxID([]string{"publish", "--address", addr, "--conversation", "job", "--body", "hi"})
+	assertNoTxID([]string{"chat", "send", "--address", addr, "--from", "alice", "--kind", "say", "--body", "hi"})
+	assertNoTxID([]string{"chat", "send", "job", "--address", addr, "--body", "hi"})
 	select {
 	case <-accepted:
 		t.Fatal("dialled while choosing a body")
@@ -697,7 +693,7 @@ func TestInvalidUTF8BodyIsRefusedWithoutDialling(t *testing.T) {
 	if err := os.WriteFile(file, []byte{0xff}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	base := []string{"publish", "--address", addr, "--conversation", "job", "--from", "alice", "--kind", "say", "--txid", "k"}
+	base := []string{"chat", "send", "job", "--address", addr, "--from", "alice", "--kind", "say", "--txid", "k"}
 	fromFile, _ := runClient(t, ctx, append(base, "--body-file", file)...)
 	if fromFile.Outcome != bus.OutcomeRefused || fromFile.Reason != bus.ReasonBodyUTF8 {
 		t.Fatalf("file outcome %s reason %s", fromFile.Outcome, fromFile.Reason)
@@ -709,7 +705,7 @@ func TestInvalidUTF8BodyIsRefusedWithoutDialling(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	stdinArgs := append(base, "--body-file", "-")
 	err := executeIO(ctx, stdinArgs, bytes.NewReader([]byte{0xff}), &stdout, &stderr)
-	if err != nil {
+	if code, ok := ReportedExit(err); !ok || code != ExitRefused {
 		t.Fatalf("stdin exit %v stderr %q stdout %s", err, stderr.String(), stdout.String())
 	}
 	checkCommandStderr(t, stdinArgs, stderr.String())
@@ -729,8 +725,8 @@ func TestInvalidUTF8KeyIsRefusedWithoutDialling(t *testing.T) {
 		_, _ = io.WriteString(w, `{"outcome":"ok"}`)
 	}))
 	defer srv.Close()
-	res, _ := runClient(t, context.Background(), "publish", "--address", srv.Listener.Addr().String(),
-		"--conversation", "job", "--from", "alice", "--kind", "say", "--body", "hi",
+	res, _ := runClient(t, context.Background(), "chat", "send", "job", "--address", srv.Listener.Addr().String(),
+		"--from", "alice", "--kind", "say", "--body", "hi",
 		"--txid", string([]byte{0xff}))
 	if res.Outcome != bus.OutcomeRefused || res.Reason != bus.ReasonKeyUTF8 {
 		t.Fatalf("outcome %s reason %s", res.Outcome, res.Reason)
@@ -740,19 +736,17 @@ func TestInvalidUTF8KeyIsRefusedWithoutDialling(t *testing.T) {
 	}
 }
 
-func TestValidUTF8BodiesStillPublish(t *testing.T) {
+func TestValidUTF8BodiesStillSend(t *testing.T) {
 	addr, stop := startBus(t)
 	defer stop()
 	ctx := context.Background()
 	create(t, ctx, addr, "text")
-	empty, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "text", "--from", "alice", "--kind", "say", "--body", "", "--txid", "empty")
+	empty, _ := runClient(t, ctx, "chat", "send", "text", "--address", addr, "--from", "alice", "--kind", "say", "--body", "", "--txid", "empty")
 	if empty.Outcome != bus.OutcomeOK || empty.Message == nil || empty.Message.Body != "" {
 		t.Fatalf("empty %+v", empty.Message)
 	}
 	const cafe = "café"
-	inline, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "text", "--from", "alice", "--kind", "say", "--body", cafe, "--txid", "cafe")
+	inline, _ := runClient(t, ctx, "chat", "send", "text", "--address", addr, "--from", "alice", "--kind", "say", "--body", cafe, "--txid", "cafe")
 	if inline.Outcome != bus.OutcomeOK || inline.Message == nil || inline.Message.Body != cafe {
 		got := ""
 		if inline.Message != nil {
@@ -764,8 +758,7 @@ func TestValidUTF8BodiesStillPublish(t *testing.T) {
 	if err := os.WriteFile(file, []byte(cafe), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fromFile, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "text", "--from", "alice", "--kind", "say", "--body-file", file, "--txid", "file")
+	fromFile, _ := runClient(t, ctx, "chat", "send", "text", "--address", addr, "--from", "alice", "--kind", "say", "--body-file", file, "--txid", "file")
 	if fromFile.Outcome != bus.OutcomeOK || fromFile.Message == nil || fromFile.Message.Body != cafe {
 		got := ""
 		if fromFile.Message != nil {
@@ -777,8 +770,7 @@ func TestValidUTF8BodiesStillPublish(t *testing.T) {
 	if err := os.WriteFile(blank, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fromBlank, _ := runClient(t, ctx, "publish", "--address", addr,
-		"--conversation", "text", "--from", "alice", "--kind", "say", "--body-file", blank, "--txid", "blank")
+	fromBlank, _ := runClient(t, ctx, "chat", "send", "text", "--address", addr, "--from", "alice", "--kind", "say", "--body-file", blank, "--txid", "blank")
 	if fromBlank.Outcome != bus.OutcomeOK || fromBlank.Message == nil || fromBlank.Message.Body != "" {
 		t.Fatalf("blank file %+v", fromBlank.Message)
 	}
@@ -800,14 +792,13 @@ func TestCommandTextRoundTripsBodies(t *testing.T) {
 		{body: "one\noutcome: ok\ntwo\n", txid: "lines"},
 	}
 	for _, tc := range cases {
-		res, id, raw := runPublish(t, ctx, "publish", "--address", addr,
-			"--conversation", "frame", "--from", "alice", "--kind", "say", "--to", "bob", "--to", "carol",
+		res, id, raw := runSend(t, ctx, "chat", "send", "frame", "--address", addr, "--from", "alice", "--kind", "say", "--to", "bob", "--to", "carol",
 			"--body", tc.body, "--txid", tc.txid)
 		if id != tc.txid || res.Outcome != bus.OutcomeOK || res.AlreadyStored == nil || *res.AlreadyStored {
-			t.Fatalf("publish %q id %q %+v\n%s", tc.body, id, res, raw)
+			t.Fatalf("send %q id %q %+v\n%s", tc.body, id, res, raw)
 		}
 		if res.Chat == nil || res.Chat.Name != "frame" || res.Chat.Status != "open" || res.Message == nil {
-			t.Fatalf("publish shape %+v", res)
+			t.Fatalf("send shape %+v", res)
 		}
 		msg := res.Message
 		if msg.Body != tc.body || msg.TxID != tc.txid || msg.From != "alice" || len(msg.To) != 2 || msg.To[0] != "bob" || msg.To[1] != "carol" || msg.Seq == 0 || msg.Time == "" {
@@ -829,16 +820,16 @@ func TestCommandTextRoundTripsBodies(t *testing.T) {
 			t.Fatalf("stored %d body %q txid %q", i, got[i].Body, got[i].TxID)
 		}
 	}
-	empty, raw := runClient(t, ctx, "read", "--address", addr, "--conversation", "frame", "--cursor", "99", "--limit", "5")
+	empty, raw := runClient(t, ctx, "chat", "read", "frame", "--address", addr, "--cursor", "99", "--limit", "5")
 	if empty.Outcome != bus.OutcomeOK || empty.Messages == nil || len(*empty.Messages) != 0 || strings.Contains(raw, "message:") {
 		t.Fatalf("empty read %s", raw)
 	}
 }
 
 func TestClientHelpShowsText(t *testing.T) {
-	for _, name := range []string{"create", "publish", "read", "wait", "close", "list"} {
+	for _, name := range []string{"create", "send", "read", "wait", "close", "list"} {
 		var stdout, stderr bytes.Buffer
-		err := execute(context.Background(), []string{name, "--help"}, &stdout, &stderr)
+		err := execute(context.Background(), []string{"chat", name, "--help"}, &stdout, &stderr)
 		if err != nil {
 			t.Fatalf("%s help: %v\n%s", name, err, stderr.String())
 		}
@@ -851,7 +842,7 @@ func TestClientHelpShowsText(t *testing.T) {
 
 func TestUsageErrorPrintsNoStdout(t *testing.T) {
 	bin := buildBinary(t)
-	cmd := exec.Command(bin, "create")
+	cmd := exec.Command(bin, "chat", "create")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -861,18 +852,18 @@ func TestUsageErrorPrintsNoStdout(t *testing.T) {
 	}
 }
 
-func TestListShowsStatusAndNamesQuietConversations(t *testing.T) {
+func TestListShowsStatusAndNamesQuietChats(t *testing.T) {
 	addr, stop := startBus(t)
 	defer stop()
 	ctx := context.Background()
-	empty, _ := runClient(t, ctx, "list", "--address", addr)
+	empty, _ := runClient(t, ctx, "chat", "list", "--address", addr)
 	if empty.Outcome != bus.OutcomeOK || empty.Chats == nil || len(*empty.Chats) != 0 {
 		t.Fatalf("empty %+v", empty)
 	}
 	create(t, ctx, addr, "b")
 	create(t, ctx, addr, "a")
-	runClient(t, ctx, "close", "--address", addr, "--conversation", "a")
-	listed, _ := runClient(t, ctx, "list", "--address", addr)
+	runClient(t, ctx, "chat", "close", "a", "--address", addr)
+	listed, _ := runClient(t, ctx, "chat", "list", "--address", addr)
 	if listed.Chats == nil || len(*listed.Chats) != 2 {
 		t.Fatalf("list %+v", listed)
 	}
@@ -889,12 +880,12 @@ func TestListOrdersByNewestMessage(t *testing.T) {
 	for _, name := range []string{"quiet", "old", "new"} {
 		create(t, ctx, addr, name)
 	}
-	for _, conv := range []string{"new", "old"} {
-		if res, raw := runClient(t, ctx, "publish", "--address", addr, "--conversation", conv, "--from", "alice", "--kind", "say", "--body", conv, "--txid", conv); res.Outcome != bus.OutcomeOK {
-			t.Fatalf("publish %s", raw)
+	for _, chat := range []string{"new", "old"} {
+		if res, raw := runClient(t, ctx, "chat", "send", chat, "--address", addr, "--from", "alice", "--kind", "say", "--body", chat, "--txid", chat); res.Outcome != bus.OutcomeOK {
+			t.Fatalf("send %s", raw)
 		}
 	}
-	listed, raw := runClient(t, ctx, "list", "--address", addr)
+	listed, raw := runClient(t, ctx, "chat", "list", "--address", addr)
 	if listed.Chats == nil {
 		t.Fatalf("list %s", raw)
 	}
@@ -1142,12 +1133,14 @@ func contentLength(header []byte) int {
 	return 0
 }
 
-func runPublish(t *testing.T, ctx context.Context, args ...string) (client.Result, string, string) {
+func runSend(t *testing.T, ctx context.Context, args ...string) (client.Result, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	err := execute(ctx, args, &stdout, &stderr)
 	if err != nil {
-		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), stdout.String())
+		if _, ok := ReportedExit(err); !ok {
+			t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), stdout.String())
+		}
 	}
 	id := checkCommandStderr(t, args, stderr.String())
 	return parseStdout(t, stdout.Bytes()), id, stdout.String()
@@ -1155,7 +1148,7 @@ func runPublish(t *testing.T, ctx context.Context, args ...string) (client.Resul
 
 func checkCommandStderr(t *testing.T, args []string, stderr string) string {
 	t.Helper()
-	if len(args) == 0 || args[0] != "publish" {
+	if len(args) < 2 || args[0] != "chat" || args[1] != "send" {
 		if stderr != "" {
 			t.Fatalf("stderr: %s", stderr)
 		}
@@ -1218,7 +1211,9 @@ func runClient(t *testing.T, ctx context.Context, args ...string) (client.Result
 	var stdout, stderr bytes.Buffer
 	err := execute(ctx, args, &stdout, &stderr)
 	if err != nil {
-		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), stdout.String())
+		if _, ok := ReportedExit(err); !ok {
+			t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), stdout.String())
+		}
 	}
 	checkCommandStderr(t, args, stderr.String())
 	return parseStdout(t, stdout.Bytes()), stdout.String()
@@ -1226,16 +1221,16 @@ func runClient(t *testing.T, ctx context.Context, args ...string) (client.Result
 
 func create(t *testing.T, ctx context.Context, addr, name string) {
 	t.Helper()
-	res, raw := runClient(t, ctx, "create", "--address", addr, "--name", name)
+	res, raw := runClient(t, ctx, "chat", "create", name, "--address", addr)
 	if res.Outcome != bus.OutcomeOK {
 		t.Fatalf("create %s: %s", name, raw)
 	}
 }
 
-func publish(t *testing.T, ctx context.Context, addr, conv, from string, to []string, body, key string) {
+func sendChat(t *testing.T, ctx context.Context, addr, chat, from string, to []string, body, key string) {
 	t.Helper()
 	args := []string{
-		"publish", "--address", addr, "--conversation", conv, "--from", from, "--kind", "say",
+		"chat", "send", chat, "--address", addr, "--from", from, "--kind", "say",
 		"--body", body, "--txid", key,
 	}
 	for _, name := range to {
@@ -1243,13 +1238,13 @@ func publish(t *testing.T, ctx context.Context, addr, conv, from string, to []st
 	}
 	res, raw := runClient(t, ctx, args...)
 	if res.Outcome != bus.OutcomeOK {
-		t.Fatalf("publish %s: %s", key, raw)
+		t.Fatalf("send %s: %s", key, raw)
 	}
 }
 
-func readAll(t *testing.T, ctx context.Context, addr, conv string, cursor int64) []client.Message {
+func readAll(t *testing.T, ctx context.Context, addr, chat string, cursor int64) []client.Message {
 	t.Helper()
-	res, raw := runClient(t, ctx, "read", "--address", addr, "--conversation", conv, "--cursor", itoa(cursor), "--limit", "50")
+	res, raw := runClient(t, ctx, "chat", "read", chat, "--address", addr, "--cursor", itoa(cursor), "--limit", "50")
 	if res.Outcome != bus.OutcomeOK || res.Messages == nil {
 		t.Fatalf("read %s", raw)
 	}

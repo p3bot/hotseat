@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +50,9 @@ const (
 	roleMember = "hotseat/member"
 	contextBus = "hotseat/bus"
 
+	envAddress   = "HOTSEAT_ADDRESS"
+	envTokenFile = "HOTSEAT_TOKEN_FILE"
+
 	statusLaunched = "launched"
 	statusJoined   = "joined"
 	statusRunning  = "running"
@@ -80,21 +85,27 @@ const (
 	classUnsettled    = "unsettled"
 )
 
-// stanceKinds are the kinds a discussion launch publishes one of. Prompts read them with findings on an unnamed read.
+// stanceKinds are the kinds a discussion launch sends one of. Prompts read them with findings on an unnamed read.
 var stanceKinds = []string{kindPropose, kindDismiss, kindAgree, kindObject, kindStand}
 
-// Execute runs one conversation and reports it to report: the header once the conversation and its lease are held,
-// and the result at exit. A run that stops before its conversation is bound reports nothing, and one that stops after
-// it but before the lease reports Unheld. Event lines go to stderr only when cfg.Verbose is set.
-// The token value and the lease holder are not reported, nor written to stderr or a prompt.
-// It holds the conversation lease from before it acts on the conversation until it
+// New creates a chat from setup, stores the setup with it, and drives it. Continue drives an existing chat.
+// Each reports to report: the header once the chat and its lease are held, and the result at exit. A run that stops
+// before its chat is bound reports nothing, and one that stops after it but before the lease reports Unheld. Event
+// lines go to stderr only when cfg.Verbose is set. The token value and the lease holder are not reported, nor written
+// to stderr, a prompt, or a member's environment. A run holds the chat lease from before it acts on the chat until it
 // exits, and stops when the lease is lost.
-func Execute(ctx context.Context, cfg Config, report Reporter, stderr io.Writer) error {
-	return executePaced(ctx, cfg, defaultPace(), report, stderr)
+func New(ctx context.Context, cfg Config, setup Setup, report Reporter, stderr io.Writer) error {
+	return executePaced(ctx, cfg, defaultPace(), report, stderr, func(e *engine) error { return e.createChat(setup) })
 }
 
-// executePaced is Execute with its timing. Only tests pass a pace other than defaultPace.
-func executePaced(ctx context.Context, cfg Config, p pace, report Reporter, stderr io.Writer) error {
+// Continue drives the existing chat name from the setup New stored with it. It refuses a chat that does not exist,
+// and one whose stored setup cannot launch members, before it takes the lease or writes anything.
+func Continue(ctx context.Context, cfg Config, name string, report Reporter, stderr io.Writer) error {
+	return executePaced(ctx, cfg, defaultPace(), report, stderr, func(e *engine) error { return e.continueChat(name) })
+}
+
+// executePaced builds an engine with its timing and runs act on it. Only tests pass a pace other than defaultPace.
+func executePaced(ctx context.Context, cfg Config, p pace, report Reporter, stderr io.Writer, act func(*engine) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -108,7 +119,10 @@ func executePaced(ctx context.Context, cfg Config, p pace, report Reporter, stde
 	if err != nil {
 		return err
 	}
-	return e.execute()
+	defer e.loseHeld(nil)
+	defer e.cancel()
+	defer e.endLease()
+	return act(e)
 }
 
 type engine struct {
@@ -119,10 +133,11 @@ type engine struct {
 	held     context.Context
 	loseHeld context.CancelCauseFunc
 
-	cfg       Config
-	addr      string
-	token     string
-	tokenFile string
+	cfg   Config
+	addr  string
+	token string
+	// memberEnv is the environment of every member process.
+	memberEnv []string
 	perm      string
 	limit     time.Duration
 	pace      pace
@@ -139,7 +154,7 @@ type engine struct {
 	// began is when this run started, for elapsed.
 	began time.Time
 
-	// holder is this run's lease holder id. It fences every conductor write and publish.
+	// holder is this run's lease holder id. It fences every conductor write and send.
 	holder string
 	// leaseEnd stops the lease renewal and waits for it. It is set once the lease is acquired.
 	leaseEnd func()
@@ -154,7 +169,7 @@ type engine struct {
 	name       string
 	binding    client.Chat
 	continuing bool
-	// taskSeq is the instructions message this run published, which boot launches concern. It is set before any launch.
+	// taskSeq is the instructions message this run sent, which boot launches concern. It is set before any launch.
 	taskSeq int64
 
 	// rule serialises stop rulings so each done is judged once. It is taken before mu, never under it.
@@ -169,10 +184,10 @@ type engine struct {
 	haltClass string
 	// stopRes is the stop result reportStop read, or nil. Only the goroutine running execute touches it.
 	stopRes *StopResult
-	// say is held by noteHalt from recording the first halt until its stop error is published, so no caller cancels before it.
+	// say is held by noteHalt from recording the first halt until its stop error is sent, so no caller cancels before it.
 	// It is taken before mu.
 	say sync.Mutex
-	// closed is set once the stopping done closed the conversation.
+	// closed is set once the stopping done closed the chat.
 	closed   bool
 	closing  bool
 	doneFrom string
@@ -185,7 +200,7 @@ type engine struct {
 	// inFlight counts member processes this run started or watches and has not yet recorded.
 	inFlight  int
 	windClass string
-	// windSeq is the error windClass published, or zero until it is stored.
+	// windSeq is the error windClass sent, or zero until it is stored.
 	windSeq int64
 	// idle is closed once windClass has its stored error and inFlight is zero.
 	idle       chan struct{}
@@ -228,16 +243,22 @@ func newEngine(ctx context.Context, cfg Config, p pace, report Reporter, stderr 
 	if cfg.MaxSaysSet && cfg.MaxSays < 1 {
 		return nil, errors.New("max says must be a positive integer")
 	}
-	if cfg.TimeoutSet && cfg.Timeout <= 0 {
-		return nil, errors.New("timeout must be positive")
+	if cfg.TimeoutSet && cfg.Timeout < 0 {
+		return nil, errors.New("timeout must not be negative")
 	}
 	addr := cfg.Address
 	if addr == "" {
 		addr = bus.DefaultListen
 	}
-	var token string
+	var token, tokenFile string
 	if cfg.TokenFileSet || cfg.TokenFile != "" {
-		tok, err := bus.ReadTokenFile(cfg.TokenFile)
+		// A member starts in the chat's directory, so a relative path would name another file there.
+		// An empty path is no file. Joining it would name the working directory.
+		tokenFile = cfg.TokenFile
+		if tokenFile != "" && !filepath.IsAbs(tokenFile) {
+			tokenFile = filepath.Join(cfg.Dir, tokenFile)
+		}
+		tok, err := bus.ReadTokenFile(tokenFile)
 		if err != nil {
 			return nil, err
 		}
@@ -267,17 +288,17 @@ func newEngine(ctx context.Context, cfg Config, p pace, report Reporter, stderr 
 	child, cancel := context.WithCancel(ctx)
 	held, loseHeld := context.WithCancelCause(ctx)
 	e := &engine{
-		root:         ctx,
-		child:        child,
-		cancel:       cancel,
-		held:         held,
-		loseHeld:     loseHeld,
-		cfg:          cfg,
-		addr:         addr,
-		token:        token,
-		holder:       holder,
-		tokenFile:    cfg.TokenFile,
-		perm:         cfg.permission(),
+		root:     ctx,
+		child:    child,
+		cancel:   cancel,
+		held:     held,
+		loseHeld: loseHeld,
+		cfg:      cfg,
+		addr:     addr,
+		token:    token,
+		holder:   holder,
+
+		memberEnv:    memberEnv(os.Environ(), addr, tokenFile),
 		limit:        cfg.timeout(),
 		pace:         p,
 		maxTurns:     cfg.maxTurns(),
@@ -302,59 +323,103 @@ func newEngine(ctx context.Context, cfg Config, p pace, report Reporter, stderr 
 	return e, nil
 }
 
-func (e *engine) execute() error {
-	defer e.loseHeld(nil)
-	defer e.cancel()
-	defer e.endLease()
-	var err error
-	if e.cfg.AgentsSet {
-		e.roster, err = parseAgents(e.cfg.Agents)
-		if err != nil {
-			return err
-		}
-	}
-	if e.cfg.SeatSet {
-		if e.cfg.Seat != strings.ToLower(e.cfg.Seat) || !validName(e.cfg.Seat) {
-			return fmt.Errorf("seat %s must be a lowercase hotseat name", e.cfg.Seat)
-		}
-	}
-	if e.cfg.ConversationSet {
-		return e.continueConversation()
-	}
-	if !e.cfg.TaskSet || strings.TrimSpace(e.cfg.Task) == "" {
+// createChat validates setup, creates the chat with it stored, sends the task, and drives the chat.
+func (e *engine) createChat(setup Setup) error {
+	if strings.TrimSpace(setup.Task) == "" {
 		return errors.New("a task is required")
 	}
-	return e.createConversation(true)
-}
-
-func (e *engine) continueConversation() error {
-	if err := checkName(e.cfg.Conversation); err != nil {
+	roster, err := parseAgents(setup.Agents)
+	if err != nil {
 		return err
 	}
-	conv, ok, err := e.find(e.cfg.Conversation)
+	if len(roster) == 0 {
+		return errors.New("a roster is required")
+	}
+	e.roster = roster
+	seat := setup.Seat
+	if seat == "" {
+		seat = defaultSeat(e.roster)
+	} else if seat != strings.ToLower(seat) || !validName(seat) {
+		return fmt.Errorf("seat %s must be a lowercase hotseat name", seat)
+	} else if !nameIn(e.roster, seat) {
+		return fmt.Errorf("seat %s is not in the roster", seat)
+	}
+	e.seat = seat
+	e.perm = setup.Permission
+	if e.perm == "" {
+		e.perm = DefaultPermission
+	}
+	if err := e.checkPermissions(); err != nil {
+		return err
+	}
+	id, err := e.taskID(setup.Task)
+	if err != nil {
+		return err
+	}
+	if err := e.requireMinimum(id); err != nil {
+		return err
+	}
+	dir, err := e.launchDirectory(setup.Ticket)
+	if err != nil {
+		return err
+	}
+	e.dir = dir
+	prompts := strings.Fields(setup.Prompts)
+	text, err := e.moduleText(id)
+	if err != nil {
+		return err
+	}
+	body, err := fitInstructions(instructionBody(text, seat, setup.Ticket, prompts, setup.Instructions))
+	if err != nil {
+		return err
+	}
+	slug, err := taskSlug(id)
+	if err != nil {
+		return err
+	}
+	e.binding = client.Chat{
+		Task: id, Ticket: setup.Ticket, Seat: seat, Directory: dir, Prompts: prompts, Custom: setup.Instructions,
+		Roster: e.rosterEntries(), Permission: e.perm,
+	}
+	name, err := e.mint(bareChat(slug, setup.Ticket))
+	if err != nil {
+		return err
+	}
+	e.name = name
+	e.binding.Name = name
+	return e.finish(e.begin(body))
+}
+
+// continueChat drives the stored chat name with the roster, seat, and permission stored with it.
+func (e *engine) continueChat(name string) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
+	chat, ok, err := e.find(name)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		if !e.cfg.TaskSet || strings.TrimSpace(e.cfg.Task) == "" {
-			return errors.New("a task is required when the conversation does not exist")
-		}
-		return e.createConversation(false)
+		return fmt.Errorf("chat %s does not exist", name)
 	}
-	if err := e.agree(conv); err != nil {
+	if err := launchable(chat); err != nil {
 		return err
 	}
-	e.binding = conv
-	e.name = conv.Name
-	e.seat = conv.Seat
-	e.dir = conv.Directory
+	e.roster = make([]agent, len(chat.Roster))
+	for i, r := range chat.Roster {
+		e.roster[i] = agent{name: r.Name, module: r.Module, model: r.Model}
+	}
+	e.perm = chat.Permission
+	e.binding = chat
+	e.name = chat.Name
+	e.seat = chat.Seat
+	e.dir = chat.Directory
 	e.continuing = true
 	if err := e.acquire(true); err != nil {
 		return e.finish(err)
 	}
-	e.ensureRoster(conv.Roster)
 	e.reporter.Header(e.header())
-	if err := e.ensureInstructions(conv); err != nil {
+	if err := e.ensureInstructions(chat); err != nil {
 		return e.finish(err)
 	}
 	if err := e.loadMembers(); err != nil {
@@ -363,92 +428,55 @@ func (e *engine) continueConversation() error {
 	return e.finish(e.drive())
 }
 
-func (e *engine) createConversation(suffix bool) error {
-	if len(e.roster) == 0 {
-		return errors.New("a roster is required")
+// launchable refuses a stored setup run cannot launch members from, naming each part that is missing.
+func launchable(chat client.Chat) error {
+	var missing []string
+	if chat.Task == "" {
+		missing = append(missing, "no task")
 	}
-	seat := e.cfg.Seat
-	if !e.cfg.SeatSet {
-		seat = defaultSeat(e.roster)
-	} else if !nameIn(e.roster, seat) {
-		return fmt.Errorf("seat %s is not in the roster", seat)
+	if chat.Seat == "" {
+		missing = append(missing, "no seat")
 	}
-	e.seat = seat
-	if err := e.checkPermissions(); err != nil {
-		return err
+	if len(chat.Roster) == 0 {
+		missing = append(missing, "no roster")
 	}
-	var id string
-	var err error
-	if e.cfg.ConversationSet && e.continuing {
-		id = e.binding.Task
-	}
-	if id == "" {
-		id, err = e.taskID(e.cfg.Task)
-		if err != nil {
-			return err
+	var noModule, noModel, neither []string
+	for _, r := range chat.Roster {
+		switch {
+		case r.Module == "" && r.Model == "":
+			neither = append(neither, r.Name)
+		case r.Module == "":
+			noModule = append(noModule, r.Name)
+		case r.Model == "":
+			noModel = append(noModel, r.Name)
 		}
 	}
-	if err := e.requireMinimum(id); err != nil {
-		return err
+	if len(noModule) > 0 {
+		missing = append(missing, "no module for "+strings.Join(noModule, ", "))
 	}
-	ticket := ""
-	if e.cfg.TicketSet {
-		ticket = e.cfg.Ticket
+	if len(noModel) > 0 {
+		missing = append(missing, "no model for "+strings.Join(noModel, ", "))
 	}
-	dir, err := e.launchDirectory(ticket)
-	if err != nil {
-		return err
+	if len(neither) > 0 {
+		missing = append(missing, "no module and model for "+strings.Join(neither, ", "))
 	}
-	e.dir = dir
-	prompts := e.promptList()
-	text, err := e.moduleText(id)
-	if err != nil {
-		return err
+	if chat.Permission == "" {
+		missing = append(missing, "no permission")
 	}
-	custom := ""
-	if e.cfg.InstructionsSet {
-		custom = e.cfg.Instructions
+	if len(missing) == 0 {
+		return nil
 	}
-	body, err := fitInstructions(instructionBody(text, seat, ticket, prompts, custom))
-	if err != nil {
-		return err
-	}
-	var name string
-	if suffix {
-		slug, err := taskSlug(id)
-		if err != nil {
-			return err
-		}
-		name, err = e.mint(bareConversation(slug, ticket), id)
-		if err != nil {
-			return err
-		}
-	} else {
-		name = e.cfg.Conversation
-		if err := checkName(name); err != nil {
-			return err
-		}
-		res, err := e.create(name, id, ticket, seat, dir, prompts, custom)
-		if err != nil {
-			return err
-		}
-		if res.AlreadyExisted != nil && *res.AlreadyExisted {
-			return fmt.Errorf("conversation %s already exists", name)
-		}
-	}
-	e.name = name
-	e.binding = client.Chat{Name: name, Task: id, Ticket: ticket, Seat: seat, Directory: dir, Prompts: prompts, Custom: custom, Roster: rosterNames(e.roster)}
-	return e.finish(e.begin(body))
+	return fmt.Errorf("chat %s has an incomplete setup: %s; only a chat run new created can continue", chat.Name, strings.Join(missing, "; "))
 }
 
-// begin takes the lease on a conversation this run created, publishes its task, and drives it.
-// A new conversation has no conductor, so the acquire does not wait.
+// begin takes the lease on a chat this run created, sends its task, and drives it.
+// A new chat has no conductor, so the acquire does not wait.
 func (e *engine) begin(body string) error {
 	if err := e.acquire(false); err != nil {
 		return err
 	}
 	e.reporter.Header(e.header())
-	seq, err := e.publishInstructions(body, rosterNames(e.roster))
+	seq, err := e.sendInstructions(body, rosterNames(e.roster))
 	if err != nil {
 		return err
 	}
@@ -456,7 +484,8 @@ func (e *engine) begin(body string) error {
 	return e.drive()
 }
 
-func (e *engine) mint(bare, id string) (string, error) {
+// mint creates the chat under bare, or under bare and a code when bare is taken, with e.binding stored.
+func (e *engine) mint(bare string) (string, error) {
 	if err := checkName(bare); err != nil && len(bare) > bus.MaxNameLen {
 		return "", nameLimit(bare)
 	}
@@ -474,17 +503,8 @@ func (e *engine) mint(bare, id string) (string, error) {
 			return "", err
 		}
 	}
-	ticket := ""
-	if e.cfg.TicketSet {
-		ticket = e.cfg.Ticket
-	}
-	prompts := e.promptList()
-	custom := ""
-	if e.cfg.InstructionsSet {
-		custom = e.cfg.Instructions
-	}
 	for {
-		res, err := e.create(name, id, ticket, e.seat, e.dir, prompts, custom)
+		res, err := e.create(name)
 		if err != nil {
 			return "", err
 		}
@@ -500,8 +520,8 @@ func (e *engine) mint(bare, id string) (string, error) {
 }
 
 func (e *engine) suffixed(bare string, taken map[string]bool) (string, error) {
-	if len(bare)+1+conversationCode > bus.MaxNameLen {
-		return "", nameLimit(bare + "-" + strings.Repeat("a", conversationCode))
+	if len(bare)+1+chatCode > bus.MaxNameLen {
+		return "", nameLimit(bare + "-" + strings.Repeat("a", chatCode))
 	}
 	for i := 0; i < 64; i++ {
 		code, err := mintCode(e.cfg.Random)
@@ -513,49 +533,7 @@ func (e *engine) suffixed(bare string, taken map[string]bool) (string, error) {
 			return name, nil
 		}
 	}
-	return "", errors.New("conversation name is taken")
-}
-
-func (e *engine) agree(conv client.Chat) error {
-	if e.cfg.TaskSet {
-		id, err := e.taskID(e.cfg.Task)
-		if err != nil {
-			return err
-		}
-		if id != conv.Task {
-			return errors.New("passed task does not match the stored task")
-		}
-	}
-	if e.cfg.AgentsSet {
-		names := rosterNames(e.roster)
-		if !sameStrings(names, conv.Roster) {
-			return errors.New("passed roster does not match the stored roster")
-		}
-	}
-	if e.cfg.SeatSet && e.cfg.Seat != conv.Seat {
-		return errors.New("passed seat does not match the stored seat")
-	}
-	if e.cfg.TicketSet && e.cfg.Ticket != conv.Ticket {
-		return errors.New("passed ticket does not match the stored ticket")
-	}
-	if e.cfg.PromptsSet && !sameStrings(e.promptList(), conv.Prompts) {
-		return errors.New("passed prompts do not match the stored prompts")
-	}
-	if e.cfg.InstructionsSet && e.cfg.Instructions != conv.Custom {
-		return errors.New("passed instructions do not match the stored instructions")
-	}
-	return nil
-}
-
-// ensureRoster takes the stored roster names when no roster was passed, so the run watches and launches nothing.
-func (e *engine) ensureRoster(stored []string) {
-	if e.cfg.AgentsSet {
-		return
-	}
-	e.roster = make([]agent, len(stored))
-	for i, name := range stored {
-		e.roster[i] = agent{name: name}
-	}
+	return "", errors.New("chat name is taken")
 }
 
 // requireMinimum reads the task's min_members and refuses a roster smaller than it.
@@ -571,27 +549,16 @@ func (e *engine) requireMinimum(task string) error {
 	return nil
 }
 
-// canLaunch is false on a resume that stored names only, so it watches and does not start a process.
-func (e *engine) canLaunch() bool {
-	if len(e.roster) == 0 {
-		return false
+// rosterEntries is the roster as the bus stores it.
+func (e *engine) rosterEntries() []client.RosterEntry {
+	out := make([]client.RosterEntry, len(e.roster))
+	for i, a := range e.roster {
+		out[i] = client.RosterEntry{Name: a.name, Module: a.module, Model: a.model}
 	}
-	for _, a := range e.roster {
-		if a.module == "" || a.model == "" {
-			return false
-		}
-	}
-	return true
+	return out
 }
 
-func (e *engine) promptList() []string {
-	if !e.cfg.PromptsSet {
-		return nil
-	}
-	return strings.Fields(e.cfg.Prompts)
-}
-
-// finish ends a run that bound its conversation and returns err. It is the stop point of an error stop that reached it
+// finish ends a run that bound its chat and returns err. It is the stop point of an error stop that reached it
 // without passing noteHalt, such as one before drive or a failed stop report. An unresolved stop is not an error stop.
 // Before the lease is held it reports Unheld, and once it was held the result.
 func (e *engine) finish(err error) error {
@@ -608,15 +575,11 @@ func (e *engine) finish(err error) error {
 	return err
 }
 
-// header is the conversation this run holds, its binding, and the roster it was given or the stored names.
+// header is the chat this run holds, its binding, and its roster.
 func (e *engine) header() Header {
-	h := Header{Conversation: e.name, Task: e.binding.Task, Ticket: e.binding.Ticket, Seat: e.seat}
+	h := Header{Chat: e.name, Task: e.binding.Task, Ticket: e.binding.Ticket, Seat: e.seat}
 	for _, a := range e.roster {
-		if e.cfg.AgentsSet {
-			h.Members = append(h.Members, Member{Name: a.name, Module: a.module, Model: a.model})
-		} else {
-			h.Roster = append(h.Roster, a.name)
-		}
+		h.Members = append(h.Members, Member{Name: a.name, Module: a.module, Model: a.model})
 	}
 	return h
 }
@@ -680,8 +643,8 @@ func (e *engine) find(name string) (client.Chat, bool, error) {
 	if err != nil {
 		return client.Chat{}, false, err
 	}
-	conv, ok := pickBinding(res, name)
-	return conv, ok, nil
+	chat, ok := pickBinding(res, name)
+	return chat, ok, nil
 }
 
 func (e *engine) taken() (map[string]bool, error) {
@@ -691,29 +654,31 @@ func (e *engine) taken() (map[string]bool, error) {
 	}
 	names := make(map[string]bool)
 	if res.Chats != nil {
-		for _, conv := range *res.Chats {
-			names[conv.Name] = true
+		for _, chat := range *res.Chats {
+			names[chat.Name] = true
 		}
 	}
 	return names, nil
 }
 
-func (e *engine) create(name, task, ticket, seat, dir string, prompts []string, custom string) (client.Result, error) {
-	res, err := e.call(e.root, "create", client.CreateRequest{
-		Name:      name,
-		Task:      task,
-		Ticket:    ticket,
-		Seat:      seat,
-		Directory: dir,
-		Prompts:   prompts,
-		Custom:    custom,
-		Roster:    rosterNames(e.roster),
+// create creates the chat name with e.binding stored.
+func (e *engine) create(name string) (client.Result, error) {
+	b := e.binding
+	return e.call(e.root, "create", client.CreateRequest{
+		Name:       name,
+		Task:       b.Task,
+		Ticket:     b.Ticket,
+		Seat:       b.Seat,
+		Directory:  b.Directory,
+		Prompts:    b.Prompts,
+		Custom:     b.Custom,
+		Roster:     b.Roster,
+		Permission: b.Permission,
 	})
-	return res, err
 }
 
-// publishInstructions publishes the task as owner and returns its seq.
-func (e *engine) publishInstructions(body string, to []string) (int64, error) {
+// sendInstructions sends the task as owner and returns its seq.
+func (e *engine) sendInstructions(body string, to []string) (int64, error) {
 	seq, _, err := e.send(post{kind: kindInstructions, from: fromOwner, to: to, body: body, tx: txInstructions})
 	return seq, err
 }

@@ -192,19 +192,8 @@ func writeVersion1(t *testing.T, messages ...string) string {
 		`PRAGMA journal_mode=WAL`,
 		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`,
 		`INSERT INTO meta (key, value) VALUES ('schema', '1')`,
-		`CREATE TABLE chats (
-			name TEXT PRIMARY KEY,
-			status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
-			task TEXT NOT NULL,
-			ticket TEXT NOT NULL,
-			seat TEXT NOT NULL,
-			directory TEXT NOT NULL,
-			prompts TEXT NOT NULL,
-			custom TEXT NOT NULL,
-			roster TEXT NOT NULL
-		) STRICT`,
-		`INSERT INTO chats (name, status, task, ticket, seat, directory, prompts, custom, roster)
-			VALUES ('job', 'open', '', '', '', '', '[]', '', '[]')`,
+		schemaStmt(t, "chats"),
+		`INSERT INTO chats (` + chatColumns + `) VALUES ('job', 'open', '', '', '', '', '[]', '', '[]', '')`,
 	}
 	stmts = append(stmts, messages...)
 	stmts = append(stmts,

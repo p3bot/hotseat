@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -674,7 +675,7 @@ func TestOpenRefusesTheConversationShapeAndLeavesTheFile(t *testing.T) {
 	}
 	stmts = append(stmts,
 		`INSERT INTO meta (key, value) VALUES ('schema', '1')`,
-		`INSERT INTO conversations (`+old.Replace(chatColumns)+`) VALUES ('job', 'open', '', '', '', '', '[]', '', '[]')`,
+		`INSERT INTO conversations (`+old.Replace(chatColumns)+`) VALUES ('job', 'open', '', '', '', '', '[]', '', '[]', '')`,
 	)
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1156,7 +1157,7 @@ func TestCloseReportsAlreadyClosed(t *testing.T) {
 func TestChatReturnsTheStoredBindingOrNotFound(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if _, _, err := st.Create(ctx, "job", Binding{Task: "t", Seat: "alpha", Roster: []string{"alpha"}}); err != nil {
+	if _, _, err := st.Create(ctx, "job", Binding{Task: "t", Seat: "alpha", Roster: []RosterEntry{{Name: "alpha"}}}); err != nil {
 		t.Fatal(err)
 	}
 	chat, err := st.Chat(ctx, "job")
@@ -1168,5 +1169,42 @@ func TestChatReturnsTheStoredBindingOrNotFound(t *testing.T) {
 	}
 	if _, err := st.Chat(ctx, "missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing: %v", err)
+	}
+}
+
+func TestChatKeepsRosterModulesModelsAndPermissionAsGiven(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	roster := []RosterEntry{{Name: "bravo", Module: "hotseat/claude", Model: "c1"}, {Name: "alpha"}, {Name: "charlie", Module: "m:x=y", Model: ""}}
+	if _, _, err := st.Create(ctx, "job", Binding{Seat: "alpha", Roster: roster, Permission: "auto"}); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := st.Chat(ctx, "job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(chat.Roster, roster) || chat.Permission != "auto" {
+		t.Fatalf("roster %+v permission %q", chat.Roster, chat.Permission)
+	}
+}
+
+func TestOpenRefusesAChatsTableWithoutPermission(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db := openRaw(t, dir)
+	if _, err := db.Exec(`ALTER TABLE chats DROP COLUMN permission`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); !errors.Is(err, ErrSchema) {
+		t.Fatalf("open = %v", err)
 	}
 }

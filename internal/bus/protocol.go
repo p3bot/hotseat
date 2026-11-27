@@ -55,7 +55,7 @@ const (
 	ReasonKindsShape           = "kinds must be an array of names"
 	ReasonKindsEmpty           = "kinds must not be empty"
 	ReasonKindsBadName         = "kinds contains a name that is not 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
-	ReasonRosterShape          = "roster must be an array of names"
+	ReasonRosterShape          = "roster must be an array of objects, each with a string name and optional string module and model"
 	ReasonRosterBadName        = "roster contains a name that is not 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'"
 	ReasonRosterDuplicate      = "roster contains a duplicate name"
 	ReasonSeatNotInRoster      = "seat must be one of the roster names"

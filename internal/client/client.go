@@ -130,15 +130,40 @@ type Message struct {
 // Chat is a name, its status, and its binding.
 // JSON from the bus always includes the binding keys.
 type Chat struct {
-	Name      string   `json:"name"`
-	Status    string   `json:"status"`
-	Task      string   `json:"task"`
-	Ticket    string   `json:"ticket"`
-	Seat      string   `json:"seat"`
-	Directory string   `json:"directory"`
-	Prompts   []string `json:"prompts"`
-	Custom    string   `json:"custom"`
-	Roster    []string `json:"roster"`
+	Name       string        `json:"name"`
+	Status     string        `json:"status"`
+	Task       string        `json:"task"`
+	Ticket     string        `json:"ticket"`
+	Seat       string        `json:"seat"`
+	Directory  string        `json:"directory"`
+	Prompts    []string      `json:"prompts"`
+	Custom     string        `json:"custom"`
+	Roster     []RosterEntry `json:"roster"`
+	Permission string        `json:"permission"`
+}
+
+// RosterEntry is one roster element. The bus reads Name only and stores Module and Model as given.
+type RosterEntry struct {
+	Name   string `json:"name"`
+	Module string `json:"module"`
+	Model  string `json:"model"`
+}
+
+// String is name=module:model, or name alone when module and model are both empty.
+func (r RosterEntry) String() string {
+	if r.Module == "" && r.Model == "" {
+		return r.Name
+	}
+	return r.Name + "=" + r.Module + ":" + r.Model
+}
+
+// RosterNames is the names of roster, in order.
+func RosterNames(roster []RosterEntry) []string {
+	names := make([]string, len(roster))
+	for i, r := range roster {
+		names[i] = r.Name
+	}
+	return names
 }
 
 // Member is one roster row as a member route returned it.
@@ -335,15 +360,17 @@ type RecordsRequest struct {
 
 // CreateRequest is the create body.
 // Omitted binding fields are stored empty. Prompts and Roster keep their order.
+// Permission is the one member launches take.
 type CreateRequest struct {
-	Name      string   `json:"name"`
-	Task      string   `json:"task,omitempty"`
-	Ticket    string   `json:"ticket,omitempty"`
-	Seat      string   `json:"seat,omitempty"`
-	Directory string   `json:"directory,omitempty"`
-	Prompts   []string `json:"prompts,omitempty"`
-	Custom    string   `json:"custom,omitempty"`
-	Roster    []string `json:"roster,omitempty"`
+	Name       string        `json:"name"`
+	Task       string        `json:"task,omitempty"`
+	Ticket     string        `json:"ticket,omitempty"`
+	Seat       string        `json:"seat,omitempty"`
+	Directory  string        `json:"directory,omitempty"`
+	Prompts    []string      `json:"prompts,omitempty"`
+	Custom     string        `json:"custom,omitempty"`
+	Roster     []RosterEntry `json:"roster,omitempty"`
+	Permission string        `json:"permission,omitempty"`
 }
 
 // SendRequest is the send body. To keeps the caller's order.

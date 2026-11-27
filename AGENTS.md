@@ -2,26 +2,26 @@
 
 ## Purpose
 
-hotseat takes the owner out of the loop on work they would otherwise drive turn by turn: reading, choosing between options, discussing changes, and applying them. Three or four agents, from different vendors where possible, each prompted to have agency, work through the task together in one conversation and reach the best outcome they can agree on. The owner sets the task and is reached only through `ask` and `done`.
+hotseat takes the owner out of the loop on work they would otherwise drive turn by turn: reading, choosing between options, discussing changes, and applying them. Three or four agents, from different vendors where possible, each prompted to have agency, work through the task together in one chat and reach the best outcome they can agree on. The owner sets the task and is reached only through `ask` and `done`.
 
 A task module defines the work. Reviews are the commonest: ticket triage, ticket review, and pre-commit review. hotseat also runs design discussions, ticket decomposition, code reviews, deployments, and single-member work such as implementation. Parallel members cover more ground in one sweep than one agent run several times, and members from different vendors catch what one model misses.
 
 The parts, in the order they were built:
 
 - The bus is a durable, ordered log of chats. It stores speech and knows no kind's meaning. It was built first and stays general.
-- A member is an agent process. `run` starts it for one step, it publishes and exits, and a later step resumes it by session id. Members do not wait on the bus.
-- `run` is the conductor: a deterministic engine that drives the task's parallel and serial turns, and stops and continues from what the bus holds. For a task whose members publish `finding`s, it also runs the finding protocol: one finding discussed at a time, settled by agreement, fixed by the finder, then a satisfaction pass.
+- A member is an agent process. `run` starts it for one step, it sends and exits, and a later step resumes it by session id. Members do not wait on the bus.
+- `run` is the conductor: a deterministic engine that drives the task's parallel and serial turns, and stops and continues from what the bus holds. For a task whose members send `finding`s, it also runs the finding protocol: one finding discussed at a time, settled by agreement, fixed by the finder, then a satisfaction pass.
 - A chief session conducts runs and answers `ask`. `attend` and the page are how the owner watches.
 
 Rules that follow from the purpose:
 
 - `run` enforces mechanics: who launches, in what order, when the run stops, and how it resumes. Members decide judgement: what the work needs, whether a finding holds, and which option wins.
 - New kinds of work arrive as task modules in `library/`, not as code in the bus. `run` gains a mechanism only when several tasks need the same structure, as the finding protocol serves every review.
-- The conversation is speech. After a run, it shows a reader who was not there how the work went. `run`'s own bookkeeping is not speech.
+- The chat is speech. After a run, it shows a reader who was not there how the work went. `run`'s own bookkeeping is not speech.
 - A message is identified by its `seq`. A body is never only an id.
 - Findings are discussed one at a time because a fix can make a later finding obsolete.
 
-`run` keeps its decisions as decision records behind `/record` and `/records`: set, grouping, settle, fix, halt, and stop. A record is a fact keyed by message `seq` and holds no phase, mode, or cursor. This reverses `hotseat-b225`'s "the transcript is the only durable state" and amends `hotseat-r7gj`'s no-phase rule. `run` publishes no marker. Its one message about a decision is `settled`, to `owner` with `re` the agreed proposal, because no participant states a settle, and nothing reads it as state. A continuation needs the records as well as the transcript, so a dump of messages is not a full backup of a run.
+`run` keeps its decisions as decision records behind `/record` and `/records`: set, grouping, settle, fix, halt, and stop. A record is a fact keyed by message `seq` and holds no phase, mode, or cursor. This reverses `hotseat-b225`'s "the transcript is the only durable state" and amends `hotseat-r7gj`'s no-phase rule. `run` sends no marker. Its one message about a decision is `settled`, to `owner` with `re` the agreed proposal, because no participant states a settle, and nothing reads it as state. A continuation needs the records as well as the transcript, so a dump of messages is not a full backup of a run.
 
 ## Contract
 
@@ -33,7 +33,7 @@ Module `github.com/p3bot/hotseat`.
 
 | Path | Owns |
 | --- | --- |
-| `cmd/hotseat` | `main`. Runs `cli.Execute`, then the signal code, then a reported failure, then any other error on stderr |
+| `cmd/hotseat` | `main`. Runs `cli.Execute`, then the signal code, then a reported exit, then any other error on stderr |
 | `internal/bus` | Listener, routes, rules, token, `GET /health`. Opens no connections to clients |
 | `internal/store` | `hotseat.db`, schema, `hotseat.db.lock`. The only writer |
 | `internal/client` | One HTTP call to a running bus |
@@ -66,15 +66,16 @@ Note: lint is not clean on main. The existing findings are unchecked `Close` err
 - One writer. Seq order is commit order only because of it. The flock is on `hotseat.db.lock`, not the database inode, because on macOS flock shares SQLite's lock table and closing any descriptor drops every lock.
 - DSN: `busy_timeout=0` (another holder fails this process instead of stalling it), `journal_mode=WAL`, `locking_mode=EXCLUSIVE` (checked after open), `foreign_keys=1`, `synchronous=FULL` (commit returns after the write is durable), `_txlock=immediate`. `SetMaxOpenConns(1)`.
 - `Open` resolves the directory to an absolute path first, chmods it `0700`, refuses symlinks for the database, wal, shm, and lock, and opens the lock with `O_NOFOLLOW` and mode `0600`.
-- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. The version-1 shape includes the `chats` table, a `chat` column on every other table, the members `joined` column and status value, the members `start` column, the host start token stored beside `pid`, and the decision record tables `sets`, `set_findings`, `groupings`, `drops`, `settles`, `fixes`, `halts`, and `stops`. A schema change means deleting the database.
+- Tables are `STRICT`. `meta.schema` is `store.SchemaVersion`, `1`. There is no migration. `Open` returns `ErrSchema` for a shape this binary did not create and leaves the file. The version-1 shape includes the `chats` table, a `chat` column on every other table, the members `joined` column and status value, the members `start` column, the host start token stored beside `pid`, the chats `permission` column, the chats `roster` as a JSON array of `{name, module, model}` objects, and the decision record tables `sets`, `set_findings`, `groupings`, `drops`, `settles`, `fixes`, `halts`, and `stops`. A schema change means deleting the database.
 - A write that changes nothing (idempotent send, a record replay, close of a closed chat) returns `errNoChange`, so the transaction rolls back.
 - Store sentinels are `ErrNotFound`, `ErrConflict`, `ErrHeld`, `ErrSchema`, `ErrNotRoster`, `ErrNotMember`, `ErrLaunched`, `ErrReplyTarget`, `ErrRecordReference`, `ErrKeptDropped`, `ErrNotKept`, and `ErrFixDismissed`. Wrap with `%w` when the caller branches on the cause.
 - Refusal text is a `bus.Reason*` constant. A new reason is a constant beside the others, plus a test whose name states the rule.
-- Session ids, pids, member start tokens, the token, and lease holders stay off read, wait, list, member list, `/join`, the page, logs, status lines, and prompts. Pids and start tokens appear only on a one-row `/member` read or write. A holder is also off `/lease` `get`. Decision records stay off read, wait, watch, list, member list, the page, and logs.
+- Session ids, pids, member start tokens, the token, and lease holders stay off read, wait, list, `/members`, `/join`, the page, logs, status lines, and prompts. Pids and start tokens appear only on a one-row `/member` read or write. A holder is also off `/lease` `get`. Decision records stay off read, wait, watch, list, `/members`, the page, and logs.
 - Conductor leases live in `Service` memory under `s.mu`, never in the store. A fenced write (`/record`, `/member` with a status, `/session` with a session, `/send` with a holder) checks the lease and writes under that one lock. A launch has no fence of its own: `recordLaunch` writes a fenced member row right after `cmd.Start` and kills the process group when it is refused. That is the only member a lost lease kills. `run` then waits for the members it launched and stops watching the ones it adopted, and the next holder adopts them by start token.
 - `from` is caller-supplied. The token does not authenticate the sender.
 - The page listens on loopback only, because it holds the bus token.
 - CLI stdout is `key: value`, and a value with a newline is `key <<N` and then those bytes. Usage errors go to stderr with no stdout. Commands set `SilenceUsage` and `SilenceErrors`. SIGINT and SIGTERM exit `128+signal`, read before the error path.
+- The root commands are `bus`, `chat`, `run`, and `web`. `chat` verbs take the chat name as a positional, except `list`. `--address` and `--token-file` are persistent on `chat`, local on `bus start` and `web`, and `--address` alone on `bus status`. Each reads `HOTSEAT_ADDRESS` or `HOTSEAT_TOKEN_FILE` when its flag is unset, and the flag wins. `chat read` defaults to cursor 0 and limit 100 and prints `more`. `chat` exits by outcome: ok 0, usage or startup 1, refused 2, timeout 3, unavailable and connection_failure 4. `bus status` is 0 on pass and 4 on fail and connection_failure. `run` is a group: `run new <task>` and `run continue <name>`, with `--address` and `--token-file` persistent on `run`. `run` keeps its own exit rule.
 
 ## Runner
 
@@ -92,19 +93,22 @@ Task modules are `tasks:hotseat/ticket/triage`, `ticket/review`, `ticket/impleme
 | `findings.go` | Finding protocol: launches, judging, prompts |
 | `discussion.go` | Live state of one finding. No bus or process |
 | `ledger.go` | Pure reading of the transcript and the decision records, `buildLedger` from bus reads, and the stop result rule |
-| `stop.go` | Stop errors: the `stop*` classes, typed causes, and the one stop error `noteHalt` publishes |
-| `inspect.go` | `hotseat status`: the read-only bus reads and their interpretation through `buildLedger`, `stopResultAt`, and `underWay` |
+| `stop.go` | Stop errors: the `stop*` classes, typed causes, and the one stop error `noteHalt` sends |
+| `inspect.go` | `hotseat chat status`: the read-only bus reads and their interpretation through `buildLedger`, `stopResultAt`, and `underWay` |
 | `report.go` | `Reporter`, `Header`, and `Result`: what `run` hands `internal/cli` to print on stdout. `run` writes no stdout text |
 | `output.go` | stderr: the lock members share, `--verbose` event lines, and prefixed `start` and `tk` stderr |
 
 - A stance is judged only by the live launch window it arrived in. A continuation never replays stances and restarts the open discussion from its finding. History is the messages stored before the continuation started, plus each leftover's messages up to its recorded exit.
-- A protocol error body is `<member>\n<class>`, or `<class>` alone, and its `re` is the message that caused it. `bad finding`, `no reply`, `bad turn`, `bad done`, and `unsettled` take a transaction id from `factTx`, so a continuation stores no second copy. Each class is a `class*` constant in `run.go`. The stop classes are a separate set, `stop*` constants in `stop.go`. `run.ErrUnresolved` maps to the CLI's reported failure.
+- A protocol error body is `<member>\n<class>`, or `<class>` alone, and its `re` is the message that caused it. `bad finding`, `no reply`, `bad turn`, `bad done`, and `unsettled` take a transaction id from `factTx`, so a continuation stores no second copy. Each class is a `class*` constant in `run.go`. The stop classes are a separate set, `stop*` constants in `stop.go`. `run.ErrUnresolved` maps to a reported exit with status 1.
 - A settled change is fixed by its fix record, or else by the first creditable `fixed`: after the settle's `after`, `re` naming the finding, from the finder, the seat, or the seat's backup. The stop result and continuation read this one ledger rule. A record end at `after` includes the message at that `seq`.
+- `run new` stores its whole setup with the chat, and `run continue` launches only from it: the roster's modules and models, the seat, and the permission. Continue refuses a missing chat or an incomplete stored setup before the lease and writes nothing, so there is no watch-only continuation. The bus reads a roster entry's `name` only. Limits (`--timeout`, where `0` is no limit, `--max-*`, `--verbose`) belong to the process and are never stored.
+- A member's environment is `run`'s with `HOTSEAT_ADDRESS` and, when set, an absolute `HOTSEAT_TOKEN_FILE` from `run`'s resolved values (`memberEnv` in `launch.go`). Prompts carry no bus address or token file line. The token itself is never in an environment, a prompt, or an output. The run tests prove `run` sets the environment. Only `start` execing with `os.Environ()` carries it to the agent, so check that when `start` changes.
 - Prompts give the exact `--re` for the kind they ask for. A present `re` other than the one `run` expects rejects the message, and a missing `re` falls back to the `seq` windows. `re` adds a check and never replaces a launch window.
 - Settled, do not reopen:
-  - the roster is `name=module:model`, and there is no `HOTSEAT_MEMBERS`;
+  - the roster flag is `name=module:model`, and there is no `HOTSEAT_MEMBERS`;
+  - the chat name is not a `run new` flag, and `run continue` takes no setup flag;
   - `mode` is the first line of a turn body, and the database has no phase, mode, or cursor column. Decision records are facts keyed by message `seq`, not progress;
-  - member rows replace a registration ack;
+  - member rows replace a join ack;
   - `run.DoneGrace` has no flag;
   - agy has no module, and `herdr` is not a dependency.
 - In `internal/web`, `kindMessages`, `kindList`, and `kindChat` are page modes, not the message field.

@@ -55,7 +55,7 @@ func sameLaunch(id procID) bool {
 	return ok && start == id.start
 }
 
-func (e *engine) ensureInstructions(conv client.Chat) error {
+func (e *engine) ensureInstructions(chat client.Chat) error {
 	msgs, err := e.readFrom(0)
 	if err != nil {
 		return err
@@ -65,15 +65,15 @@ func (e *engine) ensureInstructions(conv client.Chat) error {
 			return nil
 		}
 	}
-	text, err := e.moduleText(conv.Task)
+	text, err := e.moduleText(chat.Task)
 	if err != nil {
 		return err
 	}
-	body, err := fitInstructions(instructionBody(text, conv.Seat, conv.Ticket, conv.Prompts, conv.Custom))
+	body, err := fitInstructions(instructionBody(text, chat.Seat, chat.Ticket, chat.Prompts, chat.Custom))
 	if err != nil {
 		return err
 	}
-	_, err = e.publishInstructions(body, conv.Roster)
+	_, err = e.sendInstructions(body, client.RosterNames(chat.Roster))
 	return err
 }
 
@@ -204,7 +204,7 @@ func (e *engine) settleCancelled(proc liveProc) error {
 }
 
 // settleShutdown records a leftover process that ended while the run closes.
-// No stdout was captured, so it is exited only with a session id already stored. It publishes no error and queues no handoff.
+// No stdout was captured, so it is exited only with a session id already stored. It sends no error and queues no handoff.
 func (e *engine) settleShutdown(name string) error {
 	id, err := e.readSession(name)
 	if err != nil {
@@ -397,14 +397,14 @@ func (e *engine) storeSession(name, id string) error {
 	return nil
 }
 
-// memberRows reads every member row of the conversation.
+// memberRows reads every member row of the chat.
 func (e *engine) memberRows(ctx context.Context) ([]client.Member, error) {
 	return readMembers(ctx, e.call, e.name)
 }
 
-// readMembers reads every member row of conv through call.
-func readMembers(ctx context.Context, call caller, conv string) ([]client.Member, error) {
-	res, err := call(ctx, "members", client.MembersRequest{Chat: conv})
+// readMembers reads every member row of the chat name through call.
+func readMembers(ctx context.Context, call caller, name string) ([]client.Member, error) {
+	res, err := call(ctx, "members", client.MembersRequest{Chat: name})
 	if err != nil {
 		return nil, err
 	}
@@ -465,30 +465,32 @@ func (e *engine) followTarget(sender string) (string, error) {
 
 func (e *engine) bootPrompt(a agent) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s in conversation %s.\n", a.name, e.name)
+	fmt.Fprintf(&b, "You are %s in chat %s.\n", a.name, e.name)
 	b.WriteString("Read the instructions message addressed to you.\n")
 	b.WriteString("start get each address in its trailer.\n")
-	b.WriteString("Register with hotseat member register and exit.\n")
-	if a.name == e.seat {
-		b.WriteString("Publish the first turn without waiting for anyone else to register.\n")
+	if a.name != e.seat {
+		fmt.Fprintf(&b, "Join with hotseat chat join %s %s and exit.\n", e.name, a.name)
+		return b.String()
 	}
-	b.WriteString(e.busNote())
+	fmt.Fprintf(&b, "Join with hotseat chat join %s %s.\n", e.name, a.name)
+	b.WriteString("Send the first turn without waiting for anyone else to join.\n")
+	e.openSend(&b, "the turn", a.name, kindTurn, ", then --to and the body.")
+	b.WriteString("Then exit.\n")
 	return b.String()
 }
 
 func (e *engine) turnPrompt(name string, msg client.Message, mode, phase string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
+	fmt.Fprintf(&b, "You are %s in chat %s.\n", name, e.name)
 	fmt.Fprintf(&b, "cursor: %d\n", msg.Seq-1)
 	fmt.Fprintf(&b, "mode: %s\n", mode)
 	b.WriteString(phase)
 	if phase != "" && !strings.HasSuffix(phase, "\n") {
 		b.WriteByte('\n')
 	}
-	fmt.Fprintf(&b, "Register, publish a say addressed at least to %s, and exit.\n", msg.From)
-	e.publishCommand(&b, "the say", name, kindSay, msg.Seq)
-	e.publishCommand(&b, "each finding", name, kindFinding, msg.Seq)
-	b.WriteString(e.busNote())
+	fmt.Fprintf(&b, "Join, send a say addressed at least to %s, and exit.\n", msg.From)
+	e.sendCommand(&b, "the say", name, kindSay, msg.Seq)
+	e.sendCommand(&b, "each finding", name, kindFinding, msg.Seq)
 	return b.String()
 }
 
@@ -540,35 +542,27 @@ func (e *engine) takeHandoff() (handoff, bool) {
 
 func (e *engine) handoffPrompt(from, name string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
+	fmt.Fprintf(&b, "You are %s in chat %s.\n", name, e.name)
 	fmt.Fprintf(&b, "%s is timed-out. You are the acting seat.\n", from)
-	b.WriteString(e.busNote())
+	b.WriteString("When the seat's next step is a turn or a done, send one of them with these lines, not both. While a set is still open, send neither and exit; run launches the follow-up.\n")
+	e.openSend(&b, "the turn", name, kindTurn, ", then --to and the body.")
+	e.openSend(&b, "the done", name, kindDone, " --to owner, then the body.")
 	return b.String()
 }
 
 // followPrompt names what the set left for the report: the set's fix records, recipients that did not reply, dropped duplicates, and timed-out members.
 func (e *engine) followPrompt(name string, fixed int, noReply []string, dropped []int64) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s in conversation %s.\n", name, e.name)
+	fmt.Fprintf(&b, "You are %s in chat %s.\n", name, e.name)
 	b.WriteString("The set has finished.\n")
 	fmt.Fprintf(&b, "fixed: %d\n", fixed)
 	fmt.Fprintf(&b, "no reply: %s\ndropped: %s\ntimed-out: %s\n", nameList(noReply), listOrNone(dropped), nameList(e.timedOut()))
 	if len(noReply) > 0 {
-		b.WriteString("A member under no reply published no say or finding for this set. Do not report its verdicts.\n")
+		b.WriteString("A member under no reply sent no say or finding for this set. Do not report its verdicts.\n")
 	}
-	b.WriteString("Read what was addressed to you and post the next turn, or done if you are the acting seat.\n")
-	b.WriteString(e.busNote())
-	return b.String()
-}
-
-func (e *engine) busNote() string {
-	var b strings.Builder
-	if e.addr != bus.DefaultListen {
-		fmt.Fprintf(&b, "Bus address: %s\n", e.addr)
-	}
-	if e.tokenFile != "" {
-		fmt.Fprintf(&b, "Token file: %s\n", e.tokenFile)
-	}
+	b.WriteString("Read what was addressed to you and send the next turn, or a done, if you are the acting seat.\n")
+	e.openSend(&b, "the turn", name, kindTurn, ", then --to and the body.")
+	e.openSend(&b, "the done", name, kindDone, " --to owner, then the body.")
 	return b.String()
 }
 
@@ -639,9 +633,9 @@ func (e *engine) takeTurn() turnTake {
 	return turnTaken
 }
 
-// noteHalt is the run's one stop point. It keeps the first error stop, publishes its stop error once,
+// noteHalt is the run's one stop point. It keeps the first error stop, sends its stop error once,
 // and only then cancels, so the error is said before any member is stopped or waited for.
-// A later caller waits for that publish and returns its own err. Anything that is not an error stop returns the kept halt.
+// A later caller waits for that send and returns its own err. Anything that is not an error stop returns the kept halt.
 func (e *engine) noteHalt(err error) error {
 	if !e.isErrorStop(err) {
 		return e.stopped()
@@ -698,17 +692,17 @@ func (e *engine) windingDown() bool {
 	return e.windClass != ""
 }
 
-// windErr is the stop of a wind-down that no stopping done closed: the protocol error it published.
+// windErr is the stop of a wind-down that no stopping done closed: the protocol error it sent.
 func (e *engine) windErr() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return &protocolStop{class: e.windClass, seq: e.windSeq}
 }
 
-// publishWind publishes the error of the wind-down that class began, and keeps its seq for the stop.
+// sendWind sends the error of the wind-down that class began, and keeps its seq for the stop.
 // Only then can the wind-down end, so its stop error always names a stored error.
-func (e *engine) publishWind(class string) error {
-	seq, err := e.publishErr("", class)
+func (e *engine) sendWind(class string) error {
+	seq, err := e.sendErr("", class)
 	if err != nil {
 		return err
 	}
@@ -743,19 +737,19 @@ func (e *engine) idleIfQuietLocked() {
 	}
 }
 
-// enforceMinimum winds the run down and publishes below minimum when fewer roster members than the task minimum are live.
+// enforceMinimum winds the run down and sends below minimum when fewer roster members than the task minimum are live.
 func (e *engine) enforceMinimum() error {
 	if !e.windBelowMinimum() {
 		return nil
 	}
-	return e.publishWind(classBelowMinimum)
+	return e.sendWind(classBelowMinimum)
 }
 
 // windBelowMinimum winds the run down when fewer roster members than the task minimum are live, and reports whether this call began it.
 // A minimum of 1 adds nothing, since no live member already stops on the no backup rule.
 // A stop the run made itself is not a member failure, so it is not checked.
 func (e *engine) windBelowMinimum() bool {
-	if e.minimum <= 1 || !e.canLaunch() || e.shutting() || e.stopped() != nil {
+	if e.minimum <= 1 || e.shutting() || e.stopped() != nil {
 		return false
 	}
 	live := 0

@@ -28,7 +28,7 @@
 // GET /health is not an operation. It reads the schema this process serves
 // and answers pass or fail with no token, on every address.
 //
-//	POST /create   {"name":"job","task"?,"ticket"?,"seat"?,"directory"?,"prompts"?,"custom"?,"roster"?}
+//	POST /create   {"name":"job","task"?,"ticket"?,"seat"?,"directory"?,"prompts"?,"custom"?,"roster"?,"permission"?}
 //	POST /send     {"chat","from","to","body","txid","kind","re"?,"holder"?}
 //	POST /read     {"chat","cursor","limit","name"?,"kinds"?}
 //	POST /wait     {"chat","cursor","name"?,"deadline"?,"kinds"?}
@@ -103,7 +103,10 @@
 // highest seq is first. Chats with no message follow, by name.
 //
 // An ok create returns the chat and its binding. Omitted binding
-// fields are stored empty. prompts and roster keep the caller's order. A
+// fields are stored empty. prompts and roster keep the caller's order. The
+// roster is an array of {"name","module"?,"model"?} objects. The bus checks
+// name against the name grammar and refuses a duplicate. module and model are
+// stored and returned as given, empty when omitted, and permission likewise. A
 // roster requires a seat that is one of the roster names. Empty roster and
 // empty seat is a name-only create. A name that already exists returns that
 // stored chat and already_existed true, and writes nothing. Create

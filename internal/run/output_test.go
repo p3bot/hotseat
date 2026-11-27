@@ -23,7 +23,7 @@ func TestRunThatEndsOnDoneReportsItsHeaderThenItsDoneAndOutcome(t *testing.T) {
 	}
 	done := first(h.messages(name), "alpha", kindDone)
 	header := Header{
-		Conversation: name, Task: "tasks:hotseat/review/ticket", Ticket: "foo-x234", Seat: "alpha",
+		Chat: name, Task: "tasks:hotseat/review/ticket", Ticket: "foo-x234", Seat: "alpha",
 		Members: []Member{{Name: "alpha", Module: "hotseat/grok", Model: "g1"}, {Name: "bravo", Module: "hotseat/claude", Model: "c1"}},
 	}
 	result := Result{Stop: &StopResult{Done: done.Seq, Outcome: outcomeDone}, Outcome: outcomeDone}
@@ -32,15 +32,17 @@ func TestRunThatEndsOnDoneReportsItsHeaderThenItsDoneAndOutcome(t *testing.T) {
 	}
 }
 
-func TestContinuationWithNoRosterReportsTheStoredNames(t *testing.T) {
+func TestContinuationReportsTheStoredRosterAsMembers(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation("alpha", "bravo")
-	h.publish("kept", "alpha", kindDone, "finished", []string{"owner"})
-	out, stderr, err := h.runBounded(h.continueKept(""))
+	h.keptChat("alpha", "bravo")
+	h.send("kept", "alpha", kindDone, "finished", []string{"owner"})
+	out, stderr, err := h.runBounded(h.continueKept())
 	if err != nil {
 		t.Fatalf("%v\n%s", err, stderr)
 	}
-	want := Header{Conversation: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha", Roster: []string{"alpha", "bravo"}}
+	want := Header{Chat: "kept", Task: "tasks:hotseat/review/ticket", Seat: "alpha", Members: []Member{
+		{Name: "alpha", Module: "hotseat/grok", Model: "g1"}, {Name: "bravo", Module: "hotseat/claude", Model: "c1"},
+	}}
 	if !reflect.DeepEqual(out.header, &want) || out.outcome() != outcomeDone {
 		t.Fatalf("reported %s", out)
 	}
@@ -48,9 +50,9 @@ func TestContinuationWithNoRosterReportsTheStoredNames(t *testing.T) {
 
 func TestElapsedIsTheRunsDurationRoundedToSeconds(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation("alpha", "bravo")
-	h.publish("kept", "alpha", kindDone, "finished", []string{"owner"})
-	cfg := h.continueKept("")
+	h.keptChat("alpha", "bravo")
+	h.send("kept", "alpha", kindDone, "finished", []string{"owner"})
+	cfg := h.continueKept()
 	start := fixedClock()
 	reads := 0
 	cfg.Clock = func() time.Time {
@@ -133,11 +135,11 @@ func TestVerboseForwardsSuccessfulTkStderrPrefixedWithTk(t *testing.T) {
 	}
 }
 
-func TestContinuationWhosePassedRosterDoesNotMatchReportsNothing(t *testing.T) {
+func TestContinuationOfAnIncompleteSetupReportsNothing(t *testing.T) {
 	h := newHarness(t)
-	h.keptConversation("alpha", "bravo")
-	out, _, err := h.runBounded(h.continueKept(agentsOf("alpha", "charlie")))
-	if err == nil || !strings.Contains(err.Error(), "passed roster does not match the stored roster") || !out.silent() {
+	h.keptChatAs(seeded("alpha", "bravo"), "")
+	out, _, err := h.runBounded(h.continueKept())
+	if err == nil || !strings.Contains(err.Error(), "no permission") || !out.silent() {
 		t.Fatalf("err %v out %q", err, out)
 	}
 }
@@ -145,8 +147,8 @@ func TestContinuationWhosePassedRosterDoesNotMatchReportsNothing(t *testing.T) {
 func TestErrorStopReportsTheStopClassStatusReads(t *testing.T) {
 	h := newHarness(t)
 	h.plan.MinMembers = "two\n"
-	h.keptConversation("alpha")
-	out, stderr, err := h.runBounded(h.continueKept(""))
+	h.keptChat("alpha")
+	out, stderr, err := h.runBounded(h.continueKept())
 	if err == nil {
 		t.Fatalf("out\n%s\nstderr\n%s", out, stderr)
 	}

@@ -392,9 +392,6 @@ func (e *engine) apply(batch []client.Message, historical bool) error {
 
 // resumeIfRecorded continues a set whose set record an earlier process wrote, and reports whether it did.
 func (e *engine) resumeIfRecorded(turn client.Message, seen int64) (bool, error) {
-	if !e.canLaunch() {
-		return false, nil
-	}
 	if _, _, ok := parseMode(turn.Body); !ok {
 		return false, nil
 	}
@@ -442,9 +439,6 @@ func (e *engine) turnSuperseded(msg client.Message, later []client.Message) (boo
 }
 
 func (e *engine) actTurn(msg client.Message, historical bool, seen int64) error {
-	if !e.canLaunch() {
-		return nil
-	}
 	mode, phase, ok := parseMode(msg.Body)
 	// A stored rejected turn never takes a turn from the cap, so a continuation only reports it.
 	if !ok && historical {
@@ -705,7 +699,7 @@ func (e *engine) noteRuledOut(seqs ...int64) {
 	e.mu.Unlock()
 }
 
-// finishDone stores the stop record, then closes the conversation and stops the run on the stopping done.
+// finishDone stores the stop record, then closes the chat and stops the run on the stopping done.
 // No launch starts once closing is set, and its sender alone keeps running for the grace period.
 func (e *engine) finishDone(done client.Message) error {
 	e.mu.Lock()
@@ -750,11 +744,11 @@ type caller func(ctx context.Context, op string, body any) (client.Result, error
 // readPage is the read limit. A shorter page is the last.
 const readPage = 200
 
-// readAll reads every message of conv after cursor, or every message of kinds when kinds is set, following the cursor
+// readAll reads every message of the chat name after cursor, or every message of kinds when kinds is set, following the cursor
 // to the end. It returns the messages and the last cursor it read from.
-func readAll(ctx context.Context, call caller, conv string, cursor int64, kinds []string) ([]client.Message, int64, error) {
+func readAll(ctx context.Context, call caller, name string, cursor int64, kinds []string) ([]client.Message, int64, error) {
 	var all []client.Message
-	req := client.ReadRequest{Chat: conv, Limit: readPage}
+	req := client.ReadRequest{Chat: name, Limit: readPage}
 	if kinds != nil {
 		req.Kinds = &kinds
 	}
@@ -782,7 +776,7 @@ func (e *engine) noteSeen(seq int64) {
 	e.mu.Unlock()
 }
 
-// head is the newest seq in the conversation.
+// head is the newest seq in the chat.
 func (e *engine) head() (int64, error) {
 	e.mu.Lock()
 	from := e.seen

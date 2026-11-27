@@ -15,11 +15,11 @@ import (
 	"github.com/p3bot/hotseat/internal/client"
 )
 
-// badDones are the stored bad done errors of conv.
-func (h *harness) badDones(conv string) []client.Message {
+// badDones are the stored bad done errors of the chat name.
+func (h *harness) badDones(name string) []client.Message {
 	h.t.Helper()
 	var out []client.Message
-	for _, m := range ofKind(h.messages(conv), kindError) {
+	for _, m := range ofKind(h.messages(name), kindError) {
 		if strings.HasSuffix(m.Body, "\n"+classBadDone) {
 			out = append(out, m)
 		}
@@ -27,9 +27,9 @@ func (h *harness) badDones(conv string) []client.Message {
 	return out
 }
 
-func (h *harness) wantStop(conv string, done client.Message) {
+func (h *harness) wantStop(name string, done client.Message) {
 	h.t.Helper()
-	if stops := h.recordsOf(conv).stops; len(stops) != 1 || stops[0].Done != done.Seq {
+	if stops := h.recordsOf(name).stops; len(stops) != 1 || stops[0].Done != done.Seq {
 		h.t.Fatalf("stops %+v, want done %d", stops, done.Seq)
 	}
 }
@@ -43,7 +43,7 @@ func TestBackupDoneThatStoppedTheRunStillStopsAContinuationAfterTheBackupTimesOu
 	}
 	cfg := h.base()
 	cfg.Agents = "alpha=hotseat/grok:g1 bravo=hotseat/claude:c1 charlie=hotseat/grok:g2"
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.pace.grace = 300 * time.Millisecond
 	h.hold("bravo")
 	cctx, cancel := ctx()
@@ -53,7 +53,7 @@ func TestBackupDoneThatStoppedTheRunStillStopsAContinuationAfterTheBackupTimesOu
 	h.awaitJoined(name, "bravo")
 	h.awaitJoined(name, "charlie")
 	h.awaitStatus(name, "alpha", statusTimedOut)
-	done := h.publish(name, "bravo", kindDone, "finished", nil)
+	done := h.send(name, "bravo", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
 	if res.err != nil || res.out.outcome() != "done" {
 		t.Fatalf("%v\n%s", res.err, res.out)
@@ -64,9 +64,7 @@ func TestBackupDoneThatStoppedTheRunStillStopsAContinuationAfterTheBackupTimesOu
 	h.wantStop(name, done)
 	launched := h.launchCount()
 
-	cfg.Conversation = name
-	cfg.ConversationSet = true
-	cfg.TaskSet = false
+	cfg.Chat = name
 	out, stderr, err := h.runBounded(cfg)
 	if err != nil || out.outcome() != "done" {
 		t.Fatalf("continuation %v\n%s\n%s", err, out, stderr)
@@ -87,14 +85,14 @@ func TestBackupDoneWhileTheSeatIsAliveIsOneBadDoneAndNeverStopsTheRun(t *testing
 		"bravo": {Join: true},
 	}
 	cfg := h.base()
-	cfg.TicketSet = false
+	cfg.Ticket = ""
 	h.hold("alpha")
 	cctx, cancel := ctx()
 	defer cancel()
 	ch := h.goRun(cctx, cfg)
 	name := h.waitName()
 	h.awaitJoined(name, "bravo")
-	early := h.publish(name, "bravo", kindDone, "too soon", nil)
+	early := h.send(name, "bravo", kindDone, "too soon", nil)
 	deadline := time.Now().Add(8 * time.Second)
 	for len(h.badDones(name)) == 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
@@ -107,7 +105,7 @@ func TestBackupDoneWhileTheSeatIsAliveIsOneBadDoneAndNeverStopsTheRun(t *testing
 		t.Fatalf("stopped on the ruled-out done: %v\n%s", res.err, res.out)
 	default:
 	}
-	seat := h.publish(name, "alpha", kindDone, "finished", nil)
+	seat := h.send(name, "alpha", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 8*time.Second)
 	if res.err != nil || res.out.outcome() != "done" {
 		t.Fatalf("%v\n%s", res.err, res.out)
@@ -128,7 +126,7 @@ func TestContinuationSkipsADoneAStoredBadDoneNamesAndStoresNoSecondError(t *test
 	h := newHarness(t)
 	h.keptMembers("alpha", "bravo")
 	h.setMember("kept", "alpha", statusTimedOut, nil)
-	early := h.publish("kept", "bravo", kindDone, "too soon", nil)
+	early := h.send("kept", "bravo", kindDone, "too soon", nil)
 	re := early.Seq
 	h.conduct("kept", func(holder string) {
 		res := h.do("send", client.SendRequest{
@@ -141,10 +139,10 @@ func TestContinuationSkipsADoneAStoredBadDoneNamesAndStoresNoSecondError(t *test
 	})
 	cctx, cancel := ctx()
 	defer cancel()
-	ch := h.goRun(cctx, h.continueKept(""))
+	ch := h.goRun(cctx, h.continueKept())
 	time.Sleep(300 * time.Millisecond)
 	h.stillRunning(ch)
-	seat := h.publish("kept", "alpha", kindDone, "finished", nil)
+	seat := h.send("kept", "alpha", kindDone, "finished", nil)
 	res := h.awaitRun(ch, 10*time.Second)
 	if res.err != nil || res.out.outcome() != "done" {
 		t.Fatalf("%v\n%s", res.err, res.out)
@@ -161,7 +159,7 @@ func TestContinuationSkipsADoneAStoredBadDoneNamesAndStoresNoSecondError(t *test
 func TestRuledOutDoneOnARetriedJudgementStoresNoSecondError(t *testing.T) {
 	h := newHarness(t)
 	e, stderr := h.closingEngine()
-	early := h.publish("kept", "bravo", kindDone, "too soon", nil)
+	early := h.send("kept", "bravo", kindDone, "too soon", nil)
 	for range 2 {
 		e.ruledOut = make(map[int64]bool)
 		stop, err := e.stops(early)
@@ -181,7 +179,7 @@ func TestRuledOutDoneOnARetriedJudgementStoresNoSecondError(t *testing.T) {
 func TestRuledOutDoneStaysRuledOutWhenTheRowsWouldNowStopIt(t *testing.T) {
 	h := newHarness(t)
 	e, _ := h.closingEngine()
-	early := h.publish("kept", "bravo", kindDone, "too soon", nil)
+	early := h.send("kept", "bravo", kindDone, "too soon", nil)
 	if stop, err := e.stops(early); err != nil || stop {
 		t.Fatalf("seat alive: stop %v err %v", stop, err)
 	}
@@ -194,7 +192,7 @@ func TestRuledOutDoneStaysRuledOutWhenTheRowsWouldNowStopIt(t *testing.T) {
 	if stop, err := e.stops(early); err != nil || stop {
 		t.Fatalf("ruled-out done after the seat timed out: stop %v err %v", stop, err)
 	}
-	if stop, err := e.stops(h.publish("kept", "bravo", kindDone, "now", nil)); err != nil || !stop {
+	if stop, err := e.stops(h.send("kept", "bravo", kindDone, "now", nil)); err != nil || !stop {
 		t.Fatalf("a new backup done: stop %v err %v", stop, err)
 	}
 	if bad := h.badDones("kept"); len(bad) != 1 {
@@ -205,13 +203,13 @@ func TestRuledOutDoneStaysRuledOutWhenTheRowsWouldNowStopIt(t *testing.T) {
 func TestStopRecordIsWrittenBeforeTheClose(t *testing.T) {
 	h := newHarness(t)
 	e, _ := h.closingEngine()
-	done := h.publish("kept", "alpha", kindDone, "finished", nil)
+	done := h.send("kept", "alpha", kindDone, "finished", nil)
 	h.leaseAs("kept", bus.LeaseRelease, e.holder)
 	if err := e.finishDone(done); err == nil || err == errDone {
 		t.Fatalf("finishDone without the lease = %v", err)
 	}
-	if conv, _ := h.conv("kept"); conv.Status != "open" {
-		t.Fatalf("closed with no stop record: %+v", conv)
+	if chat, _ := h.chat("kept"); chat.Status != "open" {
+		t.Fatalf("closed with no stop record: %+v", chat)
 	}
 	if stops := h.recordsOf("kept").stops; len(stops) != 0 {
 		t.Fatalf("stops %+v", stops)
@@ -230,7 +228,7 @@ func TestDecidedStopKeepsItsVerdictAndSilencesLaterDones(t *testing.T) {
 		e.mu.Unlock()
 	}
 	setSeat(statusTimedOut)
-	backup := h.publish("kept", "bravo", kindDone, "finished", nil)
+	backup := h.send("kept", "bravo", kindDone, "finished", nil)
 	if stop, err := e.stops(backup); err != nil || !stop {
 		t.Fatalf("backup done with the seat timed-out: stop %v err %v", stop, err)
 	}
@@ -238,7 +236,7 @@ func TestDecidedStopKeepsItsVerdictAndSilencesLaterDones(t *testing.T) {
 	if stop, err := e.stops(backup); err != nil || !stop {
 		t.Fatalf("decided done judged again on changed rows: stop %v err %v", stop, err)
 	}
-	if stop, err := e.stops(h.publish("kept", "bravo", kindDone, "late", nil)); err != nil || stop {
+	if stop, err := e.stops(h.send("kept", "bravo", kindDone, "late", nil)); err != nil || stop {
 		t.Fatalf("late done: stop %v err %v", stop, err)
 	}
 	if bad := h.badDones("kept"); len(bad) != 0 {
@@ -271,7 +269,7 @@ func TestOnlyABadDoneExactlyAsRunStoresItRulesOutADone(t *testing.T) {
 func TestStoredBadDoneNeverRulesOutTheSeatsDone(t *testing.T) {
 	h := newHarness(t)
 	e, _ := h.closingEngine()
-	seat := h.publish("kept", "alpha", kindDone, "finished", nil)
+	seat := h.send("kept", "alpha", kindDone, "finished", nil)
 	e.noteRuledOut(seat.Seq)
 	if stop, err := e.stops(seat); err != nil || !stop {
 		t.Fatalf("seat done with a stored ruling: stop %v err %v", stop, err)

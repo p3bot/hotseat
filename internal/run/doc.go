@@ -4,11 +4,20 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Package run drives one conversation on a bus that is already listening.
+// Package run drives one chat on a bus that is already listening.
 // It shells out to start and tk. It does not start the bus and it does not
 // open the database.
 //
-// A finding a member publishes during a turn set opens a discussion. run
+// New creates a chat and stores its setup with it: the task, the roster as
+// name, module, and model, the seat, the ticket, the prompts, the
+// instructions, the permission, and the launch directory. Continue drives an
+// existing chat from that stored setup alone, and refuses a missing chat or an
+// incomplete setup before it takes the lease. Each member process gets
+// HOTSEAT_ADDRESS and, when set, an absolute HOTSEAT_TOKEN_FILE in its
+// environment, so its chat commands reach the bus run calls without a flag in
+// the prompt. The token itself is never in an environment or a prompt.
+//
+// A finding a member sends during a turn set opens a discussion. run
 // schedules the speakers, settles a finding only when every live member but
 // the proposer agrees, launches the finder to apply a settled change, and
 // reports the stop result from the messages and records before the stopping
@@ -21,21 +30,21 @@
 // naming the stopping done, written before the close. Records are facts
 // keyed by message seq and hold no phase, mode, or cursor. run reads them once
 // at start and keeps each one a write returns, and a continuation resumes from
-// them and the transcript. The one message run publishes about a decision is
+// them and the transcript. The one message run sends about a decision is
 // settled, to owner, because no participant states a settle. Nothing reads it
 // as state.
 //
-// run holds the conversation's conductor lease from before it acts on the
-// conversation until it exits. It mints a random holder at start, renews the
+// run holds the chat's conductor lease from before it acts on the
+// chat until it exits. It mints a random holder at start, renews the
 // lease in the background, and sends the holder on every record, member
-// status, and session write and every publish. A refused renewal, or a write
+// status, and session write and every send. A refused renewal, or a write
 // refused for want of the lease, stops the run without killing a member: it
 // waits for the members it launched, stops watching the members it adopted,
 // writes nothing more, and leaves every member for the next holder to adopt.
-// A continuation of a conversation another conductor holds waits once for
+// A continuation of a chat another conductor holds waits once for
 // that lease to run out.
 //
-// A run that held its lease and stops on an error publishes one error to
+// A run that held its lease and stops on an error sends one error to
 // owner whose body is its stop class, stopped by protocol, refusal, command,
 // bus, lease, signal, or run, before it waits for any member or releases the
 // lease. Each cause is typed where it enters run, and the first one is the
@@ -58,13 +67,13 @@
 // derived from its fact, so the bus returns the stored error instead of a
 // second copy.
 //
-// run writes no stdout text. Execute reports values to a Reporter its caller
-// supplies: the header once the conversation and lease are held, and the
+// run writes no stdout text. New and Continue report values to a Reporter their
+// caller supplies: the header once the chat and lease are held, and the
 // result at exit, which carries the same StopResult ReadStatus returns. The
 // caller owns the text format. stderr carries member output, and with Verbose
 // one event line per launch, exit, adoption, turn, and stored error.
 //
-// ReadStatus is the read-only side for hotseat status. It builds the same
+// ReadStatus is the read-only side for hotseat chat status. It builds the same
 // ledger from bus reads with the same builder run uses, and reports the stop
 // result of a recorded done by the same rule, so the two cannot disagree.
 package run

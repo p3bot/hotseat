@@ -98,7 +98,7 @@ func (d *discussion) objectionOpen() bool {
 	return false
 }
 
-// spend counts one discussion launch of name, whatever it published.
+// spend counts one discussion launch of name, whatever it sent.
 func (d *discussion) spend(name string) {
 	d.budget[name]--
 	d.last = name

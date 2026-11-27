@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -194,13 +195,13 @@ func TestCreateBindingRoundTrip(t *testing.T) {
 		"directory": "/tmp/work",
 		"prompts":   []string{"tasks:hotseat/review/extra", "tasks:hotseat/review/other"},
 		"custom":    "line\nname: hidden",
-		"roster":    []string{"bravo", "alpha"},
+		"roster":    rosterNames("bravo", "alpha"),
 	})
 	if res.Outcome != OutcomeOK || res.Chat == nil {
 		t.Fatalf("%+v", res)
 	}
 	c := res.Chat
-	if c.Seat != "bravo" || c.Task != "tasks:hotseat/review/ticket" || len(c.Prompts) != 2 || c.Prompts[0] != "tasks:hotseat/review/extra" || len(c.Roster) != 2 || c.Roster[0] != "bravo" || c.Roster[1] != "alpha" {
+	if c.Seat != "bravo" || c.Task != "tasks:hotseat/review/ticket" || len(c.Prompts) != 2 || c.Prompts[0] != "tasks:hotseat/review/extra" || len(c.Roster) != 2 || c.Roster[0].Name != "bravo" || c.Roster[1].Name != "alpha" {
 		t.Fatalf("binding %+v", c)
 	}
 	if !bytes.Contains(raw, []byte(`"prompts":[`)) || !bytes.Contains(raw, []byte(`"roster":[`)) {
@@ -211,7 +212,7 @@ func TestCreateBindingRoundTrip(t *testing.T) {
 		t.Fatalf("name-only %+v", plain.Chat)
 	}
 	list := mustPost(t, base, PathList, map[string]any{})
-	if list.Chats == nil || len(*list.Chats) != 2 || (*list.Chats)[0].Name != "job" || (*list.Chats)[0].Roster[1] != "alpha" {
+	if list.Chats == nil || len(*list.Chats) != 2 || (*list.Chats)[0].Name != "job" || (*list.Chats)[0].Roster[1].Name != "alpha" {
 		t.Fatalf("list %+v", list.Chats)
 	}
 	members := mustPost(t, base, PathMembers, map[string]any{"chat": "job"})
@@ -223,7 +224,7 @@ func TestCreateBindingRoundTrip(t *testing.T) {
 func TestDuplicateRosterNameIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	res := mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha", "alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha", "alpha"),
 	})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonRosterDuplicate {
 		t.Fatalf("%+v", res)
@@ -236,13 +237,13 @@ func TestDuplicateRosterNameIsRefused(t *testing.T) {
 func TestSeatOutsideTheRosterIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	res := mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "carol", "roster": []string{"alpha", "bravo"},
+		"name": "job", "seat": "carol", "roster": rosterNames("alpha", "bravo"),
 	})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonSeatNotInRoster {
 		t.Fatalf("%+v", res)
 	}
 	missing := mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "roster": []string{"alpha"},
+		"name": "job", "roster": rosterNames("alpha"),
 	})
 	if missing.Outcome != OutcomeRefused || missing.Reason != ReasonSeatNotInRoster {
 		t.Fatalf("empty seat %+v", missing)
@@ -276,15 +277,15 @@ func TestEmptyPromptIsRefused(t *testing.T) {
 func TestSecondCreateWritesNothing(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	first := mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"}, "custom": "keep",
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"), "custom": "keep",
 	})
 	if first.Outcome != OutcomeOK || first.AlreadyExisted == nil || *first.AlreadyExisted {
 		t.Fatalf("first %+v", first)
 	}
 	second := mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "bravo", "roster": []string{"bravo"}, "custom": "other",
+		"name": "job", "seat": "bravo", "roster": rosterNames("bravo"), "custom": "other",
 	})
-	if second.Outcome != OutcomeOK || second.AlreadyExisted == nil || !*second.AlreadyExisted || second.Chat == nil || second.Chat.Custom != "keep" || len(second.Chat.Roster) != 1 || second.Chat.Roster[0] != "alpha" {
+	if second.Outcome != OutcomeOK || second.AlreadyExisted == nil || !*second.AlreadyExisted || second.Chat == nil || second.Chat.Custom != "keep" || len(second.Chat.Roster) != 1 || second.Chat.Roster[0].Name != "alpha" {
 		t.Fatalf("second %+v", second.Chat)
 	}
 }
@@ -293,7 +294,7 @@ func TestJoinKeepsStatusExceptWhenLaunched(t *testing.T) {
 	at := time.Date(2026, 10, 10, 1, 0, 0, 0, time.UTC)
 	base, _, _, _ := startServer(t, Options{Clock: func() time.Time { return at }})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha", "bravo"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha", "bravo"),
 	})
 	conduct(t, base, "job")
 	pid := 424242
@@ -360,7 +361,7 @@ func TestJoinWithoutARowIsRefused(t *testing.T) {
 		t.Fatalf("missing chat %+v", missing)
 	}
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	outside := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "bravo"})
 	if outside.Outcome != OutcomeRefused || outside.Reason != ReasonNotInRoster {
@@ -383,10 +384,49 @@ func TestRosterThatIsNotAnArrayIsRefused(t *testing.T) {
 	}
 }
 
+func TestRosterElementThatIsNotAnObjectWithANameIsRefused(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	for _, roster := range []any{
+		[]string{"alpha"},
+		[]map[string]string{{"module": "hotseat/grok", "model": "g1"}},
+		[]map[string]any{{"name": "alpha", "module": 1}},
+		[]map[string]string{{"name": "alpha", "agent": "hotseat/grok"}},
+		nil,
+	} {
+		res := mustPost(t, base, PathCreate, map[string]any{"name": "job", "seat": "alpha", "roster": roster})
+		if res.Outcome != OutcomeRefused || res.Reason != ReasonRosterShape {
+			t.Fatalf("%v: %+v", roster, res)
+		}
+	}
+}
+
+func TestRosterModuleModelAndPermissionAreStoredAsGiven(t *testing.T) {
+	base, _, _, _ := startServer(t, Options{})
+	roster := []map[string]string{
+		{"name": "bravo", "module": "hotseat/claude", "model": "c:1=x"},
+		{"name": "alpha"},
+		{"name": "carol", "module": "", "model": "only-model"},
+	}
+	res := mustPost(t, base, PathCreate, map[string]any{"name": "job", "seat": "alpha", "roster": roster, "permission": "auto"})
+	if res.Outcome != OutcomeOK || res.Chat == nil {
+		t.Fatalf("%+v", res)
+	}
+	want := []wireRoster{{Name: "bravo", Module: "hotseat/claude", Model: "c:1=x"}, {Name: "alpha"}, {Name: "carol", Model: "only-model"}}
+	list := mustPost(t, base, PathList, map[string]any{})
+	if list.Chats == nil || len(*list.Chats) != 1 {
+		t.Fatalf("list %+v", list)
+	}
+	for _, c := range []wireChat{*res.Chat, (*list.Chats)[0]} {
+		if !slices.Equal(c.Roster, want) || c.Permission != "auto" {
+			t.Fatalf("roster %+v permission %q", c.Roster, c.Permission)
+		}
+	}
+}
+
 func TestRosterNameOutsideTheGrammarIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	res := mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "bad name", "roster": []string{"bad name"},
+		"name": "job", "seat": "bad name", "roster": rosterNames("bad name"),
 	})
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonRosterBadName {
 		t.Fatalf("%+v", res)
@@ -404,7 +444,7 @@ func TestPromptsThatAreNotAnArrayAreRefused(t *testing.T) {
 func TestNameOutsideTheRosterIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	conduct(t, base, "job")
 	res := mustPost(t, base, PathMember, map[string]any{
@@ -418,7 +458,7 @@ func TestNameOutsideTheRosterIsRefused(t *testing.T) {
 func TestMemberStatusOutsideTheSetIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	conduct(t, base, "job")
 	res := mustPost(t, base, PathMember, map[string]any{
@@ -432,7 +472,7 @@ func TestMemberStatusOutsideTheSetIsRefused(t *testing.T) {
 func TestSecondLaunchedIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	conduct(t, base, "job")
 	first := mustPost(t, base, PathMember, map[string]any{
@@ -456,7 +496,7 @@ func TestSecondLaunchedIsRefused(t *testing.T) {
 func TestPidWithoutAStatusIsRefused(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	conduct(t, base, "job")
 	launched := mustPost(t, base, PathMember, map[string]any{
@@ -482,7 +522,7 @@ func TestPidWithoutAStatusIsRefused(t *testing.T) {
 func TestStartWithoutAPidIsRefusedAndWritesNothing(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	conduct(t, base, "job")
 	res := mustPost(t, base, PathMember, map[string]any{
@@ -500,7 +540,7 @@ func TestStartWithoutAPidIsRefusedAndWritesNothing(t *testing.T) {
 func TestStartMustBePrintableASCIIWithNoSpaces(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	conduct(t, base, "job")
 	for _, start := range []string{"", "boot 1", "boot\n1", "booté1", strings.Repeat("a", 129)} {
@@ -516,7 +556,7 @@ func TestStartMustBePrintableASCIIWithNoSpaces(t *testing.T) {
 func TestPidWriteReplacesTheStartTokenAndAPidWriteWithoutOneClearsIt(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	conduct(t, base, "job")
 	mustPost(t, base, PathMember, map[string]any{
@@ -545,7 +585,7 @@ func TestPidWriteReplacesTheStartTokenAndAPidWriteWithoutOneClearsIt(t *testing.
 func TestPidMustBeAPositiveInteger(t *testing.T) {
 	base, _, _, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	conduct(t, base, "job")
 	for _, pid := range []any{0, -1, 1.5, "2"} {
@@ -564,7 +604,7 @@ func TestSessionPidAndStartStayOffJoinTheTranscriptListAndLog(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 	})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "bravo", "roster": []string{"bravo", "alpha"},
+		"name": "job", "seat": "bravo", "roster": rosterNames("bravo", "alpha"),
 	})
 	conduct(t, base, "job")
 	mustPost(t, base, PathMember, map[string]any{
@@ -599,8 +639,8 @@ func TestSessionPidAndStartStayOffJoinTheTranscriptListAndLog(t *testing.T) {
 		t.Fatal("session route hid the id from its caller")
 	}
 	_, memberBody := mustRaw(t, base, PathMember, map[string]any{"chat": "job", "name": "bravo"})
-	reg, joinBody := mustRaw(t, base, PathJoin, map[string]any{"chat": "job", "name": "bravo"})
-	if reg.Outcome != OutcomeOK || reg.Member == nil || reg.Member.Name != "bravo" || reg.Member.Status != "joined" || reg.Member.Launched == "" || reg.Member.Joined == "" {
+	joined, joinBody := mustRaw(t, base, PathJoin, map[string]any{"chat": "job", "name": "bravo"})
+	if joined.Outcome != OutcomeOK || joined.Member == nil || joined.Member.Name != "bravo" || joined.Member.Status != "joined" || joined.Member.Launched == "" || joined.Member.Joined == "" {
 		t.Fatalf("join %s", joinBody)
 	}
 	joinRaw := string(joinBody)
@@ -653,7 +693,7 @@ func TestSessionPidAndStartStayOffJoinTheTranscriptListAndLog(t *testing.T) {
 func TestMemberWriteAfterCloseIsStored(t *testing.T) {
 	base, _, st, _ := startServer(t, Options{})
 	mustPost(t, base, PathCreate, map[string]any{
-		"name": "job", "seat": "alpha", "roster": []string{"alpha"},
+		"name": "job", "seat": "alpha", "roster": rosterNames("alpha"),
 	})
 	conduct(t, base, "job")
 	mustPost(t, base, PathMember, map[string]any{
@@ -662,9 +702,9 @@ func TestMemberWriteAfterCloseIsStored(t *testing.T) {
 	if res := mustPost(t, base, PathClose, map[string]any{"chat": "job"}); res.Outcome != OutcomeOK || res.Chat == nil || res.Chat.Status != "closed" {
 		t.Fatalf("close %+v", res)
 	}
-	pub := sendKind(t, base, "alpha", "say", []string{}, "later report", "late")
-	if pub.Outcome != OutcomeOK || pub.Chat == nil || pub.Chat.Status != "closed" || pub.Message == nil || pub.Message.Body != "later report" {
-		t.Fatalf("send %+v", pub)
+	sent := sendKind(t, base, "alpha", "say", []string{}, "later report", "late")
+	if sent.Outcome != OutcomeOK || sent.Chat == nil || sent.Chat.Status != "closed" || sent.Message == nil || sent.Message.Body != "later report" {
+		t.Fatalf("send %+v", sent)
 	}
 	updated := mustPost(t, base, PathMember, map[string]any{
 		"chat": "job", "name": "alpha", "status": "exited", "holder": testHolder,
@@ -672,9 +712,9 @@ func TestMemberWriteAfterCloseIsStored(t *testing.T) {
 	if updated.Outcome != OutcomeOK || updated.Member == nil || updated.Member.Status != "exited" {
 		t.Fatalf("status %+v", updated)
 	}
-	reg := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "alpha"})
-	if reg.Outcome != OutcomeOK || reg.Member == nil || reg.Member.Status != "exited" || reg.Member.Joined == "" {
-		t.Fatalf("join after close %+v", reg.Member)
+	joined := mustPost(t, base, PathJoin, map[string]any{"chat": "job", "name": "alpha"})
+	if joined.Outcome != OutcomeOK || joined.Member == nil || joined.Member.Status != "exited" || joined.Member.Joined == "" {
+		t.Fatalf("join after close %+v", joined.Member)
 	}
 	rows := mustPost(t, base, PathMembers, map[string]any{"chat": "job"})
 	if rows.Outcome != OutcomeOK || rows.Members == nil || len(*rows.Members) != 1 || (*rows.Members)[0].Status != "exited" {
@@ -715,4 +755,13 @@ func chatCount(res wire) int {
 		return 0
 	}
 	return len(*res.Chats)
+}
+
+// rosterNames is a create roster of names with no module or model.
+func rosterNames(names ...string) []map[string]string {
+	out := make([]map[string]string, len(names))
+	for i, n := range names {
+		out[i] = map[string]string{"name": n}
+	}
+	return out
 }

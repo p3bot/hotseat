@@ -17,7 +17,7 @@ import (
 	"github.com/p3bot/hotseat/internal/bus"
 )
 
-func TestConversationCodeUsesTkAlphabets(t *testing.T) {
+func TestChatCodeUsesTkAlphabets(t *testing.T) {
 	if LetterAlphabet != "abcdefghjkmnpqrstuvwxyz" {
 		t.Fatalf("letter alphabet %q", LetterAlphabet)
 	}
@@ -50,10 +50,10 @@ func TestTaskSlugDropsCategoryAndHotseat(t *testing.T) {
 	if err != nil || design != "design" {
 		t.Fatalf("design %q %v", design, err)
 	}
-	if got := bareConversation(slug, "foo-x234"); got != "foo-x234-review-ticket" {
+	if got := bareChat(slug, "foo-x234"); got != "foo-x234-review-ticket" {
 		t.Fatalf("bare %s", got)
 	}
-	if got := bareConversation("design", ""); got != "design" {
+	if got := bareChat("design", ""); got != "design" {
 		t.Fatalf("bare design %s", got)
 	}
 }
@@ -122,19 +122,19 @@ func TestDefaults(t *testing.T) {
 	if (Config{}).maxTurns() != 500 || (Config{}).timeout() != 8*time.Hour {
 		t.Fatal("unset defaults")
 	}
-	if (Config{Interactive: true, Timeout: time.Second, TimeoutSet: true}).timeout() != 0 {
-		t.Fatal("interactive kept a process limit")
+	if (Config{Timeout: 0, TimeoutSet: true}).timeout() != 0 {
+		t.Fatal("a zero timeout kept a process limit")
 	}
 }
 
-func TestZeroTimeoutIsRejected(t *testing.T) {
-	for _, d := range []time.Duration{0, -time.Second} {
+func TestNegativeTimeoutIsRejected(t *testing.T) {
+	for _, d := range []time.Duration{-time.Nanosecond, -time.Second} {
 		_, err := newEngine(context.Background(), Config{
 			Dir:        t.TempDir(),
 			Timeout:    d,
 			TimeoutSet: true,
 		}, defaultPace(), discardReporter{}, io.Discard)
-		if err == nil || !strings.Contains(err.Error(), "positive") {
+		if err == nil || !strings.Contains(err.Error(), "negative") {
 			t.Fatalf("timeout %s err %v", d, err)
 		}
 	}
