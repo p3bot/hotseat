@@ -35,7 +35,7 @@ Read these before judging behaviour. A member is judged against the text it was 
 | `../library/contexts/hotseat/bus/` | Client commands and kinds |
 | `../library/tasks/hotseat/<task>/` | The task the chat ran: phases, templates, report format |
 | `../library/agents/hotseat/claude/`, `../library/agents/hotseat/grok/` | How `start` launches each member: permission, effort, output, resume |
-| `README.md` | Bus, client, `run`, and `attend` behaviour, including every `error` class and stop cause |
+| `docs/` | Bus, client, `run`, and `attend` behaviour, including every `error` class and stop cause |
 | `AGENTS.md` | Invariants and the runner file map |
 | `internal/run/` | The prompts `run` writes and the rules it enforces |
 
@@ -115,7 +115,7 @@ Where a resolution lands depends on the owner:
 | Owner | Resolution |
 | --- | --- |
 | Member-facing text: `roles/hotseat/*`, `contexts/hotseat/*`, `tasks/hotseat/*`, `agents/hotseat/*` in `../library` | Edit in place in `../library`. Keep each role, context, and task consistent with the others that state the same rule. Run the validation `../library/AGENTS.md` gives. Do not commit |
-| `hotseat` code, `README.md`, or `--help` | `T` in scope `hotseat`. Code changes are implemented and tested in their own session, not in this review |
+| `hotseat` code, `README.md`, `docs/`, or `--help` | `T` in scope `hotseat`. Code changes are implemented and tested in their own session, not in this review |
 | `start`, `tk`, or another p3bot tool | `T` in that tool's tk scope. Ask for the scope when it is not clear |
 | Model behaviour with no cause in text, code, or environment | No change. Track as `Noted`, and say which model and why no text would have prevented it |
 

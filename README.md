@@ -1,153 +1,148 @@
 # hotseat
 
-One process hosts named chats. Callers send into a transcript and block until a matching message exists or a deadline passes.
+Put a team of AI agents in one chat and let them get the work done without you.
+
+hotseat runs three or four coding agents, from different vendors where possible, on a single task: a ticket review, a pre-commit review, triage, or an implementation. Each member reads the work, raises what it finds, argues it out with the others, and applies the fix the group agrees on. You set the task. You hear back only when the team needs a decision (`ask`) or is finished (`done`).
+
+- **Different models catch different mistakes.** A Claude and a Grok reviewing the same diff disagree in useful ways. hotseat turns that disagreement into a structured discussion instead of two reports for you to reconcile.
+- **Agreement, not majority.** A finding settles only when every live member agrees with the current proposal. A finding nobody can agree on is escalated to you as a deadlock with a report. It is never quietly outvoted.
+- **One finding at a time.** A fix can make a later finding obsolete, so findings are discussed and fixed in order rather than all at once.
+- **Durable and resumable.** Every message is committed to SQLite before it is acknowledged. A run that stops, crashes, or loses its terminal resumes with `hotseat run continue <name>` from the transcript and the decisions it has recorded. Settled findings stay settled, and applied fixes are not applied twice.
+- **Watchable.** Follow any chat live in your browser, tail it from the terminal, or ask for a one-screen status.
+- **One static binary.** Pure Go with no cgo, an embedded SQLite driver, and nothing to deploy. The bus listens on loopback by default.
+
+## How it works
+
+```text
+            you
+             │  task                     ask / done
+             ▼                                ▲
+  ┌──────────────────────────────────────────────────┐
+  │ hotseat run   (the conductor)                    │
+  │   launches members, drives turns, runs the       │
+  │   finding protocol, stops on done or a limit     │
+  └───────┬───────────────┬───────────────┬──────────┘
+          │ launch        │ launch        │ launch
+          ▼               ▼               ▼
+       alpha            bravo          charlie      agents via `start`
+       (claude)         (grok)         (claude)
+          │               │               │
+          └──── send ─────┼──── send ─────┘
+                          ▼
+  ┌──────────────────────────────────────────────────┐
+  │ hotseat bus   durable, ordered log of chats      │
+  │   SQLite (WAL), single writer, HTTP on loopback  │
+  └──────────────────────────────────────────────────┘
+                          │
+                          ▼
+           web page · chat attend · chat status
+```
+
+- The bus is a durable, ordered log of named chats. It stores messages and knows nothing about what they mean, so it stays small and general.
+- A member is an agent process. `run` launches it for one step, the member sends its messages and exits, and a later step resumes the same agent session. Members never sit idle waiting on the bus.
+- `run` is the conductor, and it is deterministic. It decides who launches, in what order, and when the run stops. The members decide everything that needs judgement: what the work needs, whether a finding holds, and which option wins.
+- The chat is the record. Anyone who reads it afterwards can see how the work went and why each decision was made.
+
+### The finding protocol
+
+Every review task uses the same protocol.
+
+1. The members review in parallel. Each sends one `finding` per issue.
+2. The acting seat groups the findings and drops duplicates.
+3. Each finding is discussed in turn. Members `propose` a change, `dismiss` the finding, `agree`, `object`, or `stand` by a proposal. Each member has a budget of turns per finding.
+4. When every live member agrees, the finding is settled and the member who raised it applies the fix.
+5. A discussion that stalls goes to the acting seat, which grants more turns or declares a `deadlock`.
+6. After the last finding, the team runs one satisfaction pass over the result and the seat posts `done`.
+
+The run exits 0 only when every finding was settled and every agreed change was applied. Anything else exits non-zero and names the unsettled and unfixed findings by `seq`.
 
 ## Quickstart
 
-Start a bus, run a task on it, and watch the chat. `hotseat run` launches each member through `start` and needs `start` and `tk` on `PATH`.
+You need the `hotseat` binary, and [`start`](https://github.com/p3bot/start) and [`tk`](https://github.com/p3bot/tk) on `PATH`. `start` launches each member, and the member modules are `hotseat/claude` and `hotseat/grok`.
 
 ```bash
 hotseat bus start
-hotseat run new hotseat/ticket/review --ticket foo-x234 --agents "alpha=hotseat/claude:<model> bravo=hotseat/grok:<model>"
-hotseat chat attend foo-x234-ticket-review
+hotseat run new hotseat/ticket/review --ticket foo-x234 \
+  --agents "alpha=hotseat/claude:<model> bravo=hotseat/grok:<model>"
 ```
 
-`run new` prints the chat name on its `chat` line before it blocks. Pass that name to `chat attend`. A name already taken gains a 4-character code.
+`run new` prints a header with the chat name and a link to the page before it starts work:
 
-| Task | Work | Members |
-| --- | --- | --- |
-| `hotseat/ticket/triage` | Decide whether one ticket enters review: pass, stub, reject, or split | 1 or more |
-| `hotseat/ticket/review` | Review one ticket document, discuss and fix each finding by agreement, then one satisfaction pass | 2 or more |
-| `hotseat/ticket/implement` | The acting seat implements one ticket and leaves it at `review` | 1 or more; only the seat works |
-| `hotseat/pre-commit/review` | Review the pre-commit diff, discuss and fix each finding by agreement, then one satisfaction pass | 2 or more |
+```text
+chat: foo-x234-ticket-review
+task: tasks:hotseat/ticket/review
+ticket: foo-x234
+seat: alpha
+member: alpha=hotseat/claude:<model>
+member: bravo=hotseat/grok:<model>
+page: http://127.0.0.1:4728/chats/foo-x234-ticket-review
+```
 
-A roster entry is `name=module:model`. The member modules are `hotseat/claude` and `hotseat/grok`. The seat is the first name in ASCII byte order unless `--seat` names another. `run new` stores the roster, the seat, and the permission with the chat. Continue a run that stopped with the chat open by its name alone:
+Open the page, or follow the chat from another terminal:
+
+```bash
+hotseat chat attend foo-x234-ticket-review   # prints ask, error, and done
+hotseat chat status foo-x234-ticket-review   # one-screen state: members, findings, settled, fixed
+```
+
+When the team finishes, `run` prints its result and exits:
+
+```text
+done: 57
+outcome: done
+elapsed: 18m42s
+```
+
+If a run stops before it finishes, because of a limit, a signal, or a closed laptop, continue it by name. The stored roster, seat, and permission are reused:
 
 ```bash
 hotseat run continue foo-x234-ticket-review
 ```
 
-To run all four stages for one ticket, start a chief session. The task loads the `hotseat/chief` role, which asks once for any missing model name, then runs triage, ticket review, implementation, and pre-commit review as four chats:
+## Tasks
+
+A task is a CUE module in the [p3bot library](https://github.com/p3bot/library), so new kinds of work are added there rather than in hotseat's code.
+
+| Task | Work | Members |
+| --- | --- | --- |
+| `hotseat/ticket/triage` | Decide whether a ticket is ready for review: pass, stub, reject, or split | 1 or more |
+| `hotseat/ticket/review` | Review a ticket document, settle and fix each finding by agreement, then a satisfaction pass | 2 or more |
+| `hotseat/ticket/implement` | The acting seat implements the ticket and leaves it at `review` | 1 or more |
+| `hotseat/pre-commit/review` | Review the pre-commit diff, settle and fix each finding by agreement, then a satisfaction pass | 2 or more |
+
+A roster entry is `name=module:model`. The seat is the first name in ASCII byte order unless `--seat` names another.
+
+To take one ticket through the whole pipeline, start a chief session. The chief runs triage, ticket review, implementation, and pre-commit review as four chats, and answers each `ask` itself:
 
 ```bash
 start task hotseat/workflow/implement foo-x234
 ```
 
-## Bus
+## Watching a run
+
+- The page at `http://127.0.0.1:4728` is served by `hotseat bus start`. It shows the newest messages across every chat, live, with Markdown rendering, search, and a send box. It listens on loopback only.
+- `hotseat chat attend <name>` waits as `owner` and prints each `ask`, `error`, and `done`. It exits on `done`.
+- `hotseat chat status <name>` reads the bus and prints whether a conductor is driving the chat, each member's status, the finding under discussion, and how many findings are settled, fixed, and dropped.
+- `hotseat run --verbose` writes one event line to stderr for each launch, exit, finding, stance, settle, and fix.
+
+## The bus
 
 ```bash
-hotseat bus start
-hotseat bus start --store /var/lib/hotseat
-hotseat bus start --store /var/lib/hotseat --address 127.0.0.1:4727 --max-body 524288
-hotseat bus start --store /var/lib/hotseat --address 192.0.2.10:4727 --token-file /run/hotseat/token
-hotseat bus status
-hotseat bus stop
+hotseat bus start     # detach, print pid, address, store, and page URL
+hotseat bus status    # health of the bus at an address
+hotseat bus stop      # SIGTERM, then wait for the store lock to be released
 ```
 
-`hotseat bus start` runs the bus detached from the terminal and returns after the listener is bound, the database is open, and the page is listening. It prints the pid, the listen address, the store path, and `page` as a URL. The page listens on `127.0.0.1` at the next port and calls this bus. It does not open the database. The default bus prints `page` as `http://127.0.0.1:4728`. A second bus does not start while its page port is in use. Closing the terminal does not stop the bus. The log is `hotseat.log` in the store directory. `hotseat bus status` asks a listen address whether the bus can serve. The default address is `127.0.0.1:4727`. It prints `health` as `pass`, `fail`, or `connection_failure`, and the address it contacted. When a `bus serve` process on this machine is bound to that address, it also prints that pid and the store directory that process holds. `pass` exits 0. `fail` and `connection_failure` exit 4. `hotseat bus stop` with no `--store` sends SIGTERM to the bus for the default store and to any other local `bus serve` bound to `127.0.0.1:4727`. It returns after those processes have exited and each `hotseat.db.lock` is released. A second stop, when those buses are already stopped, succeeds. A process that is not `bus serve` and holds `127.0.0.1:4727` is left running, and stop exits 1. `hotseat bus stop --store` signals only the bus for that directory.
+`hotseat bus start` detaches from the terminal and returns once the listener, the database, and the page are ready. Closing the terminal does not stop it. The store defaults to `$XDG_DATA_HOME/hotseat` and holds `hotseat.db` and the log, `hotseat.log`. `--store` selects another directory for `start` and `stop`. `bus status` probes an address and does not take `--store`. `GET /health` answers `pass` or `fail` without a token.
 
-`--store` selects the directory for `start` and for `stop`. Without `--store`, `stop` uses the default directory and also stops any other local `bus serve` on the default listen address. `status` does not take `--store`. It takes `--address`, and the default is `127.0.0.1:4727`. When `--store` is omitted the directory is `$XDG_DATA_HOME/hotseat`. An unset, empty, or relative `$XDG_DATA_HOME` uses `$HOME/.local/share/hotseat`. A relative home directory is refused and nothing is created. The database is `hotseat.db` in that directory. A database this binary will not serve, from another schema version or an earlier shape of version 1, is refused, the bus does not start, and the file is left unchanged. There is no migration. Delete `hotseat.db`, `hotseat.db-wal`, and `hotseat.db-shm` before starting the new build. This process is the only writer, and it holds `hotseat.db.lock` beside the database until it exits. The default listen address is `127.0.0.1:4727`. A loopback address accepts every operation with no token. A hostname is resolved once and the process listens on one address from that lookup: a loopback address when every answer is loopback, otherwise a non-loopback address. Any other address requires `--token-file` and does not listen when the file is missing or empty, and no database is created. A failed bind creates no database. The file holds one shared token. A trailing newline is ignored. The token is printable ASCII with no spaces. The process does not log it. Passing the file on loopback does not turn the check on. `GET /health` is unauthenticated on every address. The body is `pass` or `fail`. The default maximum body is 512 KiB. One bus runs for each store directory. A second start prints the running process and does not change it.
+The bus listens on `127.0.0.1:4727` by default. A non-loopback address requires `--token-file`, and every call must then carry the token.
 
-## Protocol
-
-Every operation is `POST` of one JSON object to `/<operation>`. A completed call responds `200` with one JSON object. Read `outcome`. It is `ok`, `timeout`, `refused`, or `unavailable`. A dropped connection has no body and is not a timeout. Unknown JSON fields are ignored.
-
-A loopback listener ignores credentials. Any other listener requires the token on every operation, including from a peer on the same machine. The header is `Authorization: Bearer` and the token. `WriteToken` in package bus is that header. A missing token is refused with `token is required`. A wrong token is refused with `token does not match`. Nothing is written. The token does not select `from` and is not stored.
-
-`GET /health` is not an operation. It takes no token on any address. The body is `pass` and status 200 when the bus can read the schema it serves, and `fail` and status 503 otherwise. A trailing newline is the only other byte. The body does not carry the pid, the listen address, the store path, or the token.
-
-| Call | Body |
-| --- | --- |
-| `/create` | `{"name","task"?,"ticket"?,"seat"?,"directory"?,"prompts"?,"custom"?,"roster"?,"permission"?}` |
-| `/send` | `{"chat","from","to","body","txid","kind","re"?,"holder"?}` |
-| `/read` | `{"chat","cursor","limit","name"?,"kinds"?}` |
-| `/wait` | `{"chat","cursor","name"?,"deadline"?,"kinds"?}` |
-| `/close` | `{"chat"}` |
-| `/list` | `{}` |
-| `/messages` | `{"limit","before"?}` |
-| `/watch` | `{"cursor"?,"chat"?,"rev"?,"limit"?,"deadline"?}` |
-| `/join` | `{"chat","name"}` |
-| `/member` | `{"chat","name","status"?,"pid"?,"start"?,"holder"?}` |
-| `/session` | `{"chat","name"?,"session"?,"holder"?}` |
-| `/members` | `{"chat"}` |
-| `/record` | `{"chat","record",...,"holder"}` |
-| `/records` | `{"chat"}` |
-| `/lease` | `{"chat","lease","holder"?}` |
-
-`to` is an array. `[]` is empty. `["all"]` is the single value all. Any other array is an ordered name list and is not sorted or deduplicated. A different order is different content. `kind` uses the same character rules as a name. The bus stores that name and does not check its meaning, so `act` and any other legal name are stored. `kinds`, when present, is an array of those names. Omit it and read and wait match as they do without a kind filter. An empty array is refused. `re` is the `seq` of an earlier message of the same chat that this send responds to. Omit it, or send `null`, to respond to nothing. A value that is not an integer greater than zero, including a string or a fraction, is refused. A `seq` of another chat, a `seq` that does not exist, and the send's own `seq` are refused and write nothing. Every message object from send, read, wait, watch, and `/messages` has `re`, the integer or `null`. `deadline` is a Go duration such as `30s` or `500ms`, or an RFC3339 end time. Omit it to wait until a match or a dropped connection. A duration is measured from arrival. An end time is absolute on the bus clock. A time already past times out at once when nothing matches, and a retry sends that same time.
-
-An ok `/messages` returns the newest `limit` messages across every chat, highest `seq` first. Each message includes `chat`. With `before`, only messages whose `seq` is less than `before` are returned, so the lowest `seq` of one result is the next `before`. A `before` less than 1 is refused. There is no command for this route.
-
-`/watch` takes `cursor`, `chat`, `rev`, `limit`, and `deadline`, each optional. `limit` is required with `cursor` and is a positive integer with no upper bound; the read cap of 1000 does not apply. `chat` uses the name grammar. A name with no chat matches no message and is not refused. `deadline` follows `/wait`. An ok watch returns `messages` with `seq` greater than `cursor`, oldest first, in that chat or every chat, at most `limit`, each with `chat`. It also returns `more`, true when further matching messages follow the last one returned, and `rev`. Omit `cursor` and the watch returns no messages and waits on `rev` alone. It returns at once when a matching message exists, when `rev` is omitted, or when `rev` differs from the current counter. Otherwise it blocks until one of those holds, the deadline passes (`timeout`), the connection drops, or the bus stops. `rev` is a change counter for the chat list, kept in bus memory. It starts at a random value below 2^53 when the bus starts, so a restarted bus does not return a value a caller still holds. Compare it for equality only. It increases on a create that inserted, on a close that changed the status, and on a stored send to a chat other than the one holding the newest message. An idempotent send and a close of a closed chat change nothing and wake no watch. Omit `rev` on the first watch. There is no command for this route.
-
-`seq` is assigned at commit. It increases across the whole store and within each chat, with gaps, so one chat's messages need not be numbered 1, 2, 3. A cursor is a `seq` the caller has seen. `cursor` `0` means the caller has seen no message. The bus does not store cursors or transaction ids except the txid recorded on an accepted message. The caller passes both on each call.
-
-An ok create returns the chat, including its binding. Omitted binding fields are stored empty. JSON always includes the keys: empty text is `""` and an empty list is `[]`. `prompts` and `roster` keep the caller's order. `roster` is an array of `{"name","module"?,"model"?}` objects. Any other key, or an element that is not such an object, is refused. A roster name uses the name grammar. `module`, `model`, and `permission` are strings the bus stores and returns as given, and an omitted one is `""`. A duplicate roster name is refused. A roster requires a `seat` that is one of those names. A seat with an empty roster is refused. Empty roster and empty seat is a name-only create. An empty string inside `prompts` is refused. A name that already exists returns that chat, its stored binding, and `"already_existed": true`, and writes nothing. Create does not insert member rows.
-
-An ok send returns the message, including `seq` and `kind`, and `chat` with its binding, only after it is durable. `kind` is required. An attempt is the chat, the sender, and `txid`. The bus requires that id and does not generate one. The same attempt with the same `kind`, the same `to`, the same body, and the same `re` returns that message and `"already_stored": true`, including after close, and writes nothing. The same attempt with a different `kind`, `to`, body, or `re` is refused and writes nothing. A `re` present on one and absent on the other is different. Another sender with that `txid` stores a new message. Close sets `status` to `closed` and still accepts a new message. That send returns `status` `closed`. Send, read, wait, and the member routes follow the same rules on a closed chat.
-
-An ok named read returns messages addressed to that name. `kinds` keeps only listed kinds. An ok unnamed read with `kinds` returns only listed kinds. The limit counts returned messages. A read `limit` is an integer from 1 to 1000: one below 1 is refused with `limit must be a positive integer`, and one above 1000 with `limit must be at most 1000`, because even a full page of 512 KiB bodies is large. An ok read returns `more`. It is `true` when, after the page is full, a further message passes the same `name` and `kinds` filter. That message is not returned. It is `false` when the read reaches the end of the chat. An ok named wait returns every message after the cursor through the first addressed message of a listed kind, and `match_seq`. Omit `kinds` and the match is address alone. Messages of other kinds, and messages addressed to other names, stay in that span. An ok unnamed wait returns only the next message, or, when `kinds` is set, the next message of a listed kind. Timeout returns no messages. Close does not end a wait.
-
-`/join` sets the joined time from the bus clock. The status becomes `joined` only when the row is `launched`. `running`, `exited`, `timed-out`, and `joined` keep their status. The name must be a roster name that already has a row. `/join` returns the public row: name, status, launched time, and joined time, with no pid and no `start`. `/member` with `status` `launched` inserts that row. A second `launched` is refused. `running`, `exited`, and `timed-out` update an existing row. `pid`, when sent, is an integer greater than zero and is stored only with a status. A pid without a status is refused and writes nothing. `start` is the caller's start token for that pid, 1 to 128 printable ASCII characters with no spaces, which the bus stores beside the pid without interpreting it. A `start` without a `pid` is refused and writes nothing. A write with a `pid` replaces the stored `start`, and one with a `pid` and no `start` clears it. `/member` with no `status` and no `pid` returns that row, including `pid` and `start`, and does not return a session id. `/members` returns name, launched time, joined time, and status, in roster order, with no session id, no pid, and no `start`. `/session` stores or returns session ids for the caller of that route. There is no command for it. Session ids, pids, and start tokens are absent from read, wait, list, `/join`, and `/members`, and `hotseat chat join` prints none of them.
-
-`/record` and `/records` hold `hotseat run`'s decision records, insert-only facts about messages that `run` reads back on a continuation. There is no command for either route. Records are absent from read, wait, watch, list, `/members`, and the page, and neither route changes `rev` or wakes a wait or watch. The bus log holds each call and its outcome and no record content. `record` selects the write, and each seq is an integer greater than zero:
-
-| `record` | Fields | Key |
-| --- | --- | --- |
-| `set` | `turn`, `findings` (may be `[]`) | turn |
-| `grouping` | `turn`, `drops` (`[{"finding","kept"}]`, may be `[]`) | turn |
-| `settle` | `finding`, `proposal`, `proposal_kind` | finding |
-| `fix` | `finding`, `fixed` | finding |
-| `halt` | `finding` | chat |
-| `stop` | `done` | chat |
-
-`turn` is a `turn` message, each finding a `finding`, `proposal` the finding itself (`proposal_kind` `finding`) or a later `propose` or `dismiss`, `fixed` a `fixed` message after the settle, and `done` a `done` message. A set with exactly one finding also writes its grouping with no drops and returns it beside the set. An ok record returns the stored record in the shape `/records` uses, and `already_stored`. `after` is the chat's highest `seq` when the record commits. The bus assigns it and ignores an `after` the caller sends. A fix has `settled_after`, its settle's `after`, instead, and a stop holds only `done`. A write that matches the stored record on its key, ignoring `after`, returns that record and `"already_stored": true` and writes nothing, so a retry after another message was sent still matches. Findings and drops compare as sets. A write that differs on the same key is refused with `transaction id reused with different content`. A repeated seq in `findings`, and a repeated `finding` in `drops`, are refused. A missing message or record, a message of the wrong kind, a finding already in another set, a drop that keeps itself or names another set, a `proposal_kind` that differs from the stored message, and a `fixed` used by another fix are one reason, `record breaks a reference, kind, or uniqueness rule`. Three rules have their own reasons: a kept finding is not itself dropped, a settle or a halt names a kept finding of a set that has a grouping, and a fix belongs to a settle whose proposal is not a `dismiss`. An ok `/records` returns `sets`, `groupings`, `settles`, `fixes`, `halts`, and `stops`, each in key order, and an empty list is `[]`.
-
-`/lease` is the conductor lease: a claim that one conductor drives a chat now. It knows nothing about `run`, kinds, or records. `lease` selects the operation, and the chat must exist, or the call is refused with `chat not found`. An absent `lease` is refused with `lease is required`, and any value but these four with `lease must be acquire, renew, release, or get`. Every operation but `get` requires `holder`. An absent `holder` is refused with `holder is required`, and one outside the name grammar, `""` included, with `holder must be 1 to 64 characters from ASCII letters, digits, '.', '_', and '-'`. `get` ignores a `holder` sent with it.
-
-| `lease` | Effect |
-| --- | --- |
-| `acquire` | Succeeds when no live lease exists or this holder has the live lease. Refused with `chat has a conductor` when another holder's lease is live, with `remaining`, the whole seconds left on it, rounded up |
-| `renew` | Extends this holder's live lease. Never creates one. Refused with `lease is not held` when no live lease exists or another holder has it |
-| `release` | Removes this holder's lease. Releasing a lease this holder does not hold succeeds and changes nothing |
-| `get` | Returns `held`, and when held, `since` and `expires` on the bus clock. Never returns the holder |
-
-An ok `acquire` or `renew` returns `ttl`, the time to live in seconds, which is 20 and has no flag. Expiry is measured on the bus's monotonic clock and checked on each call. Leases live in bus memory, so a restarted bus holds none. They never touch the database, do not change `rev`, and do not wake a wait or watch. A closed chat can still be leased. There is no command for this route. The bus log holds each lease call, its selector, and its outcome, and never the holder.
-
-A conductor write is a `/record` write, a `/member` write with a `status`, and a `/session` write with a `session`. Each requires `holder`, refused as on `/lease` when absent or malformed, and the holder must hold the chat's live lease. Otherwise the write is refused with `write requires the chat lease` and stores nothing, including a replay of a stored record, so a conductor that lost its lease learns it on its next write. `/send` takes an optional `holder`, checked and fenced by the same rules. A send without one is not checked, so members and `hotseat chat send` are unchanged. The lease check and the write happen under one lock, so no lease change falls between them. Reads ignore `holder`: `/records`, `/members`, a `/member` read, and a `/session` read. `/join` and `/close` are not fenced. A bus that fences refuses the conductor writes of an older `hotseat run` that sends no holder, so upgrade the bus between runs. The holder is absent from every read, `get`, the page, the log, and every status line.
-
-`refused` names the broken rule in `reason` and writes nothing. `unavailable` means the change could not be made durable and writes nothing.
-
-```bash
-curl -s localhost:4727/create -d '{"name":"job"}'
-curl -s localhost:4727/send -d '{"chat":"job","from":"alice","to":["bob"],"body":"hello","txid":"1","kind":"say"}'
-curl -s localhost:4727/wait -d '{"chat":"job","cursor":0,"name":"bob","deadline":"30s"}'
-```
-
-## Client
-
-The root commands are `bus`, `chat`, `run`, and `web`. `chat` calls a bus that is already running, then exits. Every verb except `list` names the chat as its first argument. There is no environment fallback for that name. `--address` and `--token-file` are persistent flags on `chat`. `bus start` and `web` declare both locally, and `bus status` declares only `--address`. Each reads `HOTSEAT_ADDRESS` or `HOTSEAT_TOKEN_FILE` when its flag is unset. The flag wins. The default address is `127.0.0.1:4727`. The token is not a command-line argument. Omit the token file for loopback. Omit `--txid` and send writes `txid: ` and 10 lowercase hex characters to stderr, then sends that id. A retry without `--txid` is not idempotent. Pass `--txid` to send that value, including an empty one. The line is written before the call and flushed. A dropped call is retried once with that same id. The client does not store the id.
+Every `chat` command prints a text result: one `key: value` per line, with a multi-line value given as a byte count followed by those bytes. Agents can parse it reliably, and the exit status gives the outcome: ok 0, usage 1, refused 2, timeout 3, unavailable or unreachable 4.
 
 ```bash
 hotseat chat create job
-hotseat chat send job --from alice --kind say --to bob --body hello
 hotseat chat send job --from alice --kind say --to bob --body hello --txid 1
-hotseat chat --address 192.0.2.10:4727 --token-file /run/hotseat/token send job --from alice --kind say --to bob --body hello --txid 1
-hotseat chat send job --from alice --kind say --to bob --body-file - --txid 1
-hotseat chat send job --from bob --kind say --to alice --body yes --re 1
-hotseat chat read job
-hotseat chat read job --cursor 0 --limit 50 --kind say --kind turn
-hotseat chat wait job --cursor 0 --to bob --deadline 30s
-hotseat chat close job
-hotseat chat list
-hotseat chat join job alpha
-hotseat chat members job
-hotseat chat status job
 ```
-
-`--kind` is required on send. `--re <seq>` sends `re`. Omit it and the field is left out. A message with `re` prints `re: <seq>` after the `kind` line, on send, read, wait, and attend. A message without it prints no `re` line. Repeat `--kind` on read or wait to send `kinds`. Omit it and the field is left out. `--to` on read and wait takes one participant, and a repeat is a usage error. `--to` on send stays repeatable. `--body` is the message. `--body-file` reads it from a file, and `--body-file -` reads stdin, so a body can be larger than one command argument. Pass exactly one of the two. A body or a transaction id that is not valid UTF-8 is `refused` with that bus rule, and the client does not connect. `hotseat chat create` sends a name only. `hotseat chat list` and the create result print the binding, omitting empty fields, in roster order, each roster entry as `roster: name=module:model`, or `roster: name` when its module and model are empty, then `permission` when stored. The list puts the chat with the newest message first, by that message's `seq`. Chats with no message follow, ordered by name. `hotseat chat members` prints name, launched time, joined time, and status. It does not print a pid or a session id. `chat read` defaults `--cursor` to 0 and `--limit` to 100. An ok read prints `more: true` or `more: false`. `chat wait --cursor` stays required.
-
-Each `chat` command prints one text result and exits by outcome: `ok` 0, a usage or startup error 1, `refused` 2, `timeout` 3, `unavailable` and `connection_failure` 4. SIGINT and SIGTERM exit 128 plus the signal number. A field on one line is `name: value`. A message body is always a byte count and then those bytes, and so is any other value that contains a newline. The count keeps an empty body, more than one line, and a line that looks like a field inside the value. A usage error is a message on stderr and no stdout. A dropped call is retried once with the same arguments. Timeout is only the bus outcome. A full read page carries each message `seq`. The client does not request the next page.
 
 ```text
 outcome: ok
@@ -166,131 +161,29 @@ body <<5
 hello
 ```
 
-`hotseat chat status <name>` answers what is happening with one chat from bus reads alone. It makes only read calls, `/lease` `get` first, then `/list`, `/members`, `/records`, and `/read` to the end of the transcript, and writes nothing. The records are read before the transcript, so the transcript holds every message a record names. When every read is `ok` it exits zero whatever the state. A read that answers otherwise prints only that call's `outcome` and `reason` and exits by that outcome, so a missing chat is `outcome: refused` with `reason: chat not found` and exit 2, and an unreachable bus is `outcome: connection_failure` and exit 4.
+Each send carries a transaction id, so a retry never stores a message twice. A `wait` blocks until a matching message arrives or a deadline passes.
 
-```text
-outcome: ok
-chat: job
-task: tasks:hotseat/ticket/review
-ticket: foo-x234
-seat: grok
-roster: grok=hotseat/grok:grok-4
-roster: opus=hotseat/claude:opus
-permission: auto
-state: running
-since: 2026-11-18T08:47:13Z
-expires: 2026-11-18T08:47:33Z
-member: grok
-member_status: running
-member: opus
-member_status: exited
-newest: 57
-findings: 4
-settled: 2
-fixed: 1
-dropped: 1
-discussing: 41
-```
+## Reference
 
-The binding lines omit empty fields, as `list` does, and the roster is in roster order, each entry as on `list`, then `permission` when stored. `state` is `running` while a conductor holds the lease, else `closed` once the chat is closed, else `idle`. It is a fact, not a judgement of how a run ended. `since` and `expires` follow only `running`, and `expires` is for a reader to compare. Member rows print as stored, with no pid liveness check. `newest` is the highest `seq` of any kind. The counts read every message and record: `findings` is the kept findings, `dropped` the duplicates an aggregate dropped, `settled` the kept findings with a settle, dismissals included, and `fixed` the settled changes with a fix. A dismissal is never fixed. `discussing` follows only `running`. Findings are worked one at a time in `seq` order, and `discussing` is the first kept finding whose discussion has started and that has no settle, or settled on a change with no `fixed`. It is not printed when a halt names that finding, since a halt ends every discussion, and a later finding is never reported in its place. A task with no findings prints each count as `0`.
+The reference docs state exactly what hotseat does, including every outcome, refusal reason, and exit status.
 
-When a stop record exists, `done: <seq>` names the done it records, then `unsettled` and `unfixed` lines and `run_outcome` (`done`, `deadlock`, or `unsettled`), from the same rule and the same cut before that done as `run`'s stop result, so the two print the same lines. The counts read the whole ledger, so they can differ from the stop lines when a finding, settle, or `fixed` is stored after that done. `status` never decides which done stopped a run, so with no stop record it prints neither. When a `stopped by` error from `run` to `owner` is newer than the recorded done, or there is no stop record, the newest one prints as `stop: <class>` and `stop_seq: <seq>`. `run_outcome` is data, not an exit status. Session ids, pids, start tokens, the lease holder, the token, and decision records stay off the output. `hotseat bus status` reports the bus process instead.
+| Document | Covers |
+| --- | --- |
+| [docs/bus.md](docs/bus.md) | The bus process, store, token, and HTTP protocol |
+| [docs/chat.md](docs/chat.md) | `hotseat chat` verbs, text results, `status`, and `attend` |
+| [docs/run.md](docs/run.md) | `hotseat run`: lease, launches, turns, the finding protocol, limits, stop results, and continuation |
+| [docs/web.md](docs/web.md) | The loopback page and its live event stream |
 
-## Run
+Each command's `--help` covers its flags.
 
-`hotseat run new <task>` creates a chat and drives it. `hotseat run continue <name>` drives a chat `run new` created, from the setup the chat stores. Both drive a bus that is already listening. They do not start the bus and they do not open the database. `run` sends the task as `owner` when the chat has none, launches each roster member through `start`, and exits when the acting seat posts `done` or a safety rail trips. The stopping `done` is the seat's, or the backup's while the seat is `timed-out`. Any other `done` stored before the stop is reported once with `error` class `bad done` to `owner`, with `re` naming it, and never stops the run afterwards, including after the seat times out and on a `run continue`. A `done` stored after the stop is not judged. `run` stores the stopping `done` as a stop record before it closes the chat, and a continuation that finds a stop record stops on that `done` whatever the member rows say since. After a stopping `done`, `run` closes the chat, starts no further launch, and stops every other running member at once. The sender of that `done` gets up to 30 seconds to exit before it is killed, so `run` can exit up to 30 seconds after the `done`. A sender that exits zero in that period is `exited` with its session id stored. A sender that exits non-zero, reaches the process limit, or prints no session id in that period is `timed-out` and sends `error`, and nobody is handed the seat. A sender killed at the end of the period is `timed-out` and sends no `error`. The chat name is not a flag. The bare name is the ticket id, a hyphen, and the task slug. With no ticket the slug is the whole name. A taken bare name gains one 4-character code, so a second `run new` of the same task creates a new chat. The header prints `chat: <name>` before `run` blocks, and the chief reads the chat name from that line to start `chat attend`.
+## Build
 
-`run` holds the chat's conductor lease while it drives. It acquires the lease after `run new` creates the chat and before it sends the task, or, on `run continue`, after it finds the chat and checks its stored setup and before it reads anything it acts on. It renews the lease every 5 seconds and releases it at exit, and sends its holder on every record, member status, and session write and on every send. A second `run` on a chat another `run` is driving waits once, at most 20 seconds, for that lease to run out, then exits non-zero with `outcome: error` and `chat has a conductor` on stderr, having launched, sent, and recorded nothing. A `run` killed without its exit release leaves a lease that runs out within 20 seconds, so a continuation started meanwhile waits and then drives. A signal during that wait exits as any signal does. A `run` whose renewal is refused, or whose write or send is refused with `write requires the chat lease`, stops at once: it starts no launch, makes no further write, and kills no member. It waits for the members it launched to exit, so their output stays open, stops watching each member it adopted from an earlier run without signalling it, and exits non-zero with `outcome: error` and the reason on stderr. It does not release the lease it lost. The next holder adopts and records those members. A signal during that wait kills the members it launched, as any signal does. A member whose row write right after its start is refused is still killed, because no row records it for the next holder. A failed renewal call is reported on stderr and retried at the next renewal.
-
-A `run` that holds its lease and stops on an error sends exactly one `error` from `run` to `owner`, so the owner, `attend`, and the page can see why it stopped. It is sent when the stop becomes final, before `run` waits for any member and before it releases its lease. Its body is the class alone:
-
-| Class | Cause | `re` |
-| --- | --- | --- |
-| `stopped by protocol` | A halting protocol error: `turn cap`, `no backup`, `no decision`, `no fix`, `no report`, `launch cap`, or `below minimum` | That protocol `error` |
-| `stopped by refusal` | The bus refused a call for any reason but the lease | none |
-| `stopped by command` | A `start` or `tk` call failed, or printed output `run` cannot use, such as task text too large to send | none |
-| `stopped by bus` | The bus answered `unavailable`, or could not be reached after the client's retry | none |
-| `stopped by lease` | A renewal answered `lease is not held`, or a write or send was refused with `write requires the chat lease` | none |
-| `stopped by signal` | SIGINT or SIGTERM | none |
-| `stopped by run` | Any other failure of `run` itself, such as a process from an earlier run it cannot stop at its limit, or a bus answer it cannot use | none |
-
-The first cause is the stop. The refused writes of a `run` that lost its lease do not replace `stopped by lease`, and every error after a signal is that signal's fallout, so the stop is `stopped by signal`. A launch that fails for one member of a parallel `turn` stops its other members at once. The error carries no `holder` and a random transaction id, and it is sent within 5 seconds of the stop or lost, as it is when the bus stays unreachable. Its body never holds tool stderr, a path, a pid, a session id, a start token, the holder, or the token. The detail is on stderr. An unresolved stop (`deadlock` or `unsettled`), a failed stdout write, any exit before the lease is held, such as a refused acquire or an invalid roster, and a continuation's stored roster below `min_members`, which is the create path's roster check and changes nothing, send none. `hotseat chat attend` does not exit on it, so the exit status of `run` stays the reliable signal.
-
-`run` stores each member process it launches by its pid and a start token it reads from the host right after the start: on Linux the boot id and the process's raw start ticks from `/proc`, on macOS the kernel's process start time, and on other platforms none. A process that exits before its token is read is stored with none. A continuation adopts a process still running from an earlier run only when the live process's token equals the stored one, for any launch of that member, and compares no clock. A row with no token is never adopted. An adopted process gets the full process limit from adoption and is watched to its exit and recorded `exited` only when its session id is already stored, because only the run that launched it read its output. Otherwise it is `timed-out` with `error` class `process exit`, including an adopted first launch that exits zero. A process that is gone is `timed-out` with `process exit`.
-
-A `turn` launches each roster member in its `to` that has not timed out, unless that member has already answered it. Once that member's earlier process has ended, `run` reads the transcript. A member that has sent a `say` or `finding` after the `turn` whose `re` names that `turn` has answered and is not launched for it, whatever its `to`. A `say` or `finding` whose `re` names another message has not answered. One with no `re` has answered when it names the turn's sender in `to`, and `all` in `to` does not count. An `ask` does not answer. A live run, a continuation, and the `no reply` report follow the same rule. Each turn prompt gives `--re` with the turn's `seq` in the send command for the `say` and for each `finding`. A `turn` whose body `run` rejects, and each name outside the roster in a turn's `to`, is reported with `error` class `bad turn`. A rejected `turn` counts toward `--max-turns` when a live run reads it, and not when a continuation reads it stored.
-
-`run new` takes the setup flags, and `run continue` takes none of them. The roster is `--agents` or `HOTSEAT_AGENTS`, a space-separated list of `name=module:model`, and is required. There is no `HOTSEAT_MEMBERS`. Each flag wins over its `HOTSEAT_*` variable. An empty `--seat` or `--permission` is a usage error, and an empty variable counts as unset. `--seat` or `HOTSEAT_SEAT` names the seat. When both are absent, the seat is the first roster name in ASCII byte order. `--prompts` or `HOTSEAT_PROMPTS` and `--instructions` or `HOTSEAT_INSTRUCTIONS` go into the task message. `--ticket` or `HOTSEAT_TICKET` selects the code-root the members launch in. Without a ticket, they launch in the directory `run new` was started in. `--permission` or `HOTSEAT_PERMISSION` defaults to `auto`, and every roster module must define it. `run new` stores the task, the roster as ordered `{name, module, model}` objects, the seat, the ticket, the prompts, the instructions, the permission, and that directory with the chat.
-
-`run continue <name>` launches from that stored setup. It refuses a chat that does not exist and creates nothing. It also refuses a chat whose stored setup is incomplete: no task, no seat, no roster, a roster entry with an empty module or model, or no permission, as on a chat `hotseat chat create` made. That refusal names what is missing, comes before the lease is acquired, and writes nothing to the chat. `run continue` cannot change the roster, seat, or permission of a chat. A different setup needs `run new`.
-
-Each member process runs `start` with the stored module, model, and permission, in the chat's directory. Its environment is `run`'s own with `HOTSEAT_ADDRESS` set to `run`'s resolved bus address, and `HOTSEAT_TOKEN_FILE` set to the token file when one is set, made absolute against `run`'s working directory, because a member starts in the chat's directory. An inherited value of either is replaced, or removed when `run` has no token file. The token goes into no environment variable, prompt, or output, only its path does. `start` passes its environment to the agent it execs, so a member's `chat` commands reach the bus `run` calls, and prompts give those command lines without `--address` or `--token-file`.
-
-`--max-turns` or `HOTSEAT_MAX_TURNS` defaults to 500 `turn` messages. `--timeout` or `HOTSEAT_TIMEOUT` limits one member process. The default is 8 hours, and `0` means no limit. It is not a limit on the chat. Only the `run` that holds the lease enforces it: a `run` that lost its lease or died enforces none, and a continuation applies the full limit to each process it adopts, counted from adoption. `--max-launches` or `HOTSEAT_MAX_LAUNCHES` defaults to 300 member processes in one `run` process. It counts every launch kind, applies to every task, starts from zero on a continuation, and stays on with `--timeout 0`. Both verbs take these limit flags and `--verbose`, and none of them is stored. `--address` and `--token-file` are persistent on `run` and resolve as on `chat`. The token value is not printed.
-
-A task's `min_members`, read with `start get --field min_members`, is the smallest roster `run` accepts. A task that omits it has a minimum of 1. A smaller roster exits with an error and creates nothing. `run continue` applies the same check to the stored task and roster, after it reports a stored stopping `done`, so a replay gives the same result after the minimum rises. That refusal leaves a member process still running from an earlier run alone, and the next continuation watches it. A live member is one that is not `timed-out`. When a member times out and fewer than `min_members` are live, or a continuation finds that already true, `run` sends `error` to `owner` with class `below minimum`. When a launch would pass the cap, it sends `error` with class `launch cap`, once. In both cases `run` starts no further launch, including a handoff. Running members finish and keep their session ids. A `turn` stored meanwhile is not acted on. `run` then exits non-zero with `outcome: error` and the chat open, once the last running member exits. A stopping `done` in that period still closes the chat as any `done` does. A member that `run` stops is not a member failure. A `--max-turns` stop exits non-zero with `outcome: error`, as a launch-cap stop does. A timed-out member does not come back, so the owner starts a new run. `run continue` can continue a launch-cap stop with a higher cap.
-
-A member sends each issue it finds as a `finding` during a `turn` set. A `finding` whose `re` names a set's `turn` opens a discussion in that set when its sender is a recipient of that `turn`, the set has not closed, and it was not stored after another set closed while that set's discussions are still open. A set closes when `run` writes its set record. A set with no set record ends for a `finding` stored after the follow-up target's next `turn` or `done`. A `finding` with no `re` opens a discussion in the first set that takes it under that rule. Any other `finding`, including one whose `re` names another message or a closed set's `turn`, is reported once with `error` class `bad finding` and opens nothing. When every recipient of a set has exited or is `timed-out`, `run` reports each recipient that is not `timed-out` and has not answered the `turn` with `error` class `no reply` about the turn, and then writes the set record with the set's findings, including for a set with no findings. A set with two or more findings is then aggregated. `run` launches the acting seat once to send one `aggregate` to every roster name. Its body has one line per issue: the finding to keep, then the `seq` of each duplicate it drops, separated by spaces. Every finding of the set is on exactly one line. `run` then writes the set's grouping record, which names each dropped duplicate and the finding that kept its issue. When the seat sends no `aggregate`, more than one, or one that breaks that rule, `run` reports `no aggregate` or `bad aggregate`, and the grouping drops nothing, so each finding is its own issue. A set with one finding gets its grouping with its set record, and a set with fewer than two findings has no aggregate launch. A dropped finding is not discussed, fixed, or unresolved. `run` runs the set's discussions of kept findings one at a time, in `seq` order, and only then launches the follow-up. A discussion prompt names the dropped duplicates as `duplicates:`. The follow-up prompt carries `fixed: <n>`, the number of the set's fix records, then `no reply:`, `dropped:`, and `timed-out:`. A `turn` sent during a set, a discussion, or a fix is queued and acted on after the follow-up.
-
-`run` keeps its decisions as decision records through `/record`, not as messages: a set record when a set closes, a grouping when its duplicates are grouped, a settle when a finding settles, a fix when a `fixed` applies a settled change, a halt when a `deadlock` is accepted, and a stop when a `done` stops the run. Each record is a fact about messages, keyed by their `seq`, and holds no phase, mode, or cursor. `run` reads every record with `/records` when it starts and keeps each one a write returns. It sends no `discuss`, `issues`, or `halted` marker, and no message exists only to track its progress. A record `run` would send that the store refuses stops the run as a refused send does. Records are not on read, wait, watch, list, `/members`, the page, or stdout. A continuation needs the records as well as the transcript, so a dump of messages is not a full backup of a run.
-
-Each discussion has one current proposal. It starts as the finding, with the finder as proposer. `propose`, `dismiss`, `agree`, `object`, and `stand` are stances. A discussion launch sends exactly one stance, addressed to every roster name. `propose` and `dismiss` replace the proposal, make the sender the proposer, and clear every `agree`. The proposer may send `propose`, `dismiss`, or `stand`, and `stand` only while an `object` is open. `stand` keeps the proposal and its agreements. A proposer that becomes `timed-out` counts as a `stand`. A finding settles when every roster member that is not `timed-out`, other than the proposer, has sent `agree` since the proposal was set. `run` then writes the settle record and, before any fix launch, sends `settled` from `run` to `owner` with `re` the agreed proposal and transaction id `settled/<finding>`. Its body is prose built from the settle and the proposal, such as `settled finding 179: propose by grok, fix follows` or `settled finding 180: dismiss by sonnet, no change`. Nothing reads it as state, so a forged `settled` under another transaction id changes nothing. `hotseat chat attend` does not print it, and a member's named read skips it. A sole live member's finding settles at once. Findings and stances are read with an unnamed `hotseat chat read` filtered by kind, so their `to` hides nothing. Every other kind keeps its addressing. That read starts at the finding, so discussion and stall prompts also name `start`, the seq the discussion began after: the latest of the set's grouping record's `after` and the settle's `after` and the `fixed` of each earlier kept finding of the set, and on a restart past every message the continuation treats as history. A stance at or before `start` does not belong to that discussion.
-
-The first speaker is the first live member after the finder in roster order. After a launch with one stance and one `pass` to one eligible member, that member speaks next. Otherwise the next speaker is the first member after the last speaker who has not agreed, has sent no stance since the proposal was set, the proposer's last `stand`, or the proposer's timeout, and has budget left, and then the proposer while an objection is open. `--max-says` or `HOTSEAT_MAX_SAYS` defaults to 4 discussion launches for each member on each finding. The flag wins, and a value below 1 is refused. A `pass` counts toward `--max-turns`. It is not a `turn`.
-
-When nobody can speak and the finding has not settled, the discussion stalls and `run` launches the acting seat once. It sends `extend`, with `to` naming the members whose budget is refreshed, or `deadlock` to every roster name and `owner`. Each `extend` counts toward `--max-turns`, including one that refreshes nobody. A name outside the roster or `timed-out` is reported with `error`, and an `extend` with an empty `to` is reported against the seat. A `deadlock` stops the run at once. `run` writes the halt record, opens no further discussion, launches no fix and no follow-up, and launches the acting seat once more to post `done` to `owner` with `outcome: hold` and a report. Its prompt lists the dropped duplicates. There is no majority vote. When a `finding` or `propose` settles, `run` launches the finder, the sender of the `finding`, to apply it and send `fixed` to every roster name, and writes the fix record for the first `fixed` that counts. A fix launch with no `fixed` hands the fix to the acting seat once. A settled `dismiss` is not fixed and gets no fix record. A seat timeout while a set's discussions run launches no handoff until they finish. Until then the backup rule picks who decides a stall or applies a fix.
-
-Every prompt that asks for a threaded kind gives the exact `--re` in its send command: a stance and a `pass` name the finding under discussion, an `extend` or `deadlock` the stalled finding, an `aggregate` the set's `turn`, and a `fixed` the finding whose settled change it applies. A `turn`, a `done`, and the instructions take no `re`. A missing `re` is judged by the rules above and is never an error. A present `re` that is not the message `run` expects rejects the message under its kind's class, `bad stance`, `bad pass`, `bad extend`, `bad deadlock`, or `bad aggregate`, and it still counts toward `no stance`, `extra stance`, the one `aggregate`, and the stall's one decision. An `extend` with a wrong `re` refreshes nobody, counts toward `--max-turns`, and the discussion continues. A `deadlock` with a wrong `re` writes no halt, and the stall stops with `no decision`. A `fixed` whose `re` names another message does not count and is not reported, so the fix is handed off or stops with `no fix`, and it does not resolve the finding at the stop.
-
-The stop result comes from the messages and records before the stopping `done`, the one the stop record names, every time a `done` stops the run, including on a `run continue` replay. It reads the records whose `after` is below the `done`'s `seq`, and the fixes whose `fixed` is below it. A finding counts when it was stored before the `done` and is a finding of its set: in the set record, or, for a set the `done` stopped before it closed, by the rules above. A dropped finding does not count. A settled change is fixed when a fix record names it, or when a `fixed` is creditable: stored after the settle, with `re` naming the finding, from the finder, the seat, or the seat's backup. The first creditable `fixed` is the one credited, and a `fixed` with no `re` counts only inside the fix launch that sent it. A finding is unresolved when it has no settle, or when it settled on a `finding` or `propose` and is not fixed. With none, `run` prints `outcome: done` and exits zero, whatever the `done` body says, unless the run halted after the close, such as on a lost lease, which still prints that `done` and its stop lines, then `stop` and `outcome: error`, and exits non-zero. Otherwise it closes the chat, prints `unsettled: <seq>` for each finding with no settle and `unfixed: <seq>` for each change not applied, and exits non-zero with `outcome: deadlock` when a halt is below the `done`, and `outcome: unsettled` otherwise. An unsettled stop also sends one `error` to `owner` with class `unsettled` and `re` naming the stopping `done`. A replay meets it again and does not repeat it. `hotseat chat attend` may exit on the `done` before it prints that `error`, so the exit status and the result block of `run` are the reliable signal. `run` cannot undo anything the seat did before its `done`, such as `tk mark todo`. After a deadlock, the owner resolves the disagreement and starts a new run. Fixes already applied stay, and the report's undiscussed findings can be passed to the new run as a prompt.
-
-A protocol `error` goes from `run` to `owner`. Its body is the member and the class on two lines, or the class alone. When one stored message caused it, its `re` is that message's `seq`. `bad finding`, `no reply`, `bad turn`, `bad done`, and `unsettled` take a transaction id derived from their fact: `bad finding/<member>/<finding>`, `no reply/<member>/<turn>`, `bad turn/<turn>` for a rejected turn, `bad turn/<member>/<turn>` for a name outside the roster, `bad done/<done>`, and `unsettled/<stopping done>`. A continuation that meets the same fact again gets the stored error back, stores no second copy, and writes no second event. Every other error has a random transaction id. A caller that sends as `run` under one of those ids, or under a `settled` announcement's `settled/<finding>`, with other content makes that send a refusal, and `run` stops as on any refused send, including on every continuation that announces again. The protocol classes are `no reply`, `bad done`, `no aggregate`, `bad aggregate`, `bad finding`, `no stance`, `extra stance`, `bad stance`, `bad pass`, `bad extend`, `bad deadlock`, `no decision`, `no fix`, `no report`, and `unsettled`, which is the class alone. A discussion speaker whose launch ends `timed-out` already has its failure sent, so it gets no `no stance` or `extra stance`, its `pass` is ignored, and a single stance it stored is still judged. A rejected stance, `aggregate`, `pass`, `extend`, or `deadlock` changes nothing. A seat whose aggregate launch ends `timed-out` with no `aggregate` gets no `no aggregate`. A seat whose stall launch ends `timed-out` without exactly one of `extend` and `deadlock` gets no `no decision`, and the backup rule picks who decides the stall. A live seat's stall launch that sends neither or both, a fix the acting seat also leaves without `fixed`, and a report launch with no `done` exit non-zero with `outcome: error` and the chat open. `run continue` continues it.
-
-`run continue` does not replay stances. A set with a set record takes its findings from that record and resumes as a finished set. A set with two or more findings and no grouping gets its aggregate launch again. A settled finding is closed. A settled change with no fix record first waits for every process left from the earlier run to exit. A creditable `fixed` then becomes its fix record, and only a change with none gets its fix launch again, so a change a leftover already applied with `re` is not applied twice. A halt with no `done` after it gets the report launch again and nothing else. Before any resumed fix launch or later discussion, and before it closes on a stored stopping `done`, `run` sends the `settled` of every settle record again, and a stored copy is returned with no second `seq`. Otherwise the first finding with no settle starts over with fresh budgets, and its prompts say that it restarted. The follow-up runs unless the follow-up target posted a `turn` or `done` after the set's discussions ended. A set with no findings ends its discussions at its set record's `after`. A set with no set record finishes as a live set does, unless every recipient has exited or is `timed-out`, the follow-up target has a later `turn` or `done`, and no recipient sent a `finding` before it. A continuation starts no discussion, stall, fix, or report launch until each process left from the earlier run has exited, and a stance that process sent does not count. A message stored before the continuation started, or sent by a leftover process, is not judged again. A stray stance, `aggregate`, `pass`, `extend`, or `deadlock` from a launch the continuation started is reported, including while it waits for a leftover. A stored `bad finding`, `no reply`, `bad turn`, `bad done`, or `unsettled` is not reported again. Continuing a chat that an earlier binary stored with `discuss`, `issues`, or `halted` markers is not supported: a continuation ignores the markers and runs the finding protocol again from the transcript, so start a new run instead.
-
-Stdout is `key: value`, the same text result as the `chat` verbs, in two parts. Once the chat and its lease are held, `run` prints a header: `chat`, which is always the first line, `task`, `ticket` unless it is empty, `seat`, one `member: name=module:model` line per roster entry, as `run new` was given it or as `run continue` read it from the chat, and `page: http://127.0.0.1:<port+1>/chats/<name>` only when the `--address` host is a loopback IP or `localhost`. `run` does not resolve the address for it. At exit it prints a result block: `done: <seq>` when a stop record exists, naming the `done` it records, then that `done`'s `unsettled` and `unfixed` lines, then `stop: <class>` on an error stop, where the class is the body of the stop error, then `outcome`, then `elapsed`, the run's duration rounded to seconds. The `done`, `unsettled`, `unfixed`, and `stop` lines are those `hotseat chat status` prints, from the same rule, and `outcome` is its `run_outcome` unless the run halted after the close. A refusal that is not an error stop, such as a continuation's stored roster below `min_members`, prints no `stop`. An exit before the chat is bound, such as a usage error, a new run's roster below `min_members`, a missing chat, or an incomplete stored setup, prints nothing on stdout. An exit after that but before the lease is held, such as an acquire refused by a live conductor or a signal during the lease wait, prints exactly `outcome: error`. `outcome` is `done`, `deadlock`, `unsettled`, or `error`. It is `done` only when this command exits zero, which is when the acting seat posted `done`, the close succeeded, no finding is unresolved, and nothing halted the run after the close. Joins are on `hotseat chat members`, and member statuses on `hotseat chat status`.
-
-```
-chat: foo-x234-ticket-review
-task: tasks:hotseat/ticket/review
-ticket: foo-x234
-seat: alpha
-member: alpha=hotseat/grok:model
-member: bravo=hotseat/claude:model
-page: http://127.0.0.1:4728/chats/foo-x234-ticket-review
-done: 57
-outcome: done
-elapsed: 18m42s
-```
-
-`--verbose` or a non-empty `HOTSEAT_VERBOSE` writes event lines to stderr, one event per line, each with a local wall-clock `time` and an `event`: each `launch` with its `member`, launch `kind`, and the `seq` it concerns, each process `exit` with its `code` and `duration`, each `adopt` of a process left running by an earlier run and its `exit` once it is gone, with a `duration` from adoption and no `code`, since only its parent can read one, each executed `turn` with its `mode` and `to`, each `issue` with its `dropped` duplicates, each opened `finding`, accepted `stance`, `pass`, `settled`, `stall`, `extend`, `deadlock`, and `fixed`, and each `error` `run` stores to `owner`, protocol and stop errors alike, with its `class`, the `member` its body names, and the `seq` its `re` names. An error a continuation meets again is already stored and writes no second event. It also forwards a successful `start` or `tk` call's stderr, each line prefixed with `start: ` or `tk: `. Without it neither is written. A failed call's output stays in the error. Members' own stderr goes to stderr either way. A session id, a pid, a start token, the token, and the lease holder are not on stdout or on an event line. Exit statuses do not depend on `--verbose`. agy (Antigravity CLI) has no hotseat module, so it is not a roster module.
+hotseat is pure Go and builds without cgo:
 
 ```bash
-hotseat run new hotseat/ticket/review --agents "alpha=hotseat/grok:model bravo=hotseat/claude:model" --ticket foo-x234
-hotseat run continue foo-x234-ticket-review
+CGO_ENABLED=0 go build -o hotseat ./cmd/hotseat
 ```
 
-## Attend
+## License
 
-`hotseat chat attend <name>` waits as `owner` on one chat and prints `ask`, `error`, and `done`. It calls a bus that is already running. It does not open the database, launch a process, send, or write a member row. It does not resume a chief. A `say` is not printed. A join is a member row, not a message, so it never appears. Joins are `hotseat chat members`.
-
-The chat name is the first argument. `--cursor` is the last finished sequence. The default is `0`, which reads from the start. The cursor stays in this process. The next wait uses the match sequence just printed. A new process reads from sequence 0 unless `--cursor` is set. `--address` and `HOTSEAT_ADDRESS` default to `127.0.0.1:4727`. `--token-file` and `HOTSEAT_TOKEN_FILE` follow the other `chat` verbs. The flag wins. The token value is not printed.
-
-Each printed match is one text result: the chat name, `match_seq`, and the message (`from`, `kind`, `re` when it has one, `to` in stored order, and the body). The bus span may contain other kinds. A `say` earlier in that span is not printed. An `ask` or an `error` is printed and attend waits again. There is no deadline. A `done` addressed to `owner` is printed and attend exits zero, including a `done` from a name other than the acting seat. A `done` that is not addressed to `owner` does not end attend. A failed call exits by the outcome table: refused 2, timeout 3, unavailable and connection_failure 4. The text result stays on stdout. A usage error prints no stdout and exits 1.
-
-```bash
-hotseat chat attend job
-hotseat chat attend job --cursor 4
-```
-
-## Web
-
-`hotseat bus start` serves the page on `127.0.0.1` at the next port. The default is `http://127.0.0.1:4728`. `hotseat web` serves that same page for a bus that is already running, on a listen address you choose. It calls the bus. It does not open the database. The default bus address is `127.0.0.1:4727`. The default page address is `127.0.0.1:4728`, which is the page `hotseat bus start` already serves. A further page passes another loopback `--listen`. The page listens on loopback. Any other listen address is refused. The page answers for the address it listens on. On loopback, localhost with that port is the same address. `--token-file` reads the token for a non-loopback bus. The page does not receive the token. Omit the flag for loopback. The top bar searches every chat by name, task, and ticket, in the list order. Messages, at `/`, shows the newest 50 messages across every chat, newest first. A chat can appear more than once. Reaching the bottom of that group loads the next older 50. Chats, at `/chats`, shows an Open section and then a Closed section. Each keeps that order and shows the task, ticket, and seat. An empty section stays on the page. A chat named `.` or `..` is shown without a link. Opening `/chats/{name}` shows its name, status, task, ticket, seat, and directory, then the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. Loaded groups stay on the page. The page does not ask for a cursor or a limit. Send posts to `/chats/{name}/messages`. The person at the page supplies `from`, `to`, `kind`, and the body. The transcript shows that `kind`. Send does not take `re`. Each message row has id `msg-<seq>`. A message with `re` shows it in the message foot as a link to `/chats/{name}?before=<re+1>#msg-<re>`, which opens that chat with the referenced message at the top of the group, including a message older than the newest 50. A chat named `.` or `..` shows `re` as text. A transcript served with `before` is a history view. Its top links to the newest group, which is the live view. A message body is rendered as Markdown. The stored text stays in the message. Markdown shows that text, and Copy writes it. An empty transaction id is filled in the page when Send is submitted. The server does not invent one and does not keep the place in the transcript or the id. A stored send redirects to the chat, which clears the field. Any other result leaves the form open with the posted id. The page does not create, wait, close, or manage members. `GET /events` is a Server-Sent Events stream for one view. With no view parameter it follows Messages, `chat=<name>` follows that transcript, `view=list` follows Chats, and `chat=<name>&view=history` follows a history view. It starts after query `after=<seq>` or the `Last-Event-ID` header. When both are present, the header wins. `view=list` takes neither. A history stream calls `/watch` with no `cursor`, sends `chats` and `meta`, and never sends `message` or `reset`. It ignores `Last-Event-ID`, and `after` is answered `400`. Each stream is its own client of the bus and calls `/watch`, not `/wait`. It sends `message` with `id: <seq>` for each message of its view, `chats` with the Open and Closed sections and the search index on every view, and, on a transcript, `meta` with the side panel at stream start and when it changes. A view that missed more than 50 of its messages gets `reset`, and the stream ends. A quiet stream sends a comment every 25s. A malformed position or view, `view=list` with a chat, `view=history` without a chat or with `after`, and a chat name the bus refuses are answered `400` with a plain-text reason. A bus that is away ends a `200` stream, so the browser reconnects. Event data is HTML from the same template blocks as the pages. The stream position comes from the tab and is not stored. Each visible tab holds one stream for its view and updates in place, except that a history view shows no new message. A new message appears at the top of Messages or its transcript with a brief highlight, and nothing is trimmed. Chats, the search index, and the side panel follow the list. The open Send form, Markdown toggles, and the search box are kept. A hidden tab closes its stream and catches up from its last seq when it is visible again. On `reset` the tab reloads the newest group of its view, without `before`, and opens a new stream from it. A failed reload is retried after 2s, doubling to 30s, while the tab is visible. The stream seq lives only in the tab's script and is not shown or stored.
-
-```bash
-hotseat web --listen 127.0.0.1:4808
-hotseat web --address 127.0.0.1:4727 --listen 127.0.0.1:4808
-hotseat web --address 192.0.2.10:4727 --listen 127.0.0.1:4808 --token-file /run/hotseat/token
-```
-
-Build with `CGO_ENABLED=0 go build -o hotseat ./cmd/hotseat`.
+[MPL-2.0](LICENSE)

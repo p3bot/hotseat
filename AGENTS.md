@@ -25,7 +25,7 @@ Rules that follow from the purpose:
 
 ## Contract
 
-`README.md`, each command's `--help`, and the package doc comments state what the program does. A behaviour they state changes in the same edit as the code. This file holds only what working on the code needs beyond them. `.agents/roles/default.md` is the start role for this module and carries the same constraints.
+`README.md` gives the overview. The reference in `docs/` (`bus.md`, `chat.md`, `run.md`, `web.md`), each command's `--help`, and the package doc comments state what the program does. A behaviour they state changes in the same edit as the code. This file holds only what working on the code needs beyond them. `.agents/roles/default.md` is the start role for this module and carries the same constraints.
 
 ## Layout
 
