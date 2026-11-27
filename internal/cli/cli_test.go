@@ -256,63 +256,6 @@ func TestOpenFailureReleasesListener(t *testing.T) {
 	}
 }
 
-func TestBusHelpNamesDataHome(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	err := execute(context.Background(), []string{"bus", "--help"}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("help: %v\n%s", err, stderr.String())
-	}
-	text := stdout.String()
-	if strings.Contains(text, "store directory is required") || strings.Contains(text, "(required)") {
-		t.Fatalf("help still requires --store:\n%s", text)
-	}
-	if !strings.Contains(text, "$XDG_DATA_HOME/hotseat") {
-		t.Fatalf("help does not name the data home:\n%s", text)
-	}
-	for _, name := range []string{"hotseat bus start", "hotseat bus stop", "hotseat bus status", logName} {
-		if !strings.Contains(text, name) {
-			t.Fatalf("help missing %s:\n%s", name, text)
-		}
-	}
-	if strings.Contains(text, "\n  hotseat bus\n") || strings.Contains(text, "\n  serve ") {
-		t.Fatalf("help offers an attached bus:\n%s", text)
-	}
-	stdout.Reset()
-	stderr.Reset()
-	err = execute(context.Background(), []string{"bus", "start", "--help"}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("start help: %v\n%s", err, stderr.String())
-	}
-	startHelp := stdout.String()
-	if !strings.Contains(startHelp, "$XDG_DATA_HOME/hotseat") || !strings.Contains(startHelp, logName) || !strings.Contains(startHelp, web.URL(web.DefaultListen)) {
-		t.Fatalf("start help missing store, log, or page:\n%s", startHelp)
-	}
-	stopOut := bytes.Buffer{}
-	err = execute(context.Background(), []string{"bus", "stop", "--help"}, &stopOut, &stderr)
-	if err != nil {
-		t.Fatalf("stop help: %v\n%s", err, stderr.String())
-	}
-	stopHelp := stopOut.String()
-	if stopHelp == "" || strings.Contains(stopHelp, "--listen") || strings.Contains(stopHelp, "--debug") {
-		t.Fatalf("stop help:\n%s", stopHelp)
-	}
-	if !strings.Contains(stopHelp, "--store") || !strings.Contains(stopHelp, bus.DefaultListen) || !strings.Contains(stopHelp, "left running") {
-		t.Fatalf("stop help missing the bare-stop rule:\n%s", stopHelp)
-	}
-	statusOut := bytes.Buffer{}
-	err = execute(context.Background(), []string{"bus", "status", "--help"}, &statusOut, &stderr)
-	if err != nil {
-		t.Fatalf("status help: %v\n%s", err, stderr.String())
-	}
-	statusHelp := statusOut.String()
-	if !strings.Contains(statusHelp, "--address") || !strings.Contains(statusHelp, bus.DefaultListen) || !strings.Contains(statusHelp, "GET /health") || !strings.Contains(statusHelp, "pass") {
-		t.Fatalf("status help:\n%s", statusHelp)
-	}
-	if strings.Contains(statusHelp, "--store") || strings.Contains(statusHelp, "--token-file") {
-		t.Fatalf("status help selects a store or a token:\n%s", statusHelp)
-	}
-}
-
 func TestNonLoopbackDoesNotListenOrCreateStore(t *testing.T) {
 	root := t.TempDir()
 	storeDir := filepath.Join(root, "store")

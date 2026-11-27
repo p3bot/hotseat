@@ -238,33 +238,6 @@ func TestAddressAndTokenFileReadTheVariableAndTheFlagWins(t *testing.T) {
 	}
 }
 
-func TestSendHelpSaysARetryNeedsATransactionID(t *testing.T) {
-	var stdout bytes.Buffer
-	if err := execute(context.Background(), []string{"chat", "send", "--help"}, &stdout, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(stdout.String(), "not idempotent") {
-		t.Fatalf("help\n%s", stdout.String())
-	}
-}
-
-func TestBusStatusHelpHasAddressAndNoTokenFile(t *testing.T) {
-	var stop, status bytes.Buffer
-	if err := execute(context.Background(), []string{"bus", "stop", "--help"}, &stop, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(stop.String(), "--address") || strings.Contains(stop.String(), "--token-file") {
-		t.Fatalf("stop help\n%s", stop.String())
-	}
-	if err := execute(context.Background(), []string{"bus", "status", "--help"}, &status, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
-	}
-	text := status.String()
-	if !strings.Contains(text, "--address") || strings.Contains(text, "--token-file") {
-		t.Fatalf("status help\n%s", text)
-	}
-}
-
 func closedAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

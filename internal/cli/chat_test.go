@@ -826,20 +826,6 @@ func TestCommandTextRoundTripsBodies(t *testing.T) {
 	}
 }
 
-func TestClientHelpShowsText(t *testing.T) {
-	for _, name := range []string{"create", "send", "read", "wait", "close", "list"} {
-		var stdout, stderr bytes.Buffer
-		err := execute(context.Background(), []string{"chat", name, "--help"}, &stdout, &stderr)
-		if err != nil {
-			t.Fatalf("%s help: %v\n%s", name, err, stderr.String())
-		}
-		text := stdout.String()
-		if strings.Contains(text, "JSON") || !strings.Contains(text, "text result") || !strings.Contains(text, "byte count") {
-			t.Fatalf("%s help:\n%s", name, text)
-		}
-	}
-}
-
 func TestUsageErrorPrintsNoStdout(t *testing.T) {
 	bin := buildBinary(t)
 	cmd := exec.Command(bin, "chat", "create")

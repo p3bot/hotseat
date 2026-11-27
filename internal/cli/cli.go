@@ -100,8 +100,13 @@ func SignalExitCode() int {
 
 func newRoot() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "hotseat",
-		Short:         "Durable chat bus",
+		Use:   "hotseat",
+		Short: "Chat bus where AI agents work through one task together",
+		Long: `hotseat keeps a durable local chat bus and drives AI agents through a task
+on it. Start the bus with hotseat bus start, then drive a task with
+hotseat run new.
+
+` + referenceLine + "README.md",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       Version,
@@ -117,6 +122,9 @@ func newRoot() *cobra.Command {
 	return root
 }
 
+// referenceLine opens the last line of every help page. A repository path follows it.
+const referenceLine = "Reference: https://github.com/p3bot/hotseat/blob/main/"
+
 func newBusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "bus",
@@ -127,15 +135,11 @@ func newBusCmd() *cobra.Command {
 		Example: `  hotseat bus start
   hotseat bus stop
   hotseat bus status`,
-		Long: `Start, stop, and check the chat bus. The bus process is detached
-from the terminal. Its log is ` + logName + ` in the store directory.
+		Long: `Start, stop, and check the chat bus. The bus runs detached from the
+terminal. Its store directory holds ` + store.FileName + ` and ` + logName + `, and defaults
+to $XDG_DATA_HOME/hotseat.
 
-The database is ` + store.FileName + ` inside the store directory. When --store
-is omitted the directory is $XDG_DATA_HOME/hotseat. An unset, empty, or relative
-$XDG_DATA_HOME uses $HOME/.local/share/hotseat. A relative home directory is
-refused and nothing is created. hotseat bus start leaves the bus running until
-hotseat bus stop. status asks an address, ` + bus.DefaultListen + ` by default,
-and does not select a store directory.`,
+` + referenceLine + "docs/bus.md",
 		RunE: func(*cobra.Command, []string) error {
 			return errors.New("choose start, stop, or status")
 		},
@@ -168,25 +172,14 @@ func newBusStartCmd() *cobra.Command {
   hotseat bus start --store /var/lib/hotseat
   hotseat bus start --store /var/lib/hotseat --address 127.0.0.1:4727 --max-body 524288
   hotseat bus start --store /var/lib/hotseat --address 192.0.2.10:4727 --token-file /run/hotseat/token`,
-		Long: `Listen for create, send, read, wait, watch, close, list, messages, join, member, session, members, record, records, and lease. The process runs
-in a new session with no controlling terminal. Stdin is discarded. Stdout and
-stderr append to ` + logName + ` in the store directory. start returns after the
-listener is bound, the database is open, and the page is listening. It prints
-the pid, the listen address, the store path, and the page URL. The page listens
-on 127.0.0.1 at the next port and calls this bus. It does not open the database.
-The default page is ` + web.URL(web.DefaultListen) + `. A second start, while that
-bus is running, prints the running process and does not change it.
+		Long: `Start the bus detached from the terminal and print its pid, listen address,
+store directory, and page URL. The page listens on 127.0.0.1 at the bus port
+plus one, ` + web.URL(web.DefaultListen) + ` by default. When the bus for that store is
+already running, start prints it and changes nothing.
 
-The database is ` + store.FileName + ` inside the store directory. When --store
-is omitted the directory is $XDG_DATA_HOME/hotseat. An unset, empty, or relative
-$XDG_DATA_HOME uses $HOME/.local/share/hotseat. A relative home directory is
-refused and nothing is created. --address or HOTSEAT_ADDRESS is the address
-the bus listens on and clients dial. The default is ` + bus.DefaultListen + `,
-which is loopback and requires no token. Any other address requires
---token-file or HOTSEAT_TOKEN_FILE. The flag wins over the variable. A hostname is resolved once,
-and the process listens on one address from that lookup. A missing or empty
-token file does not listen and nothing is opened. A failed bind opens nothing.
-The token is not logged. Clients send JSON to POST /<operation>.`,
+A loopback --address needs no token. Any other address requires --token-file.
+
+` + referenceLine + "docs/bus.md",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			address, err := resolveAddress(cmd)
 			if err != nil {
@@ -213,15 +206,14 @@ func newBusStopCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
-		Long: `Send SIGTERM and return after the process has exited and ` + store.LockName + `
-is released. Already stopped is success.
+		Long: `Stop the bus and wait for it to exit. Already stopped is success.
 
-With --store, stop signals only the bus for that directory. Without --store,
-stop signals the bus for the default store and any other local bus serve bound
-to ` + bus.DefaultListen + `. A process that is not bus serve and holds that
-address is left running, and stop fails. The default store is
-$XDG_DATA_HOME/hotseat. An unset, empty, or relative $XDG_DATA_HOME uses
-$HOME/.local/share/hotseat.`,
+With --store, stop only the bus for that directory. Without it, stop the bus
+for the default store and any other hotseat bus on ` + bus.DefaultListen + `. A
+process on that address that is not a hotseat bus is left running, and stop
+exits 1.
+
+` + referenceLine + "docs/bus.md",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if cmd.Flags().Changed("store") {
 				return stopBus(cmd.Context(), storeDir)
@@ -240,19 +232,11 @@ func newBusStatusCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
-		Long: `Send GET /health to the address and print the result. --address or
-HOTSEAT_ADDRESS names it, and the flag wins. The default address is
-` + bus.DefaultListen + `. The request carries no token, so status takes no
-token file. GET /health is pass or fail, and it is not an operation.
+		Long: `Ask the bus at --address whether it can serve, and print health as pass,
+fail, or connection_failure. A bus on this machine also prints its pid and
+store directory. pass exits 0, and fail and connection_failure exit 4.
 
-health is pass, fail, or connection_failure. listen is the address contacted.
-pass exits 0. fail and connection_failure exit 4. A completed response that is
-not 200 with a pass body is fail. When the request does not complete, health
-is connection_failure and reason names the address and the cause.
-
-When a bus serve process on this machine is bound to that address, the report
-also prints its pid and the store directory it holds. A remote answer prints
-health and listen only.`,
+` + referenceLine + "docs/bus.md",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			address, err := resolveAddress(cmd)
 			if err != nil {

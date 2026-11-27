@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/dop251/goja v0.0.0-20261007200356-e2ea74d3d210
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.9
 	github.com/yuin/goldmark v1.7.13
 	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.60.1
@@ -20,7 +21,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/text v0.3.8 // indirect
 	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

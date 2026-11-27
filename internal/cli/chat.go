@@ -33,17 +33,6 @@ const (
 	defaultReadLimit = 100
 )
 
-const chatResultText = `Print one text result and exit. outcome is ok, timeout, refused, unavailable, or connection_failure.
-
-A field on one line is "name: value". A message body is always a byte count and then those bytes, and so is any other value that contains a newline. The count keeps an empty body, more than one line, and a line that looks like a field inside the value.
-
-` + exitStatusText + `
-
---address or HOTSEAT_ADDRESS names the bus. The default is ` + bus.DefaultListen + `. --token-file or HOTSEAT_TOKEN_FILE reads the shared capability token for a bus that is not on loopback. The flag wins over the variable. The token is not a flag. Omit both for a loopback bus.`
-
-// exitStatusText is the exit status table every chat command states in its help.
-const exitStatusText = `Exit status follows the outcome: ok 0, a usage or startup error 1, refused 2, timeout 3, unavailable and connection_failure 4. SIGINT and SIGTERM exit 128 plus the signal number.`
-
 func newChatCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "chat",
@@ -51,15 +40,18 @@ func newChatCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
-		Long: `Act on one chat on a bus that is already running. Every verb except list
-names the chat as its first argument. A missing or extra argument is a usage
-error on stderr with nothing on stdout.
+		Long: `Act on one chat on a running bus. Every verb except list takes the chat
+name as its first argument.
 
-` + exitStatusText + `
+Each verb prints one text result of "key: value" lines. A message body, and
+any value with a newline, is "key <<N" and then those N bytes.
 
---address or HOTSEAT_ADDRESS names the bus, default ` + bus.DefaultListen + `.
---token-file or HOTSEAT_TOKEN_FILE reads the capability token for a bus that
-is not on loopback. The flag wins over the variable. The token is not a flag.`,
+Exit status: ok 0, usage or startup error 1, refused 2, timeout 3,
+unavailable or connection_failure 4, and 128 plus the number on a signal.
+
+A bus off loopback needs --token-file.
+
+` + referenceLine + "docs/chat.md",
 		RunE: func(*cobra.Command, []string) error {
 			return errors.New("choose create, list, close, status, send, read, wait, attend, join, or members")
 		},
@@ -82,20 +74,23 @@ is not on loopback. The flag wins over the variable. The token is not a flag.`,
 }
 
 func newCreateCmd() *cobra.Command {
-	return newChatVerb("create <name>", "Create a chat", `  hotseat chat create job
+	return newChatVerb("create <name>", "Create a chat", `Create an empty chat. It has no stored setup, so run continue refuses it.
+Use run new to create a chat for a task.`, `  hotseat chat create job
   hotseat chat --address 127.0.0.1:4727 create job`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
 		return call(cmd, "create", client.CreateRequest{Name: args[0]})
 	})
 }
 
 func newListCmd() *cobra.Command {
-	return newChatVerb("list", "List every chat", `  hotseat chat list`, chatArgs(), func(cmd *cobra.Command, _ []string) error {
+	return newChatVerb("list", "List every chat", `List every chat with its task, ticket, seat, and roster, the chat with the
+newest message first.`, `  hotseat chat list`, chatArgs(), func(cmd *cobra.Command, _ []string) error {
 		return call(cmd, "list", struct{}{})
 	})
 }
 
 func newCloseCmd() *cobra.Command {
-	return newChatVerb("close <name>", "Close a chat", `  hotseat chat close job`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
+	return newChatVerb("close <name>", "Close a chat", `Mark a chat closed. A closed chat still accepts sends and reads. run closes
+its chat when it stops on done.`, `  hotseat chat close job`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
 		return call(cmd, "close", client.CloseRequest{Chat: args[0]})
 	})
 }
@@ -104,7 +99,12 @@ func newSendCmd() *cobra.Command {
 	var from, body, key, kind, bodyFile string
 	var to []string
 	var re int64
-	cmd := newChatVerb("send <name>", "Send a message to a chat", `  hotseat chat send job --from alice --kind say --to bob --body hello
+	cmd := newChatVerb("send <name>", "Send a message to a chat", `Send one message. The body is --body, or --body-file, where - reads stdin.
+
+--txid makes a retry safe: a send whose txid is already stored in the chat
+prints already_stored and stores nothing. Without --txid, send mints a random
+id and writes it to stderr, so a retry without --txid can store the message
+twice.`, `  hotseat chat send job --from alice --kind say --to bob --body hello
   hotseat chat send job --from alice --kind say --to bob --body hello --txid 1
   hotseat chat send job --from bob --kind say --to alice --body done --re 1
   hotseat chat send job --from alice --kind say --to bob --body-file note.txt`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
@@ -131,13 +131,6 @@ func newSendCmd() *cobra.Command {
 			Re:   changedRe(cmd, re),
 		})
 	})
-	cmd.Long += `
-
-The txid names this attempt. A send with a txid already stored in the chat is
-not stored again and prints already_stored. When --txid is omitted, send mints
-a random 10-character hex id and writes it to stderr, so a retry without
---txid is not idempotent and can store the message twice. A caller that
-retries passes --txid.`
 	cmd.Flags().StringVar(&from, "from", "", "sender name")
 	cmd.Flags().StringVar(&kind, "kind", "", "message kind")
 	cmd.Flags().StringArrayVar(&to, "to", nil, "addressee; repeat for more than one; omit for none")
@@ -153,7 +146,9 @@ func newReadCmd() *cobra.Command {
 	var to oneString
 	var kinds []string
 	var cursor, limit int64
-	cmd := newChatVerb("read <name>", "Read messages after a cursor", `  hotseat chat read job
+	cmd := newChatVerb("read <name>", "Read messages after a cursor", `Print the messages after --cursor, oldest first, at most --limit, up to
+`+strconv.Itoa(bus.MaxReadLimit)+`. more: true means another page follows. Pass the last seq printed as
+the next --cursor.`, `  hotseat chat read job
   hotseat chat read job --cursor 40 --limit 50 --to bob --kind say`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
 		return call(cmd, "read", client.ReadRequest{
 			Chat:   args[0],
@@ -163,12 +158,6 @@ func newReadCmd() *cobra.Command {
 			Kinds:  changedKinds(cmd, kinds),
 		})
 	})
-	cmd.Long += `
-
---cursor defaults to 0, which has seen nothing. --limit defaults to ` + strconv.Itoa(defaultReadLimit) + `, and the
-bus refuses a limit above ` + strconv.Itoa(bus.MaxReadLimit) + `. An ok read prints more: true when a further
-matching message follows the page, and more: false otherwise. Page on more,
-with the last seq printed as the next --cursor.`
 	cmd.Flags().Int64Var(&cursor, "cursor", 0, "last finished sequence; 0 has seen nothing")
 	cmd.Flags().Int64Var(&limit, "limit", defaultReadLimit, "maximum number of messages")
 	cmd.Flags().Var(&to, "to", "keep messages addressed to this participant; one value; omit to read every message")
@@ -181,7 +170,10 @@ func newWaitCmd() *cobra.Command {
 	var deadline string
 	var kinds []string
 	var cursor int64
-	cmd := newChatVerb("wait <name>", "Wait for a matching message", `  hotseat chat wait job --cursor 0 --to bob --kind turn --deadline 30s`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
+	cmd := newChatVerb("wait <name>", "Wait for a matching message", `Block until a message after --cursor matches --to and --kind, then print it
+with match_seq. A wait with --to also prints the messages before the match.
+Past --deadline the outcome is timeout. --cursor is required, so a waiter
+that forgot it is not handed an old message.`, `  hotseat chat wait job --cursor 0 --to bob --kind turn --deadline 30s`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
 		return call(cmd, "wait", client.WaitRequest{
 			Chat:     args[0],
 			Cursor:   cursor,
@@ -190,9 +182,6 @@ func newWaitCmd() *cobra.Command {
 			Kinds:    changedKinds(cmd, kinds),
 		})
 	})
-	cmd.Long += `
-
---cursor is required, so a waiter that forgot it is not handed an old message.`
 	cmd.Flags().Int64Var(&cursor, "cursor", 0, "last finished sequence; 0 has seen nothing")
 	cmd.Flags().Var(&to, "to", "wait for a message addressed to this participant; one value; omit to wait for the next message")
 	cmd.Flags().StringArrayVar(&kinds, "kind", nil, "kind to keep; repeat to list more than one; omit to keep every kind")
@@ -202,27 +191,24 @@ func newWaitCmd() *cobra.Command {
 }
 
 func newJoinCmd() *cobra.Command {
-	cmd := newChatVerb("join <name> <member>", "Record that a roster member has joined", `  hotseat chat join job alpha`, chatArgs("name", "member"), func(cmd *cobra.Command, args []string) error {
+	return newChatVerb("join <name> <member>", "Record that a roster member has joined", `Mark a roster member joined. join writes the member row run created, and
+sends no message.`, `  hotseat chat join job alpha`, chatArgs("name", "member"), func(cmd *cobra.Command, args []string) error {
 		return call(cmd, "join", client.JoinRequest{Chat: args[0], Name: args[1]})
 	})
-	cmd.Long += `
-
-join writes the member row of a roster name. It is not a message.`
-	return cmd
 }
 
 func newMembersCmd() *cobra.Command {
-	return newChatVerb("members <name>", "List member rows", `  hotseat chat members job`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
+	return newChatVerb("members <name>", "List member rows", `List each member row: name, launched and joined times, and status.`, `  hotseat chat members job`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
 		return call(cmd, "members", client.MembersRequest{Chat: args[0]})
 	})
 }
 
 // newChatVerb is one chat verb. Its --address and --token-file are the chat group's persistent flags.
-func newChatVerb(use, short, example string, args cobra.PositionalArgs, run func(cmd *cobra.Command, args []string) error) *cobra.Command {
+func newChatVerb(use, short, long, example string, args cobra.PositionalArgs, run func(cmd *cobra.Command, args []string) error) *cobra.Command {
 	return &cobra.Command{
 		Use:           use,
 		Short:         short,
-		Long:          chatResultText,
+		Long:          long + "\n\n" + referenceLine + "docs/chat.md",
 		Example:       example,
 		SilenceUsage:  true,
 		SilenceErrors: true,

@@ -25,7 +25,10 @@ const (
 
 func newAttendCmd() *cobra.Command {
 	var cursor int64
-	cmd := newChatVerb("attend <name>", "Wait as owner for ask, error, and done", `  hotseat chat attend job
+	cmd := newChatVerb("attend <name>", "Wait as owner for ask, error, and done", `Wait as owner and print each ask, error, and done addressed to owner. After
+an ask or an error, attend waits again, with no deadline. A done exits 0.
+To pick up where an earlier attend stopped, pass its last match_seq as
+--cursor.`, `  hotseat chat attend job
   hotseat chat attend job --cursor 4`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
 		cfg, err := attendSetup(cmd, args[0], cursor)
 		if err != nil {
@@ -33,31 +36,6 @@ func newAttendCmd() *cobra.Command {
 		}
 		return attend(cmd.Context(), cfg, cmd.OutOrStdout())
 	})
-	cmd.Long = `Wait as owner on one chat and print ask, error, and done. attend does not
-start the bus, open the database, launch a process, or send. It does not
-write a member row and it does not resume a chief.
-
---cursor is the last finished sequence. The default is 0, which has seen
-nothing. The next wait uses the match sequence just printed. A new process
-reads from sequence 0 unless --cursor is set.
-
-Each match is one text result. The bus span may contain other kinds. attend
-prints the matching message: the chat name, the match sequence, kind, from,
-to in stored order, and the body. A say, a turn, and every other kind are not
-printed. A join is a member row, not a message, so it never appears. An ask
-or an error is printed and attend waits again. There is no deadline. A done
-addressed to owner is printed and attend exits 0, including a done from a
-name other than the acting seat. A done that is not addressed to owner does
-not end attend.
-
-A call that answers other than ok prints its result and exits by its
-outcome: refused 2, timeout 3, unavailable and connection_failure 4. An ok
-answer that is not an ask, error, or done exits 1. A usage error prints no
-stdout and exits 1. SIGINT and SIGTERM exit 128 plus the signal number.
-
---address or HOTSEAT_ADDRESS names the bus, default ` + bus.DefaultListen + `.
---token-file or HOTSEAT_TOKEN_FILE reads the capability token. The flag wins.
-The token value is not printed.`
 	cmd.Flags().Int64Var(&cursor, "cursor", 0, "last finished sequence; 0 has seen nothing")
 	return cmd
 }

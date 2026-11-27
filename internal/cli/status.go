@@ -15,52 +15,13 @@ import (
 	"github.com/p3bot/hotseat/internal/run"
 )
 
-const statusLong = `Print what the bus says about one chat as one text result. status calls a
-bus that is already running and makes only read calls, in order: lease get,
-list, members, records, and read. Records come before the transcript, so the
-transcript holds every message a record names. It writes nothing, launches
-nothing, and does not start the bus.
-
-Lines, in order: outcome, chat, task, ticket, and seat, one roster line per
-entry as name=module:model, or name when module and model are empty,
-permission when stored, state, then since and expires while state is running,
-then member and member_status per member row as stored, newest, findings,
-settled, fixed, and dropped, then discussing while state is running and a
-finding is being worked on.
-
-state is running while a conductor holds the chat's lease, else closed once
-the chat is closed, else idle. It is a fact, not a judgement of how a run
-ended. expires is for a reader to compare.
-
-newest is the highest seq of any kind. findings counts the kept findings
-and dropped the duplicates an aggregate dropped. settled counts kept
-findings with a settle, dismissals included, and fixed the settled changes
-that were fixed. Findings are worked one at a time in seq order, and
-discussing is the first kept finding whose discussion has started and that
-has no settle, or settled on a change with no fix. It is not printed when a
-halt names that finding, since a halt ends every discussion. Each count is 0
-for a task with no findings.
-
-When the chat has a stop record, done names the done that stopped the run,
-then unsettled and unfixed lines and run_outcome (done, deadlock, or
-unsettled) follow from the same rule as run's stop result, read from before
-that done. status never decides which done stopped a run. When a stopped by
-error is newer than that done, or there is no stop record, the newest one
-prints as stop and stop_seq.
-
-A read that answers other than ok prints its outcome and reason and nothing
-else, and exits by that outcome. A missing chat is outcome refused with
-reason chat not found, and an unreachable bus is outcome connection_failure.
-Otherwise status exits 0 whatever the state or the run outcome.
-
-` + exitStatusText + `
-
---address or HOTSEAT_ADDRESS names the bus. --token-file or
-HOTSEAT_TOKEN_FILE reads the shared capability token for a bus that is not on
-loopback. The flag wins over the variable. Omit both for a loopback bus.`
-
 func newStatusCmd() *cobra.Command {
-	cmd := newChatVerb("status <name>", "Show what is happening with one chat", `  hotseat chat status job
+	cmd := newChatVerb("status <name>", "Show what is happening with one chat", `Print one chat's setup, state, member statuses, finding counts, and stop,
+from bus reads alone. status writes nothing. state is running while a run
+holds the chat, closed once the chat is closed, and idle otherwise.
+
+status exits 0 whatever the state. A failed read prints its outcome and
+reason and exits by that outcome, so a missing chat exits 2.`, `  hotseat chat status job
   hotseat chat --address 127.0.0.1:4727 status job`, chatArgs("name"), func(cmd *cobra.Command, args []string) error {
 		address, err := resolveAddress(cmd)
 		if err != nil {
@@ -82,7 +43,6 @@ func newStatusCmd() *cobra.Command {
 		}
 		return writeStatus(cmd.OutOrStdout(), st)
 	})
-	cmd.Long = statusLong
 	return cmd
 }
 

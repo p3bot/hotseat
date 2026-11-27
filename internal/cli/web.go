@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/p3bot/hotseat/internal/bus"
 	"github.com/p3bot/hotseat/internal/web"
 )
 
@@ -29,23 +28,12 @@ func newWebCmd() *cobra.Command {
 		Example: `  hotseat web --listen 127.0.0.1:4808
   hotseat web --address 127.0.0.1:4727 --listen 127.0.0.1:4808
   hotseat web --address 192.0.2.10:4727 --listen 127.0.0.1:4808 --token-file /run/hotseat/token`,
-		Long: `Serve a page that shows messages, lists chats, reads a transcript, and sends.
+		Long: `Serve the loopback page for a running bus: recent messages, chats,
+transcripts, and a send form. bus start already serves one at
+` + web.URL(web.DefaultListen) + `, so web is for another page on its own --listen,
+which must be a loopback address. web runs until it is signalled.
 
-bus start serves this page on 127.0.0.1 at the next port. The default is ` + web.URL(web.DefaultListen) + `.
-This command serves the same page for a bus that is already running, on a listen address you choose.
-The page calls that bus. It does not open the database.
---address or HOTSEAT_ADDRESS names the bus, default ` + bus.DefaultListen + `. --listen is the page's own address, default ` + web.DefaultListen + `, which is the page bus start already serves. A further page passes another --listen.
---token-file or HOTSEAT_TOKEN_FILE reads the capability token for a bus that is not on loopback. The flag wins over the variable.
-The token is not a flag and the page does not receive it. Omit the flag for a loopback bus.
-The page listens on loopback. Any other listen address is refused.
-The page answers for the address it listens on. On loopback, localhost with that port is the same address.
-The top bar searches every chat by name, task, and ticket, in the list order. Messages, at /, shows the newest 50 messages across every chat, newest first. A chat can appear more than once. Chats, at /chats, shows an Open section and then a Closed section. Each keeps that order and shows the task, ticket, and seat. An empty section stays on the page. A chat named "." or ".." is shown without a link.
-Opening /chats/{name} shows its name, status, task, ticket, seat, and directory, then the newest 50 messages, latest first. Reaching the bottom of that group loads the next older 50. The page does not ask for a cursor or a limit.
-Send posts to /chats/{name}/messages. The person at the page supplies from, to, kind, and the body.
-An empty transaction id is filled in the page when Send is submitted.
-The server does not keep the place in the transcript or the transaction id, and it does not invent one.
-A stored send redirects to the chat. Any other result leaves the form open with the posted id.
-The process runs until it is signalled.`,
+` + referenceLine + "docs/web.md",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			busAddr, err := resolveAddress(cmd)
 			if err != nil {

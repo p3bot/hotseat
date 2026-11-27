@@ -30,39 +30,6 @@ func TestRunNewWithoutTaskIsAUsageErrorThatWritesNothing(t *testing.T) {
 	}
 }
 
-func TestRunHelpDescribesRails(t *testing.T) {
-	help := func(args ...string) string {
-		var stdout, stderr bytes.Buffer
-		if err := executeIO(context.Background(), append(args, "--help"), nil, &stdout, &stderr); err != nil {
-			t.Fatal(err)
-		}
-		return stdout.String()
-	}
-	group := help("run")
-	for _, part := range []string{"500", "8h", "0 means no", "300", "HOTSEAT_MAX_LAUNCHES", "min_members", "below minimum", "launch cap", "HOTSEAT_MAX_SAYS", "outcome: deadlock", "outcome: unsettled", "unfixed", "--verbose", "HOTSEAT_VERBOSE", "elapsed rounded to seconds", "bus port plus one", "HOTSEAT_ADDRESS", "HOTSEAT_TOKEN_FILE", "absolute path"} {
-		if !strings.Contains(group, part) {
-			t.Fatalf("run help missing %s\n%s", part, group)
-		}
-	}
-	newHelp := help("run", "new")
-	for _, part := range []string{"HOTSEAT_AGENTS", "HOTSEAT_PERMISSION", "agy", "chat: <name>", "chat attend", "--timeout"} {
-		if !strings.Contains(newHelp, part) {
-			t.Fatalf("run new help missing %s\n%s", part, newHelp)
-		}
-	}
-	continueHelp := help("run", "continue")
-	for _, part := range []string{"does not exist", "incomplete", "empty module or model", "no permission", "before the lease", "--max-says"} {
-		if !strings.Contains(continueHelp, part) {
-			t.Fatalf("run continue help missing %s\n%s", part, continueHelp)
-		}
-	}
-	for _, text := range []string{group, newHelp, continueHelp} {
-		if strings.Contains(text, "Gemini") || strings.Contains(text, "--interactive") {
-			t.Fatalf("help names a removed or wrong thing\n%s", text)
-		}
-	}
-}
-
 func TestRunNewAgentsFlagBeatsItsEnv(t *testing.T) {
 	t.Setenv("HOTSEAT_AGENTS", "alpha=hotseat/grok:m")
 	var stdout, stderr bytes.Buffer

@@ -125,7 +125,7 @@ Every Go file starts with this header:
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ```
 
-Dependencies stay the standard library, cobra, `golang.org/x/sys`, `modernc.org/sqlite`, and `github.com/yuin/goldmark`. `github.com/dop251/goja` runs the page script in `internal/web/page_test.go` only.
+Dependencies stay the standard library, cobra, `golang.org/x/sys`, `modernc.org/sqlite`, and `github.com/yuin/goldmark`. `github.com/dop251/goja` runs the page script in `internal/web/page_test.go` only. `github.com/spf13/pflag` comes with cobra, and `internal/cli/help_test.go` imports it to read flag sets.
 
 Put new code in the package that already owns the behaviour. An exported doc comment states the contract. Any further comment is one line for a non-obvious WHY, with no ticket ids, PR numbers, or bare TODO. A bad request, a conflict, or a failed write returns an error.
 
